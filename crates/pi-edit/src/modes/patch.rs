@@ -1,7 +1,7 @@
 //! `patch` mode: JSON `edits[]` of `{op, rename?, diff?}` hunks against one
 //! path. Port of `packages/coding-agent/src/edit/modes/patch.ts`.
 
-use std::{collections::HashSet, fmt::Write, sync::Arc};
+use std::{fmt::Write, sync::Arc};
 
 use crate::{
 	diff_string::{
@@ -80,19 +80,11 @@ struct Replacement {
 	new_lines:   Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HunkVariantKind {
-	TrimCommon,
-	DedupeShared,
-	CollapseRepeated,
-	SingleLine,
-}
-
 #[derive(Debug, Clone)]
 struct HunkVariant {
-	old_lines: Vec<String>,
-	new_lines: Vec<String>,
-	kind:      HunkVariantKind,
+	old_lines:            Vec<String>,
+	new_lines:            Vec<String>,
+	context_line_indices: Vec<(usize, usize)>,
 }
 
 fn is_blank_line(line: &str) -> bool {
@@ -131,16 +123,41 @@ fn apply_indent_delta(lines: &[String], delta: isize, indent: char) -> Vec<Strin
 		.collect()
 }
 
+// Context locates an edit but never supplies replacement bytes, including
+// when indentation or punctuation differs from the matched file.
+fn map_added_lines(
+	actual: &[String],
+	new_lines: &[String],
+	context_line_indices: &[(usize, usize)],
+	mut map_added: impl FnMut(usize, &String) -> String,
+) -> Vec<String> {
+	let mut context = context_line_indices.iter().peekable();
+	new_lines
+		.iter()
+		.enumerate()
+		.map(|(index, line)| {
+			if let Some(&&(old_index, new_index)) = context.peek()
+				&& new_index == index
+			{
+				context.next();
+				return actual[old_index].clone();
+			}
+			map_added(index, line)
+		})
+		.collect()
+}
+
 fn adjust_lines_indentation(
 	pattern: &[String],
 	actual: &[String],
 	new_lines: &[String],
+	context_line_indices: &[(usize, usize)],
 ) -> Vec<String> {
 	if pattern.is_empty() || actual.is_empty() || new_lines.is_empty() || pattern == actual {
 		return new_lines.to_vec();
 	}
 	if equal_trimmed(pattern, new_lines) {
-		return new_lines.to_vec();
+		return map_added_lines(actual, new_lines, context_line_indices, |_, line| line.clone());
 	}
 
 	let pattern_tab_only = pattern
@@ -199,10 +216,9 @@ fn adjust_lines_indentation(
 					|| count_leading_whitespace(found) == count_leading_whitespace(old) * ratio
 			});
 			if valid {
-				return convert_leading_tabs_to_spaces(&new_lines.join("\n"), ratio)
-					.split('\n')
-					.map(str::to_owned)
-					.collect();
+				return map_added_lines(actual, new_lines, context_line_indices, |_, line| {
+					convert_leading_tabs_to_spaces(line, ratio)
+				});
 			}
 		}
 	}
@@ -250,25 +266,22 @@ fn adjust_lines_indentation(
 				}
 			};
 			if let Some(width) = width.filter(|width| *width > 0) {
-				return new_lines
-					.iter()
-					.map(|line| {
-						if is_blank_line(line) {
-							return line.clone();
-						}
-						let spaces = count_leading_whitespace(line);
-						if spaces == 0 {
-							return line.clone();
-						}
-						let adjusted = spaces as isize - offset;
-						if adjusted < 0 {
-							return line.clone();
-						}
-						let tabs = adjusted as usize / width;
-						let remainder = adjusted as usize - tabs * width;
-						format!("{}{}{}", "\t".repeat(tabs), " ".repeat(remainder), &line[spaces..])
-					})
-					.collect();
+				return map_added_lines(actual, new_lines, context_line_indices, |_, line| {
+					if is_blank_line(line) {
+						return line.clone();
+					}
+					let spaces = count_leading_whitespace(line);
+					if spaces == 0 {
+						return line.clone();
+					}
+					let adjusted = spaces as isize - offset;
+					if adjusted < 0 {
+						return line.clone();
+					}
+					let tabs = adjusted as usize / width;
+					let remainder = adjusted as usize - tabs * width;
+					format!("{}{}{}", "\t".repeat(tabs), " ".repeat(remainder), &line[spaces..])
+				});
 			}
 		}
 	}
@@ -296,61 +309,66 @@ fn adjust_lines_indentation(
 	}
 	let mut used = std::collections::HashMap::<String, usize>::new();
 	let indent = indent_char(actual);
-	new_lines
-		.iter()
-		.enumerate()
-		.map(|(line_index, line)| {
-			if is_blank_line(line) {
+	map_added_lines(actual, new_lines, context_line_indices, |line_index, line| {
+		if is_blank_line(line) {
+			return line.clone();
+		}
+		let trimmed = js_trim(line).to_owned();
+		if let Some(matches) = by_content.get(&trimmed) {
+			if matches.len() == 1 {
+				return (*matches[0]).clone();
+			}
+			if matches.iter().any(|candidate| candidate.as_str() == line) {
 				return line.clone();
 			}
-			let trimmed = js_trim(line).to_owned();
-			if let Some(matches) = by_content.get(&trimmed) {
-				if matches.len() == 1 {
-					return (*matches[0]).clone();
-				}
-				if matches.iter().any(|candidate| candidate.as_str() == line) {
-					return line.clone();
-				}
-				let index = used.entry(trimmed).or_default();
-				if let Some(found) = matches.get(*index) {
-					*index += 1;
-					return (**found).clone();
-				}
+			let index = used.entry(trimmed).or_default();
+			if let Some(found) = matches.get(*index) {
+				*index += 1;
+				return (**found).clone();
 			}
-			if pattern.len() == new_lines.len()
-				&& let (Some(pattern_line), Some(actual_line)) =
-					(pattern.get(line_index), actual.get(line_index))
-				&& !is_blank_line(pattern_line)
-				&& !is_blank_line(actual_line)
+		}
+		if pattern.len() == new_lines.len()
+			&& let (Some(pattern_line), Some(actual_line)) =
+				(pattern.get(line_index), actual.get(line_index))
+			&& !is_blank_line(pattern_line)
+			&& !is_blank_line(actual_line)
+		{
+			let local_delta = count_leading_whitespace(actual_line) as isize
+				- count_leading_whitespace(pattern_line) as isize;
+			if local_delta != 0
+				&& count_leading_whitespace(line) == count_leading_whitespace(pattern_line)
 			{
-				let local_delta = count_leading_whitespace(actual_line) as isize
-					- count_leading_whitespace(pattern_line) as isize;
-				if local_delta != 0
-					&& count_leading_whitespace(line) == count_leading_whitespace(pattern_line)
-				{
-					return apply_indent_delta(std::slice::from_ref(line), local_delta, indent)
-						.remove(0);
-				}
+				return apply_indent_delta(std::slice::from_ref(line), local_delta, indent).remove(0);
 			}
-			if let Some(delta) = delta.filter(|value| *value != 0)
-				&& count_leading_whitespace(line) == pattern_min
-			{
-				return apply_indent_delta(std::slice::from_ref(line), delta, indent).remove(0);
-			}
-			line.clone()
-		})
-		.collect()
+		}
+		if let Some(delta) = delta.filter(|value| *value != 0)
+			&& count_leading_whitespace(line) == pattern_min
+		{
+			return apply_indent_delta(std::slice::from_ref(line), delta, indent).remove(0);
+		}
+		line.clone()
+	})
 }
 
 #[allow(clippy::suspicious_operation_groupings, reason = "paired index bounds are intentional")]
-fn trim_common_context(old: &[String], new: &[String]) -> Option<HunkVariant> {
+fn trim_common_context(
+	old: &[String],
+	new: &[String],
+	context_line_indices: &[(usize, usize)],
+) -> Option<HunkVariant> {
 	let mut start = 0;
 	let mut old_end = old.len();
 	let mut new_end = new.len();
-	while start < old_end && start < new_end && old[start] == new[start] {
+	for &(old_index, new_index) in context_line_indices {
+		if old_index != start || new_index != start {
+			break;
+		}
 		start += 1;
 	}
-	while old_end > start && new_end > start && old[old_end - 1] == new[new_end - 1] {
+	for &(old_index, new_index) in context_line_indices[start..].iter().rev() {
+		if old_index + 1 != old_end || new_index + 1 != new_end {
+			break;
+		}
 		old_end -= 1;
 		new_end -= 1;
 	}
@@ -362,99 +380,117 @@ fn trim_common_context(old: &[String], new: &[String]) -> Option<HunkVariant> {
 	(!old_lines.is_empty() || !new_lines.is_empty()).then_some(HunkVariant {
 		old_lines,
 		new_lines,
-		kind: HunkVariantKind::TrimCommon,
+		context_line_indices: context_line_indices
+			.iter()
+			.filter(|&&(old_index, _)| old_index >= start && old_index < old_end)
+			.map(|&(old_index, new_index)| (old_index - start, new_index - start))
+			.collect(),
 	})
 }
 
-fn collapse_consecutive_shared(old: &[String], new: &[String]) -> Option<HunkVariant> {
-	let new_set = new.iter().collect::<HashSet<_>>();
-	let shared = old
+fn drop_context_lines(
+	old: &[String],
+	new: &[String],
+	context_line_indices: &[(usize, usize)],
+	removed: &[usize],
+) -> Option<HunkVariant> {
+	if removed.is_empty() {
+		return None;
+	}
+	let mut old_lines = Vec::with_capacity(old.len() - removed.len());
+	let mut new_lines = Vec::with_capacity(new.len() - removed.len());
+	let mut old_start = 0;
+	let mut new_start = 0;
+	for &context_index in removed {
+		let (old_index, new_index) = context_line_indices[context_index];
+		old_lines.extend_from_slice(&old[old_start..old_index]);
+		new_lines.extend_from_slice(&new[new_start..new_index]);
+		old_start = old_index + 1;
+		new_start = new_index + 1;
+	}
+	old_lines.extend_from_slice(&old[old_start..]);
+	new_lines.extend_from_slice(&new[new_start..]);
+	let mut removed_count = 0;
+	let context_line_indices = context_line_indices
 		.iter()
-		.filter(|line| new_set.contains(*line))
-		.collect::<HashSet<_>>();
-	let collapse = |lines: &[String]| {
-		let mut output = Vec::new();
-		let mut index = 0;
-		while index < lines.len() {
-			output.push(lines[index].clone());
-			let mut next = index + 1;
-			while next < lines.len() && lines[next] == lines[index] && shared.contains(&lines[index]) {
-				next += 1;
+		.enumerate()
+		.filter_map(|(index, &(old_index, new_index))| {
+			if removed.get(removed_count) == Some(&index) {
+				removed_count += 1;
+				None
+			} else {
+				Some((old_index - removed_count, new_index - removed_count))
 			}
-			index = next;
-		}
-		output
-	};
-	let old_lines = collapse(old);
-	let new_lines = collapse(new);
-	(old_lines.len() != old.len() || new_lines.len() != new.len()).then_some(HunkVariant {
-		old_lines,
-		new_lines,
-		kind: HunkVariantKind::DedupeShared,
-	})
+		})
+		.collect();
+	Some(HunkVariant { old_lines, new_lines, context_line_indices })
 }
 
-fn collapse_repeated_blocks(old: &[String], new: &[String]) -> Option<HunkVariant> {
-	let new_set = new.iter().collect::<HashSet<_>>();
-	let shared = old
-		.iter()
-		.filter(|line| new_set.contains(*line))
-		.collect::<HashSet<_>>();
-	let collapse = |lines: &[String]| {
-		let mut output = lines.to_vec();
-		let mut changed = false;
+fn collapse_consecutive_shared(
+	old: &[String],
+	new: &[String],
+	context_line_indices: &[(usize, usize)],
+) -> Option<HunkVariant> {
+	let removed = context_line_indices
+		.windows(2)
+		.enumerate()
+		.filter(|(_, pair)| {
+			pair[0].0 + 1 == pair[1].0
+				&& pair[0].1 + 1 == pair[1].1
+				&& old[pair[0].0] == old[pair[1].0]
+		})
+		.map(|(index, _)| index + 1)
+		.collect::<Vec<_>>();
+	drop_context_lines(old, new, context_line_indices, &removed)
+}
+
+fn collapse_repeated_blocks(
+	old: &[String],
+	new: &[String],
+	context_line_indices: &[(usize, usize)],
+) -> Option<HunkVariant> {
+	let mut removed = Vec::new();
+	let mut start = 0;
+	while start < context_line_indices.len() {
+		let mut end = start + 1;
+		while end < context_line_indices.len()
+			&& context_line_indices[end - 1].0 + 1 == context_line_indices[end].0
+			&& context_line_indices[end - 1].1 + 1 == context_line_indices[end].1
+		{
+			end += 1;
+		}
+		if end - start < 4 {
+			start = end;
+			continue;
+		}
+		let mut retained = (start..end).collect::<Vec<_>>();
 		let mut index = 0;
-		while index < output.len() {
+		while index < retained.len() {
 			let mut collapsed = false;
-			if shared.contains(&output[index]) {
-				for size in (2..=(output.len() - index) / 2).rev() {
-					if (0..size).all(|offset| {
-						output[index + offset] == output[index + size + offset]
-							&& shared.contains(&output[index + offset])
-					}) {
-						output.drain(index + size..index + size * 2);
-						changed = true;
-						collapsed = true;
-						break;
-					}
+			for size in (2..=(retained.len() - index) / 2).rev() {
+				if (0..size).all(|offset| {
+					old[context_line_indices[retained[index + offset]].0]
+						== old[context_line_indices[retained[index + size + offset]].0]
+				}) {
+					removed.extend(retained.drain(index + size..index + size * 2));
+					collapsed = true;
+					break;
 				}
 			}
 			if !collapsed {
 				index += 1;
 			}
 		}
-		(changed, output)
-	};
-	let (old_changed, old_lines) = collapse(old);
-	let (new_changed, new_lines) = collapse(new);
-	(old_changed || new_changed).then_some(HunkVariant {
-		old_lines,
-		new_lines,
-		kind: HunkVariantKind::CollapseRepeated,
-	})
-}
-
-fn reduce_single_line(old: &[String], new: &[String]) -> Option<HunkVariant> {
-	if old.is_empty() || old.len() != new.len() {
-		return None;
+		start = end;
 	}
-	let changed = old
-		.iter()
-		.zip(new)
-		.enumerate()
-		.filter(|(_, (a, b))| a != b)
-		.map(|(i, _)| i)
-		.collect::<Vec<_>>();
-	(changed.len() == 1).then(|| HunkVariant {
-		old_lines: vec![old[changed[0]].clone()],
-		new_lines: vec![new[changed[0]].clone()],
-		kind:      HunkVariantKind::SingleLine,
-	})
+	removed.sort_unstable();
+	drop_context_lines(old, new, context_line_indices, &removed)
 }
 
 fn fallback_variants(hunk: &DiffHunk, aggressive: bool) -> Vec<HunkVariant> {
+	// Only authored context may be discarded. Equal +/- rows are still edits.
 	let mut variants = Vec::new();
-	let trimmed = trim_common_context(&hunk.old_lines, &hunk.new_lines);
+	let trimmed = trim_common_context(&hunk.old_lines, &hunk.new_lines, &hunk.context_line_indices);
 	if let Some(value) = &trimmed {
 		variants.push(value.clone());
 	}
@@ -464,7 +500,10 @@ fn fallback_variants(hunk: &DiffHunk, aggressive: bool) -> Vec<HunkVariant> {
 	let base_new = trimmed
 		.as_ref()
 		.map_or(hunk.new_lines.as_slice(), |value| value.new_lines.as_slice());
-	let deduped = collapse_consecutive_shared(base_old, base_new);
+	let base_context = trimmed
+		.as_ref()
+		.map_or(hunk.context_line_indices.as_slice(), |value| value.context_line_indices.as_slice());
+	let deduped = collapse_consecutive_shared(base_old, base_new, base_context);
 	if let Some(value) = &deduped {
 		variants.push(value.clone());
 	}
@@ -474,24 +513,14 @@ fn fallback_variants(hunk: &DiffHunk, aggressive: bool) -> Vec<HunkVariant> {
 	let collapse_new = deduped
 		.as_ref()
 		.map_or(base_new, |value| value.new_lines.as_slice());
-	if let Some(value) = collapse_repeated_blocks(collapse_old, collapse_new) {
+	let collapse_context = deduped
+		.as_ref()
+		.map_or(base_context, |value| value.context_line_indices.as_slice());
+	if aggressive
+		&& let Some(value) = collapse_repeated_blocks(collapse_old, collapse_new, collapse_context)
+	{
 		variants.push(value);
 	}
-	if let Some(value) = reduce_single_line(base_old, base_new) {
-		variants.push(value);
-	}
-	let mut seen = HashSet::new();
-	variants.retain(|variant| {
-		(aggressive
-			|| !matches!(
-				variant.kind,
-				HunkVariantKind::CollapseRepeated | HunkVariantKind::SingleLine
-			)) && seen.insert(format!(
-			"{}||{}",
-			variant.old_lines.join("\n"),
-			variant.new_lines.join("\n")
-		))
-	});
 	variants
 }
 
@@ -891,6 +920,7 @@ fn assert_partial_match(
 	pattern: &[String],
 	matched: &[&str],
 	new_lines: &[String],
+	context_line_indices: &[(usize, usize)],
 	start: usize,
 ) -> Result<(), EditError> {
 	let new_normalized = new_lines
@@ -898,7 +928,15 @@ fn assert_partial_match(
 		.map(|line| normalize_for_fuzzy(line))
 		.collect::<Vec<_>>()
 		.join("\n");
+	let mut context = context_line_indices.iter().peekable();
 	for (offset, (expected, actual)) in pattern.iter().zip(matched).enumerate() {
+		if context
+			.peek()
+			.is_some_and(|&&(old_index, _)| old_index == offset)
+		{
+			context.next();
+			continue;
+		}
 		let actual = normalize_for_fuzzy(actual);
 		let expected = normalize_for_fuzzy(expected);
 		if actual == expected {
@@ -1041,6 +1079,7 @@ fn compute_replacements(
 
 		let mut pattern = hunk.old_lines.clone();
 		let mut new_lines = hunk.new_lines.clone();
+		let mut context_line_indices = hunk.context_line_indices.clone();
 		let match_hint = hunk
 			.old_start_line
 			.map(|value| value.saturating_sub(1) as usize)
@@ -1053,11 +1092,16 @@ fn compute_replacements(
 			hunk.is_end_of_file,
 			allow_fuzzy,
 		);
-		if result.index.is_none() && pattern.last().is_some_and(String::is_empty) {
+		if result.index.is_none()
+			&& pattern.last().is_some_and(String::is_empty)
+			&& context_line_indices
+				.last()
+				.is_some_and(|&(old_index, new_index)| {
+					old_index + 1 == pattern.len() && new_index + 1 == new_lines.len()
+				}) {
 			pattern.pop();
-			if new_lines.last().is_some_and(String::is_empty) {
-				new_lines.pop();
-			}
+			new_lines.pop();
+			context_line_indices.pop();
 			result = find_sequence_with_hint(
 				lines,
 				&pattern.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -1087,6 +1131,7 @@ fn compute_replacements(
 				if candidate.index.is_some() && candidate.match_count.unwrap_or(1) <= 1 {
 					pattern.clone_from(&variant.old_lines);
 					new_lines.clone_from(&variant.new_lines);
+					context_line_indices.clone_from(&variant.context_line_indices);
 					result = candidate;
 					break;
 				}
@@ -1110,6 +1155,7 @@ fn compute_replacements(
 				) {
 					pattern.clone_from(&variant.old_lines);
 					new_lines.clone_from(&variant.new_lines);
+					context_line_indices.clone_from(&variant.context_line_indices);
 					result.index = Some(found);
 					result.confidence = 0.95;
 					break;
@@ -1224,16 +1270,23 @@ fn compute_replacements(
 				)));
 			}
 		}
-		if pattern == new_lines {
+		if context_line_indices.len() == pattern.len()
+			&& context_line_indices.len() == new_lines.len()
+		{
 			line_index = found + pattern.len();
 			continue;
 		}
-		let matched = &lines[found..(found + pattern.len()).min(lines.len())];
+		let Some(matched) = lines.get(found..found + pattern.len()) else {
+			return Err(EditError::apply(format!(
+				"Cannot safely map the matched hunk to complete lines in {path} near line {}.",
+				found + 1
+			)));
+		};
 		if matches!(
 			result.strategy,
 			Some(SequenceMatchStrategy::Prefix | SequenceMatchStrategy::Substring)
 		) {
-			assert_partial_match(path, &pattern, matched, &new_lines, found)?;
+			assert_partial_match(path, &pattern, matched, &new_lines, &context_line_indices, found)?;
 		}
 		replacements.push(Replacement {
 			start_index: found,
@@ -1245,6 +1298,7 @@ fn compute_replacements(
 					.map(|line| (*line).to_owned())
 					.collect::<Vec<_>>(),
 				&new_lines,
+				&context_line_indices,
 			),
 		});
 		line_index = found + pattern.len();
@@ -1768,13 +1822,14 @@ mod tests {
 	#[test]
 	fn trailing_newline_policy_is_preserved() {
 		let hunk = DiffHunk {
-			change_context:    None,
-			old_start_line:    None,
-			new_start_line:    None,
-			has_context_lines: false,
-			old_lines:         vec!["one".into()],
-			new_lines:         vec!["two".into()],
-			is_end_of_file:    false,
+			change_context:       None,
+			old_start_line:       None,
+			new_start_line:       None,
+			has_context_lines:    false,
+			old_lines:            vec!["one".into()],
+			new_lines:            vec!["two".into()],
+			context_line_indices: Vec::new(),
+			is_end_of_file:       false,
 		};
 		assert_eq!(
 			apply_hunks("one\n", "a.txt", std::slice::from_ref(&hunk), 0.95, true)

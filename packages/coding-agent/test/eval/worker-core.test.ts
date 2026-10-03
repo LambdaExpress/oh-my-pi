@@ -93,6 +93,70 @@ function installFatalCapture(): {
 }
 
 describe("WorkerCore", () => {
+	it("retains Bun alias plugins across cells for static and dynamic local dependencies", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-worker-plugin-"));
+		const harness = createWorkerHarness();
+		const snapshot = { cwd: root, sessionId: "worker-plugin", localRoots: {} };
+		const sourceRoot = path.join(root, "src");
+		const filename = path.join(root, "cell.js");
+		try {
+			await Bun.write(
+				path.join(sourceRoot, "service.js"),
+				[
+					'import { value } from "@/bridge";',
+					'export async function result() { return value + ":" + (await import("@/lazy")).value; }',
+				].join("\n"),
+			);
+			await Bun.write(path.join(sourceRoot, "bridge.js"), 'export const value = "static";');
+			await Bun.write(path.join(sourceRoot, "lazy.js"), 'export const value = "dynamic";');
+			await initializeWorker(harness, snapshot);
+			const registered = waitForMessage(
+				harness,
+				message => message.type === "result" && message.runId === "register-plugin",
+			);
+			harness.send({
+				type: "run",
+				runId: "register-plugin",
+				filename,
+				snapshot,
+				code: `(async () => {
+					const exitIpPath = await import("node:path");
+					Bun.plugin({ name: "source-alias", setup(build) {
+						build.onResolve({ filter: /^@\\// }, args => ({
+							path: exitIpPath.resolve(${JSON.stringify(sourceRoot)},
+								args.path.slice(2) + (args.path.endsWith(".js") ? "" : ".js"))
+						}));
+					}});
+				})();`,
+			});
+			expect(await registered).toMatchObject({ type: "result", ok: true });
+
+			let output = "";
+			const unsubscribe = harness.onMessage(message => {
+				if (message.type === "text" && message.runId === "load-plugin-module") output += message.chunk;
+			});
+			const imported = waitForMessage(
+				harness,
+				message => message.type === "result" && message.runId === "load-plugin-module",
+			);
+			harness.send({
+				type: "run",
+				runId: "load-plugin-module",
+				filename,
+				snapshot,
+				code: `console.log(await (await import(${JSON.stringify(path.join(sourceRoot, "service.js"))})).result());`,
+			});
+			expect(await imported).toMatchObject({ type: "result", ok: true });
+			unsubscribe();
+			expect(output.trim()).toBe("static:dynamic");
+		} finally {
+			const closed = waitForMessage(harness, message => message.type === "closed");
+			harness.send({ type: "close" });
+			await closed;
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	it("re-init while a same-realm run is live does not crash the process", async () => {
 		const first = createWorkerHarness();
 		const second = createWorkerHarness();

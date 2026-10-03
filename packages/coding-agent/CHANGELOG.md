@@ -9,6 +9,16 @@
 
 ### Fixed
 
+- Fixed explicit browser viewports being ignored in visible managed and attached tabs, and observations reporting fallback dimensions instead of the page's actual viewport.
+- Fixed read-only browser operations unnecessarily restoring request interception and failing on reconnected relay tabs.
+- Fixed attached browser actions using a detached cached main frame while the page target remains alive; recovery now happens before input without replaying completed actions.
+- Fixed browser form filling silently succeeding without updating inputs, including framework-controlled fields.
+- Fixed visible browser controls missing from observations and rendered-text clicks stalling on background pages or split text.
+- Fixed browser screenshots waiting indefinitely for animation frames on background or relay pages.
+- Fixed `pwsh` hiding PowerShell parser errors and corrupting Chinese output on Windows.
+- Fixed JavaScript Eval ignoring Bun plugin import resolvers for local modules, including project aliases, while keeping plugins isolated between runtimes.
+- Fixed archive listings and small ASAR member reads failing when an unrelated member exceeds the extraction limit.
+- Fixed fuzzy patches copying misspelled context into files; unchanged context now retains its original contents.
 - Fixed Windows programs launched through `pwsh` writing console logs over omp's interface in Herdr and other terminals; PowerShell now uses a separate hidden console while preserving captured output.
 - Fixed JavaScript Eval importing linked workspace packages and their nested source modules in compiled builds.
 - Fixed Windows drive-root globs and directory-only patterns ending in `/` returning no matches.

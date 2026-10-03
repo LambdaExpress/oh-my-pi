@@ -12,7 +12,7 @@ import { createHelpers, type HelperBundle } from "./helpers";
 import { awaitMaybePromise, indirectEval } from "./indirect-eval";
 import { LocalModuleLoader } from "./local-module-loader";
 import { JAVASCRIPT_PRELUDE_SOURCE } from "./prelude";
-import { wrapCode } from "./rewrite-imports";
+import { analyzeModuleSource, wrapCode } from "./rewrite-imports";
 import type { JsDisplayOutput, JsStatusEvent } from "./types";
 
 export interface RuntimeCallIdentity {
@@ -384,16 +384,21 @@ export class JsRuntime {
 		this.#moduleLoader = new LocalModuleLoader(this.sessionId, {
 			patchGlobalResolver: opts.patchGlobalResolver ?? false,
 		});
-		this.#moduleLoader.setPackageRoot(opts.packageRoot);
-		this.#localRoots = opts.localRoots ?? {};
-		this.helpers = createHelpers({
-			cwd: () => this.#activeCwd(),
-			env: this.#env,
-			localRoots: () => this.#localRoots,
-			emitStatus: event => this.#activeHooks("emitStatus")?.onDisplay({ type: "status", event }),
-		});
-		this.#initialGlobalKeys = new Set(Object.getOwnPropertyNames(globalThis));
-		this.#install(opts.extraGlobals);
+		try {
+			this.#moduleLoader.setPackageRoot(opts.packageRoot);
+			this.#localRoots = opts.localRoots ?? {};
+			this.helpers = createHelpers({
+				cwd: () => this.#activeCwd(),
+				env: this.#env,
+				localRoots: () => this.#localRoots,
+				emitStatus: event => this.#activeHooks("emitStatus")?.onDisplay({ type: "status", event }),
+			});
+			this.#initialGlobalKeys = new Set(Object.getOwnPropertyNames(globalThis));
+			this.#install(opts.extraGlobals);
+		} catch (error) {
+			this.dispose();
+			throw error;
+		}
 	}
 
 	get cwd(): string {
@@ -537,7 +542,14 @@ export class JsRuntime {
 		try {
 			return await this.#als.run(context, async () => {
 				const wrapped = await wrapCode(code);
-				const value = indirectEval(wrapped.source, filename);
+				const analysis = await analyzeModuleSource(wrapped.source);
+				// Bun and Bun.plugin are immutable native bindings in both source
+				// and Worker realms. Bind the facade lexically without moving var
+				// declarations into a function or replacing a user's own binding.
+				const source = analysis.bindings.has("Bun")
+					? wrapped.source
+					: `${wrapped.source.slice(0, analysis.firstStatementOffset)}\nconst Bun = globalThis.__omp_bun__;\n${wrapped.source.slice(analysis.firstStatementOffset)}`;
+				const value = indirectEval(source, filename);
 				if (wrapped.finalExpressionReturned) {
 					const awaited = await awaitMaybePromise(value);
 					if (context.finalExpressionSet) {
@@ -670,7 +682,7 @@ export class JsRuntime {
 			__omp_import__: async (source: string, options?: ImportCallOptions) => {
 				const filename = this.#activeFilename();
 				const baseDir = filename ? path.dirname(filename) : this.#activeCwd();
-				const resolved = await this.#moduleLoader.resolveForRun(baseDir, source);
+				const resolved = await this.#moduleLoader.resolveForRun(baseDir, source, filename);
 				if (resolved.mode === "local") return resolved.value;
 				const target = resolved.target;
 				return options !== undefined ? await import(target, options) : await import(target);
@@ -721,6 +733,7 @@ export class JsRuntime {
 				context.finalExpressionValue = value;
 			},
 			webcrypto: crypto,
+			__omp_bun__: this.#moduleLoader.bun,
 			// `process` is intentionally not overridden — user code gets the host worker's real
 			// `process` object. Subsetting it caused segfaults in workers that share state with
 			// puppeteer/worker_threads internals.
@@ -769,14 +782,11 @@ export class JsRuntime {
 	}
 }
 
-interface GlobalSnapshot {
-	exists: boolean;
-	value: unknown;
-}
+type GlobalSnapshot = PropertyDescriptor | undefined;
 
 interface GlobalOwnerEntry {
 	owner: symbol;
-	value: unknown;
+	state: GlobalSnapshot;
 }
 
 interface GlobalStack {
@@ -790,33 +800,46 @@ interface GlobalStack {
 const GLOBAL_STACKS = new Map<string, GlobalStack>();
 
 function snapshotGlobal(key: string): GlobalSnapshot {
-	return {
-		exists: key in globalThis,
-		value: (globalThis as Record<string, unknown>)[key],
-	};
+	return Object.getOwnPropertyDescriptor(globalThis, key);
 }
 
 function restoreGlobal(key: string, state: GlobalSnapshot): void {
-	if (state.exists) {
-		(globalThis as Record<string, unknown>)[key] = state.value;
+	if (state) {
+		Object.defineProperty(globalThis, key, state);
 	} else {
 		delete (globalThis as Record<string, unknown>)[key];
 	}
 }
 
 function claimGlobalKey(key: string, owner: symbol): void {
+	const before = snapshotGlobal(key);
+	// Runtime globals must be assignable, but their host descriptors (including
+	// accessors and absence) belong to the existing ownership stack. Reject an
+	// immutable binding before adding an owner so failed installation can unwind.
+	if (before && !before.configurable) {
+		if (!("value" in before) || !before.writable) {
+			throw new TypeError(`Cannot install runtime global ${key} over a non-configurable readonly property`);
+		}
+	} else {
+		Object.defineProperty(globalThis, key, {
+			value: before && "value" in before ? before.value : Reflect.get(globalThis, key),
+			writable: true,
+			enumerable: before?.enumerable ?? true,
+			configurable: true,
+		});
+	}
 	let stack = GLOBAL_STACKS.get(key);
 	if (!stack) {
-		stack = { base: snapshotGlobal(key), entries: [] };
+		stack = { base: before, entries: [] };
 		GLOBAL_STACKS.set(key, stack);
 	}
-	stack.entries.push({ owner, value: (globalThis as Record<string, unknown>)[key] });
+	stack.entries.push({ owner, state: snapshotGlobal(key) });
 }
 
 function recordGlobalValue(key: string, owner: symbol): void {
 	const stack = GLOBAL_STACKS.get(key);
 	const entry = stack?.entries.findLast(item => item.owner === owner);
-	if (entry) entry.value = (globalThis as Record<string, unknown>)[key];
+	if (entry) entry.state = snapshotGlobal(key);
 }
 
 function releaseGlobalKey(key: string, owner: symbol): void {
@@ -829,7 +852,7 @@ function releaseGlobalKey(key: string, owner: symbol): void {
 	if (!wasTop) return;
 	const next = stack.entries.at(-1);
 	if (next) {
-		(globalThis as Record<string, unknown>)[key] = next.value;
+		restoreGlobal(key, next.state);
 		return;
 	}
 	restoreGlobal(key, stack.base);
@@ -854,9 +877,9 @@ function activateGlobalOwner(owner: symbol, keys: Iterable<string>, action: stri
 		const index = stack?.entries.findIndex(entry => entry.owner === owner) ?? -1;
 		if (!stack || index === -1) throw new Error(`Cannot ${action} on a disposed JS runtime`);
 		const entry = stack.entries[index];
+		restoreGlobal(key, entry.state);
 		stack.entries.splice(index, 1);
 		stack.entries.push(entry);
-		(globalThis as Record<string, unknown>)[key] = entry.value;
 	}
 }
 

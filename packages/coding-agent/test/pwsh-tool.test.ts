@@ -84,6 +84,72 @@ describeIfPwsh("PwshTool", () => {
 		expect(text).toContain("Command exited with code 7");
 	});
 
+	it("captures readable parser diagnostics before executing any user statements", async () => {
+		const tool = new PwshTool(makeSession(tempDir), pwshPath ?? "pwsh");
+		const markerPath = path.join(tempDir, "parse-error-marker.txt");
+		const invalidLine = "Write-Output '中文诊断’s'";
+		const result = await tool.execute("call-pwsh-parse-error", {
+			script: `Set-Content -LiteralPath 'parse-error-marker.txt' -Value 'executed'\n${invalidLine}`,
+		});
+
+		expect(result.isError).toBe(true);
+		expect(result.details?.exitCode).toBe(1);
+		const text = textOutput(result);
+		expect(text).toContain(invalidLine);
+		expect(text).not.toContain("\uFFFD");
+		expect(await Bun.file(markerPath).exists()).toBe(false);
+	});
+
+	it("captures UTF-8 output and diagnostics with explicit environment values", async () => {
+		const tool = new PwshTool(makeSession(tempDir), pwshPath ?? "pwsh");
+		const result = await tool.execute("call-pwsh-utf8", {
+			script: `Write-Output "中文输出：$env:OMP_PWSH_TOOL_TEST"
+[Console]::Out.WriteLine('控制台输出：你好')
+[Console]::Error.WriteLine('错误诊断：中文')`,
+			env: { OMP_PWSH_TOOL_TEST: "环境变量" },
+		});
+
+		expect(result.isError).toBeUndefined();
+		const text = textOutput(result);
+		expect(text).toContain("中文输出：环境变量");
+		expect(text).toContain("控制台输出：你好");
+		expect(text).toContain("错误诊断：中文");
+		expect(text).not.toContain("\uFFFD");
+	});
+
+	it("preserves streamed UTF-8 output when cancelling a running script", async () => {
+		const tool = new PwshTool(makeSession(tempDir), pwshPath ?? "pwsh");
+		const controller = new AbortController();
+		const pidPath = path.join(tempDir, "cancelled-script.pid");
+		let sawOutput = false;
+		try {
+			const execution = tool.execute(
+				"call-pwsh-cancel",
+				{
+					script: `$PID | Set-Content -LiteralPath 'cancelled-script.pid'
+[Console]::Out.WriteLine('取消前的输出')
+Start-Sleep -Seconds 30`,
+					timeout: 10,
+				},
+				controller.signal,
+				update => {
+					if (textOutput(update).includes("取消前的输出")) {
+						sawOutput = true;
+						controller.abort();
+					}
+				},
+			);
+
+			await expect(execution).rejects.toThrow("取消前的输出\n\n[PowerShell command aborted]");
+			expect(sawOutput).toBe(true);
+			const pid = Number.parseInt(await fs.readFile(pidPath, "utf8"), 10);
+			expect(Process.fromPid(pid)?.status()).not.toBe(ProcessStatus.Running);
+		} finally {
+			controller.abort();
+			await terminateRecordedProcess(pidPath);
+		}
+	}, 15_000);
+
 	it("links column-capped output to its recoverable session artifact", async () => {
 		const wideLine = "x".repeat(2048);
 		const artifactPaths = new Map<string, string>();
@@ -173,9 +239,12 @@ describeIfPwsh("PwshTool", () => {
 				expect(text).toContain("captured-before");
 				expect(text).toContain("native-stdout");
 				expect(text).toContain("native-stderr");
+				expect(text).toContain("子进程标准输出");
+				expect(text).toContain("子进程错误输出");
 				expect(text).toContain("direct-written=27");
 				expect(text).toContain("console-visible=false");
 				expect(text).toContain("captured-after");
+				expect(text).not.toContain("\uFFFD");
 				expect(text).not.toContain("BACKGROUND-CONSOLE-LEAK");
 				expect(output).not.toContain("BACKGROUND-CONSOLE-LEAK");
 			} finally {

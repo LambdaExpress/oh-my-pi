@@ -189,10 +189,14 @@ describe("browser direct handle action deadlines", () => {
 		const createHandle = (): ElementHandle => {
 			const keyboard = { type: () => stalled.promise };
 			const mouse = { click: () => stalled.promise };
+			const evaluate = createHandleEvaluator(node);
 			return {
 				click: () => stalled.promise,
 				type: () => stalled.promise,
-				evaluate: createHandleEvaluator(node),
+				// Text replacement is a DOM operation, independent of keyboard
+				// dispatch. Let focus/geometry probes finish while its write stalls.
+				evaluate: (fn: (element: never) => unknown, ...args: unknown[]) =>
+					typeof args[0] === "string" ? stalled.promise : evaluate(fn, ...args),
 				boundingBox: async () => ({ x: 0, y: 0, width: 10, height: 10 }),
 				frame: { page: () => ({ keyboard, mouse }) },
 				dispose: async () => {},
@@ -253,7 +257,7 @@ describe("browser direct handle action deadlines", () => {
 		expect(result.error.message).not.toContain("tab.id(82).click()");
 	});
 
-	it("completes prompt handle actions and replaces input value without false timeouts", async () => {
+	it("completes prompt handle actions without false timeouts", async () => {
 		const node = createActionNode();
 		const createHandle = (): ElementHandle => {
 			const keyboard = {
@@ -280,9 +284,7 @@ describe("browser direct handle action deadlines", () => {
 			createHandle,
 			`await (await tab.id(82)).click({ button: "right", count: 2 });
 			await (await tab.ref("e5")).type("abc", { delay: 7 });
-			const typed = await (await tab.ref("e5")).evaluate(element => element.value);
-			await (await tab.waitFor("#button")).fill("fresh");
-			return typed;`,
+			return await (await tab.ref("e5")).evaluate(element => element.value);`,
 			cellTimeoutMs,
 		);
 
@@ -290,7 +292,7 @@ describe("browser direct handle action deadlines", () => {
 		if (!result.ok) throw new Error(result.error.message);
 		expect(result.payload.returnValue).toBe("oldabc");
 		expect(node.focused).toBe(true);
-		expect(node.value).toBe("fresh");
+		expect(node.value).toBe("oldabc");
 	});
 });
 

@@ -1,8 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 
-// Browser global read inside page.evaluate callbacks; absent from bun-types.
-declare const devicePixelRatio: number;
-
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { findFreeCdpPort } from "@oh-my-pi/pi-coding-agent/tools/browser/attach";
 import {
@@ -368,6 +365,72 @@ describe("OMP-owned browser input", () => {
 
 describe("visible OMP-owned browser tabs", () => {
 	it.skipIf(!VISIBLE_BROWSER_AVAILABLE)(
+		"honors explicit viewports on repeated tabs in a visible managed browser",
+		async () => {
+			const browser = await acquireBrowser({ kind: "headless", headless: false }, { cwd: process.cwd() });
+			if (!("browser" in browser)) throw new Error("Expected a Puppeteer browser");
+			holdBrowser(browser);
+			const keeper = await browser.browser.newPage();
+			const session = {
+				cwd: process.cwd(),
+				hasUI: false,
+				settings: Settings.isolated(),
+				getSessionFile: () => null,
+			} as unknown as ToolSession;
+			try {
+				for (const viewport of [
+					{ width: 1440, height: 1000 },
+					{ width: 1500, height: 980 },
+				]) {
+					for (let attempt = 0; attempt < 2; attempt++) {
+						const name = `visible-viewport-${crypto.randomUUID()}`;
+						try {
+							const acquired = await acquireTab(name, browser, {
+								url: "about:blank",
+								viewport,
+								timeoutMs: 30_000,
+							});
+							expect(acquired.tab.info.viewport).toMatchObject(viewport);
+							const initialViewport = acquired.tab.info.viewport;
+							await acquireTab(name, browser, { viewport, timeoutMs: 30_000 });
+							const measured = await runInTab(name, {
+								code: `return {
+									observed: (await tab.observe()).viewport,
+									actual: await page.evaluate(() => ({
+										width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio,
+									})),
+								};`,
+								timeoutMs: 10_000,
+								session,
+							});
+							expect(measured.returnValue).toEqual({
+								observed: expect.objectContaining(viewport),
+								actual: expect.objectContaining(viewport),
+							});
+							const value = measured.returnValue as { observed: unknown; actual: unknown };
+							expect(value.observed).toEqual(value.actual);
+							expect(value.actual).toMatchObject({
+								width: initialViewport.width,
+								height: initialViewport.height,
+							});
+							expect((value.actual as { deviceScaleFactor: number }).deviceScaleFactor).toBeCloseTo(
+								initialViewport.deviceScaleFactor!,
+								6,
+							);
+						} finally {
+							await releaseTab(name, { kill: false });
+						}
+					}
+				}
+			} finally {
+				await keeper.close();
+				if (browser.browser.connected) await releaseBrowser(browser, { kill: true });
+			}
+		},
+		90_000,
+	);
+
+	it.skipIf(!VISIBLE_BROWSER_AVAILABLE)(
 		"creates independent pages without pinning the resizable window viewport",
 		async () => {
 			let browser: BrowserHandle | undefined;
@@ -410,32 +473,6 @@ describe("visible OMP-owned browser tabs", () => {
 			} finally {
 				for (const name of names.reverse()) await releaseTab(name, { kill: true });
 				if (browser && "browser" in browser && browser.browser.connected) {
-					await releaseBrowser(browser, { kill: true });
-				}
-			}
-		},
-		45_000,
-	);
-	it.skipIf(!CHROMIUM_AVAILABLE)(
-		"keeps deterministic viewport emulation for hidden launches",
-		async () => {
-			let browser: BrowserHandle | undefined;
-			const name = `hidden-viewport-${process.pid}-${Math.random().toString(36).slice(2)}`;
-			let opened = false;
-			try {
-				browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
-				if (!("browser" in browser)) throw new Error("Expected a Puppeteer browser");
-				const url = `data:text/html,<title>${name}</title><main>hidden</main>`;
-				await acquireTab(name, browser, { url, timeoutMs: 30_000 });
-				opened = true;
-				const page = (await browser.browser.pages()).find(candidate => candidate.url() === url);
-				if (!page) throw new Error("Expected the managed hidden page");
-				expect(
-					await page.evaluate(() => ({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio })),
-				).toEqual({ width: 1365, height: 768, dpr: 1.25 });
-			} finally {
-				if (opened) await releaseTab(name, { kill: true });
-				else if (browser && "browser" in browser && browser.browser.connected) {
 					await releaseBrowser(browser, { kill: true });
 				}
 			}

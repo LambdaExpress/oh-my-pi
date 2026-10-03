@@ -52,42 +52,6 @@ describe("browser run output — stream text reaches the tool result", () => {
 	});
 });
 
-// The tool docs promise `.fill()` on handles from tab.id()/tab.ref()/tab.waitFor();
-// raw puppeteer ElementHandles only expose `.type()`. `input.fill is not a function`
-// was a live failure.
-describe("browser handle enrichment — fill()", () => {
-	it("adds a fill() that clears the current value before typing", async () => {
-		const calls: string[] = [];
-		const node = { value: "old", focused: false };
-		const stub = {
-			evaluate: async (fn: (el: unknown) => unknown) => {
-				calls.push("evaluate");
-				fn({
-					get value() {
-						return node.value;
-					},
-					set value(v: string) {
-						node.value = v;
-					},
-					focus: () => {
-						node.focused = true;
-					},
-				});
-			},
-			type: async (text: string) => {
-				calls.push("type");
-				node.value += text;
-			},
-		} as unknown as ElementHandle;
-
-		await toActionableHandle(stub).fill("fresh");
-
-		expect(calls).toEqual(["evaluate", "type"]);
-		expect(node.focused).toBe(true);
-		expect(node.value).toBe("fresh");
-	});
-});
-
 // Regression (#9535): handles from tab.id()/tab.ref()/tab.waitFor() used to return raw
 // puppeteer methods that ran outside the per-op guard, so a stalled `(await tab.id(n)).click()`
 // consumed the whole 30s cell instead of failing fast with a named per-op error. A guard now
@@ -231,43 +195,6 @@ describe("browser handle enrichment — guarded actions", () => {
 		>;
 		await expect(touch.touchStart!()).rejects.toThrow("handle.touchStart() timed out after 50ms");
 		expect(labels).toEqual(["handle.drag()", "handle.touchStart()"]);
-	});
-
-	it("runs the guarded fill as a single op without re-entering the wrapped type()", async () => {
-		const node = { value: "old", focused: false };
-		const stub = {
-			evaluate: async (fn: (el: unknown) => unknown) => {
-				fn({
-					get value() {
-						return node.value;
-					},
-					set value(v: string) {
-						node.value = v;
-					},
-					focus: () => {
-						node.focused = true;
-					},
-				});
-			},
-			type: async () => {},
-			frame: {
-				page: () => ({
-					keyboard: {
-						type: async (text: string) => {
-							node.value += text;
-						},
-					},
-				}),
-			},
-		} as unknown as ElementHandle;
-		const { guard, labels } = makeGuard(1_000);
-
-		await toActionableHandle(stub, guard).fill("fresh");
-
-		expect(node.value).toBe("fresh");
-		expect(node.focused).toBe(true);
-		// fill() drives the signal-aware typer internally, so it is guarded once, not nested.
-		expect(labels).toEqual(["handle.fill()"]);
 	});
 
 	it("rewraps a cached handle from its original methods for each browser run", async () => {

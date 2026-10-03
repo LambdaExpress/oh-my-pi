@@ -136,6 +136,87 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("browser semantic selectors and queries", (
 		});
 	});
 
+	it("observes and clicks rendered modal controls despite AX omissions, split text, and paused rendering", async () => {
+		const modalName = `modal-${crypto.randomUUID()}`;
+		const modalHtml = `<!doctype html>
+<meta charset="utf-8">
+<style>
+body { margin:0; font:16px sans-serif; }
+#backdrop { position:fixed; inset:0; background:#0006; z-index:1; }
+#active-modal { position:fixed; top:40px; left:40px; width:480px; padding:24px; background:white; z-index:2; }
+#confirm span { display:block; }
+#scroller { height:70px; overflow:auto; border:1px solid black; }
+button { margin:8px; padding:10px; }
+</style>
+<button id="background" onclick="recordClick('background')">继续连接到 微信消息网关</button>
+<section role="dialog" style="display:none"><button>继续连接到 微信消息网关</button></section>
+<section role="dialog" style="visibility:hidden"><button>继续连接到 微信消息网关</button></section>
+<div id="backdrop"></div>
+<section id="active-modal" role="dialog" aria-modal="true" aria-label="连接 微信消息网关">
+  <button id="close">关闭</button>
+  <button disabled>继续连接到 微信消息网关</button>
+  <div aria-hidden="true">
+    <button id="confirm" onclick="recordClick('confirm')"><span>继续连接到</span><span>微信消息网关</span></button>
+  </div>
+  <button id="inline" onclick="recordClick('inline')"><span>返回到 </span><strong>授权页面</strong></button>
+  <div id="scroller"><div style="height:180px">说明</div>
+    <button id="scroll-confirm" onclick="recordClick('scroll')"><span>滚动后 </span><strong>继续连接</strong></button>
+  </div>
+  <output id="status"></output>
+</section>
+<script>
+window.clicks = [];
+window.recordClick = name => { clicks.push(name); document.querySelector("#status").textContent = clicks.join(","); };
+</script>`;
+		try {
+			await invoke({
+				action: "open",
+				name: modalName,
+				url: `data:text/html;charset=utf-8,${encodeURIComponent(modalHtml)}`,
+			});
+			const result = (await invoke({
+				action: "run",
+				name: modalName,
+				timeout: 20,
+				code: `await tab.waitFor("#active-modal");
+const cdp = await page.createCDPSession();
+await cdp.send("Emulation.setVirtualTimePolicy", { policy:"pause" });
+try {
+	const all = await tab.observe();
+	const viewport = await tab.observe({viewportOnly:true});
+	const scoped = await tab.observe({selector:"#active-modal"});
+	const onlyControl = await tab.observe({selector:"#confirm"});
+	const enabledConfirm = observation => observation.elements.filter(element =>
+		element.role === "button" && element.name === "继续连接到 微信消息网关" && !element.states.includes("disabled")
+	).length;
+	const hasScroll = observation => observation.elements.some(element => element.name === "滚动后 继续连接");
+	const cached = onlyControl.elements.find(element => element.role === "button");
+	if (cached) await (await tab.id(cached.id)).click();
+	await tab.click("text/继续连接到 微信消息网关");
+	await tab.click("text/返回到 授权页面");
+	await tab.click("text/滚动后 继续连接");
+	return {
+		enabled:[all,viewport,scoped,onlyControl].map(enabledConfirm),
+		scroll:{all:hasScroll(all),viewport:hasScroll(viewport)},
+		clicks:await page.mainFrame().mainRealm().evaluate(() => clicks),
+		status:await tab.text("#status"),
+	};
+} finally {
+	await cdp.send("Emulation.setVirtualTimePolicy", {policy:"advance"});
+	await cdp.detach();
+}`,
+			})) as { details?: Record<string, unknown> };
+			expect(result.details?.value).toEqual({
+				enabled: [1, 1, 1, 1],
+				scroll: { all: true, viewport: false },
+				clicks: ["confirm", "confirm", "inline", "scroll"],
+				status: "confirm,confirm,inline,scroll",
+			});
+		} finally {
+			await invoke({ action: "close", name: modalName, kill: true }).catch(() => undefined);
+		}
+	}, 30_000);
+
 	it("waits for delayed body and scoped exact text and reports a named timeout", async () => {
 		expect(await call("waitForText", ["Hello world", { timeout: 1_000 }])).toBeUndefined();
 		// This integration case deliberately exercises the page's real timer while waitForText polls Chromium.

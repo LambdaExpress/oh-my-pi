@@ -14,6 +14,8 @@
 
 ### Fixed
 
+- Fixed fuzzy patch application rewriting unchanged context, including punctuation, indentation, and original line endings.
+- Fixed Git `diffText` rejecting patches that fit `maxBytes` because input sizes or invalid UTF-8 estimates exceeded the rendered output limit.
 - Fixed embedded `rg` recursively reading its own redirected output and growing files without bound, including hard-link and symlink aliases.
 - Fixed native Git commits failing to run extensionless shebang hooks on Windows.
 - Fixed native Git staging, checkout conflict checks, patch application, cherry-pick, and stash restoration bypassing repository clean/smudge filters, including `core.autocrlf` conversion on Windows.

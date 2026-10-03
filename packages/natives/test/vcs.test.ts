@@ -90,6 +90,33 @@ describe("in-process VCS bindings", () => {
 		expect(sha).toBe(await git(root, "rev-parse", "HEAD"));
 	});
 
+	test("caps rendered UTF-8 patch bytes rather than large file inputs", async () => {
+		const root = await repository();
+		const body = "unchanged line\n".repeat(16_384);
+		await writeFile(join(root, "tracked.txt"), body);
+		await git(root, "add", "tracked.txt");
+		await git(root, "commit", "-m", "large file");
+		const repo = vcs.requireGit(root);
+		const options = { base: "HEAD", files: ["tracked.txt"], context: 3 };
+		expect(await repo.diffText({ ...options, maxBytes: 0 })).toBe("");
+
+		await writeFile(join(root, "tracked.txt"), `${body}café\n`);
+		const patch = await repo.diffText(options);
+		const bytes = Buffer.byteLength(patch);
+		expect(patch).toContain("+café\n");
+		expect(bytes).toBeLessThan(Buffer.byteLength(body));
+		expect(bytes).toBeGreaterThan(patch.length);
+		expect(await repo.diffText({ ...options, maxBytes: bytes })).toBe(patch);
+		await expect(repo.diffText({ ...options, maxBytes: bytes - 1 })).rejects.toMatchObject({
+			name: "VcsError",
+			code: "OutputTooLarge",
+		});
+		await expect(repo.diffText({ ...options, maxBytes: 0 })).rejects.toMatchObject({
+			name: "VcsError",
+			code: "OutputTooLarge",
+		});
+	});
+
 	test("throws rich VcsError objects", async () => {
 		const root = await repository();
 		const repo = vcsGitDiscover(root)!;

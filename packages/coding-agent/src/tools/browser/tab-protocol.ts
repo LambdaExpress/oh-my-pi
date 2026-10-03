@@ -72,6 +72,8 @@ export type WorkerInitPayload =
 			/** Preserve visible-page activation when a timed-out worker reattaches to its OMP-owned target. */
 			activatePageBeforeRun?: boolean;
 			targetId: string;
+			/** Apply an explicitly requested viewport without changing unconfigured user tabs. */
+			viewport?: { width: number; height: number; deviceScaleFactor?: number };
 			dialogs?: "accept" | "dismiss";
 			/** Hostname patterns allowed for every page request. */
 			allowedDomains?: string[];

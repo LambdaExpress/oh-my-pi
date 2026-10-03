@@ -120,20 +120,6 @@ export function screenshotQuality(opts: ScreenshotOptions): number | undefined {
 	return opts.quality;
 }
 
-async function waitForRenderFrame(page: Page, signal: AbortSignal | undefined): Promise<void> {
-	await untilAborted(signal, () =>
-		page.evaluate(
-			() =>
-				new Promise<void>(resolve => {
-					const pageGlobal = globalThis as unknown as {
-						requestAnimationFrame(callback: () => void): number;
-					};
-					pageGlobal.requestAnimationFrame(resolve);
-				}),
-		),
-	);
-}
-
 /**
  * Capture a page or element screenshot without crossing the worker boundary.
  * Puppeteer hands back a plain `Uint8Array`, not a Node `Buffer`: encode it with
@@ -151,6 +137,8 @@ export async function captureScreenshotBuffer(
 		const handle = await resolveSelector(opts.selector);
 		if (!handle) throw new ToolError("Screenshot selector did not resolve to an element");
 		try {
+			// Background/relay tabs may never deliver animation frames or visibility
+			// callbacks. Scroll synchronously, then let screenshot capture the layout.
 			await untilAborted(signal, () =>
 				handle.evaluate(el => {
 					const target = el as unknown as {
@@ -158,11 +146,11 @@ export async function captureScreenshotBuffer(
 					};
 					target.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
 				}),
-			).catch(() => undefined);
-			await waitForRenderFrame(page, signal);
+			);
 			const shotOptions: ElementScreenshotOptions = {
 				type: format,
 				quality,
+				// Avoid Puppeteer's IntersectionObserver wait while retaining its clip calculation.
 				scrollIntoView: false,
 			};
 			return await untilAborted(signal, () => handle.screenshot(shotOptions));
@@ -170,7 +158,6 @@ export async function captureScreenshotBuffer(
 			await handle.dispose().catch(() => undefined);
 		}
 	}
-	await waitForRenderFrame(page, signal);
 	return await untilAborted(signal, () =>
 		page.screenshot({ type: format, quality, fullPage: opts.fullPage ?? false }),
 	);

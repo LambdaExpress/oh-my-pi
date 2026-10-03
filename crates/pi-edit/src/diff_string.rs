@@ -739,19 +739,21 @@ pub fn build_compact_diff_preview(diff: &str, options: &CompactDiffOptions) -> C
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DiffHunk {
 	/// Optional textual or symbolic hunk anchor.
-	pub change_context:    Option<String>,
+	pub change_context:       Option<String>,
 	/// Optional 1-indexed old-file line hint.
-	pub old_start_line:    Option<u32>,
+	pub old_start_line:       Option<u32>,
 	/// Optional 1-indexed new-file line hint.
-	pub new_start_line:    Option<u32>,
+	pub new_start_line:       Option<u32>,
 	/// Whether the hunk contains unchanged context.
-	pub has_context_lines: bool,
+	pub has_context_lines:    bool,
 	/// Expected old-file lines.
-	pub old_lines:         Vec<String>,
+	pub old_lines:            Vec<String>,
 	/// Replacement new-file lines.
-	pub new_lines:         Vec<String>,
+	pub new_lines:            Vec<String>,
+	/// Zero-based old/new line indices for unchanged context, in source order.
+	pub context_line_indices: Vec<(usize, usize)>,
 	/// Whether the hunk carries an end-of-file marker.
-	pub is_end_of_file:    bool,
+	pub is_end_of_file:       bool,
 }
 
 fn is_diff_content_line(line: &str) -> bool {
@@ -1054,11 +1056,17 @@ fn parse_one_hunk(
 		match line.as_bytes().first().copied() {
 			None => {
 				hunk.has_context_lines = true;
+				hunk
+					.context_line_indices
+					.push((hunk.old_lines.len(), hunk.new_lines.len()));
 				hunk.old_lines.push(String::new());
 				hunk.new_lines.push(String::new());
 			},
 			Some(b' ') => {
 				hunk.has_context_lines = true;
+				hunk
+					.context_line_indices
+					.push((hunk.old_lines.len(), hunk.new_lines.len()));
 				hunk.old_lines.push(line[1..].to_owned());
 				hunk.new_lines.push(line[1..].to_owned());
 			},
@@ -1066,6 +1074,9 @@ fn parse_one_hunk(
 			Some(b'-') => hunk.old_lines.push(line[1..].to_owned()),
 			_ if !line.starts_with("@@") => {
 				hunk.has_context_lines = true;
+				hunk
+					.context_line_indices
+					.push((hunk.old_lines.len(), hunk.new_lines.len()));
 				hunk.old_lines.push(line.to_owned());
 				hunk.new_lines.push(line.to_owned());
 			},

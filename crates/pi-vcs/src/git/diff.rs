@@ -554,8 +554,8 @@ impl std::fmt::Display for BudgetExceeded {
 impl std::error::Error for BudgetExceeded {}
 
 /// Translate the `io::Error` a unified-diff `.consume()` call can return:
-/// `BudgetExceeded` becomes the same `OutputTooLarge` the pre- and
-/// post-render checks in `render_changes` raise, anything else is a genuine
+/// `BudgetExceeded` becomes the same `OutputTooLarge` the post-render
+/// check in `render_changes` raises, anything else is a genuine
 /// backend failure.
 fn map_hunk_error(err: std::io::Error, budget: Option<RenderBudget>) -> Error {
 	if err
@@ -592,15 +592,6 @@ fn render_changes(
 	let mut out = Vec::with_capacity(changes.len());
 	let mut total = 0usize;
 	for change in changes {
-		// Rendering loads both sides of a change into memory, so a single file
-		// larger than what is left of the cap would breach it before the
-		// post-render check below could see the output. Refuse it up front from
-		// object headers and file metadata, which cost no content reads.
-		if let Some(limit) = max_bytes
-			&& total.saturating_add(change_input_bytes(repo, change)) > limit
-		{
-			return Err(Error::OutputTooLarge { operation: "diffText", limit });
-		}
 		let budget = max_bytes.map(|limit| RenderBudget { limit, already: total });
 		let rendered = render_change(repo, &mut cache, change, context, binary_patch, budget)?;
 		cache.clear_resource_cache_keep_allocation();
@@ -613,32 +604,6 @@ fn render_changes(
 		out.push(rendered);
 	}
 	Ok(out)
-}
-
-/// Bytes `render_change` holds in memory for `change`: both blob sizes read
-/// from object headers, or the working-tree file's size for a side that lives
-/// there. Best effort — a side that cannot be sized counts as zero and is left
-/// to the post-render check.
-fn change_input_bytes(repo: &gix::Repository, change: &FileChange) -> usize {
-	let blob_bytes = |id: gix::ObjectId| -> usize {
-		if id.is_null() {
-			return 0;
-		}
-		repo
-			.try_find_header(id)
-			.ok()
-			.flatten()
-			.map_or(0, |header| usize::try_from(header.size()).unwrap_or(usize::MAX))
-	};
-	let new_bytes = if change.worktree_new {
-		repo
-			.workdir()
-			.and_then(|dir| std::fs::symlink_metadata(dir.join(&change.new_path)).ok())
-			.map_or(0, |meta| usize::try_from(meta.len()).unwrap_or(usize::MAX))
-	} else {
-		blob_bytes(change.new_id)
-	};
-	blob_bytes(change.old_id).saturating_add(new_bytes)
 }
 
 fn render_change(
@@ -825,20 +790,6 @@ struct GitHunks<'a> {
 	budget:   Option<RenderBudget>,
 }
 
-/// Conservative worst-case byte length `bytes` will occupy in `self.out`
-/// once `String::from_utf8_lossy` converts it: the exact length when
-/// `bytes` is already valid UTF-8 (no allocation needed to know that), or
-/// 3x its length otherwise, since `from_utf8_lossy` replaces each maximal
-/// invalid UTF-8 subsequence with one 3-byte U+FFFD. Computed before the
-/// (potentially huge) lossy conversion runs, so a budget check can refuse
-/// an oversized append without ever performing it.
-const fn lossy_conversion_bound(bytes: &[u8]) -> usize {
-	match std::str::from_utf8(bytes) {
-		Ok(text) => text.len(),
-		Err(_) => bytes.len().saturating_mul(3),
-	}
-}
-
 impl GitHunks<'_> {
 	/// `Err` once `self.out` has grown past what the budget leaves for this
 	/// change; checked after every write below so a hunk (or a single very
@@ -854,17 +805,23 @@ impl GitHunks<'_> {
 	}
 
 	/// `Err` once appending `bytes` lossy-converted would grow `self.out`
-	/// past what the budget leaves, using `lossy_conversion_bound` computed
-	/// before the conversion runs — the same guard `check_budget` performs
-	/// after the fact, but early enough to refuse the append itself instead
-	/// of performing it first. Every site that lossy-converts caller-sized
-	/// bytes onto `self.out` (the function-context line, an ordinary hunk
-	/// line) must call this before converting, not only `check_budget` after.
+	/// past what the budget leaves. Count valid UTF-8 bytes and one 3-byte
+	/// U+FFFD per invalid subsequence without allocating the lossy string,
+	/// stopping as soon as the exact output size exceeds the remaining cap.
 	fn check_budget_for(&self, bytes: &[u8]) -> std::io::Result<()> {
-		if let Some(budget) = self.budget
-			&& self.out.len().saturating_add(lossy_conversion_bound(bytes)) > budget.remaining()
-		{
-			return Err(std::io::Error::other(BudgetExceeded));
+		let Some(budget) = self.budget else {
+			return Ok(());
+		};
+		let mut remaining = budget
+			.remaining()
+			.checked_sub(self.out.len())
+			.ok_or_else(|| std::io::Error::other(BudgetExceeded))?;
+		for chunk in bytes.utf8_chunks() {
+			let replacement_len = if chunk.invalid().is_empty() { 0 } else { 3 };
+			remaining = remaining
+				.checked_sub(chunk.valid().len())
+				.and_then(|left| left.checked_sub(replacement_len))
+				.ok_or_else(|| std::io::Error::other(BudgetExceeded))?;
 		}
 		Ok(())
 	}
@@ -899,13 +856,8 @@ impl gix::diff::blob::unified_diff::ConsumeHunk for GitHunks<'_> {
 		self.check_budget()?;
 		for &(kind, content) in lines {
 			self.out.push(kind.to_prefix());
-			// `String::from_utf8_lossy` replaces each maximal invalid UTF-8
-			// subsequence with one 3-byte U+FFFD, so a run of invalid bytes
-			// can expand this line up to 3x. Bound that worst case (or the
-			// exact cost when `content` is already valid UTF-8) before
-			// converting: computing the lossy string first would already
-			// have performed the oversized allocation this check exists to
-			// prevent, on a single line with no embedded newline to stop it.
+			// Count replacement bytes before converting so an oversized
+			// line is refused without allocating its lossy string.
 			self.check_budget_for(content)?;
 			self.out.push_str(&String::from_utf8_lossy(content));
 			// Tokens carry their terminator; a token without one is the
@@ -981,10 +933,8 @@ fn append_binary_block(
 		}
 		out.push('\n');
 		// Stop encoding further lines once this block alone has crossed what
-		// remains of the budget: the base85 body can be built from an input
-		// already inside the cap yet still expand past it (roughly 5/4 the
-		// zlib-compressed size), so the pre-render input check alone is not
-		// enough to bound it.
+		// remains of the budget rather than building the whole base85 body
+		// before the post-render check.
 		if let Some(budget) = budget
 			&& out.len() > budget.remaining()
 		{
@@ -1732,30 +1682,102 @@ mod tests {
 		);
 	}
 
-	// The cap bounds memory, not just output: rendering loads both sides of a
-	// change, so one file larger than the cap must be refused from its object
-	// header even when its rendered diff would be a few lines.
 	#[test]
-	fn max_bytes_refuses_a_change_whose_inputs_exceed_the_cap_before_rendering() {
+	fn max_bytes_uses_rendered_size_for_small_edits_to_large_files() {
 		let dir = fixture();
-		let body = "0123456789abcdef\n".repeat(256);
-		fs::write(dir.path().join("big.txt"), &body).expect("write big");
-		git(dir.path(), &["add", "big.txt"]);
-		git(dir.path(), &["commit", "-qm", "big"]);
-		fs::write(dir.path().join("big.txt"), format!("{body}tail\n")).expect("modify big");
+		let body = "unchanged line\n".repeat(16_384);
+		fs::write(dir.path().join("large.txt"), &body).expect("write large file");
+		git(dir.path(), &["add", "large.txt"]);
+		git(dir.path(), &["commit", "-qm", "large file"]);
+		fs::write(dir.path().join("large.txt"), format!("{body}café\n")).expect("modify large file");
 		let repo = GitRepo::discover(dir.path())
 			.expect("discover")
 			.expect("repository");
-		let rendered = repo.diff_text(&DiffOptions::default()).expect("diff");
-		assert!(rendered.len() < 1024, "one-line change renders small: {}", rendered.len());
 
-		let capped = DiffOptions { max_bytes: Some(1024), ..DiffOptions::default() };
-		let err = repo.diff_text(&capped).unwrap_err();
-		assert!(matches!(err, Error::OutputTooLarge { limit: 1024, .. }), "{err:?}");
+		for cached in [false, true] {
+			if cached {
+				git(dir.path(), &["add", "large.txt"]);
+			}
+			let options = DiffOptions { cached, ..DiffOptions::default() };
+			let full = repo.diff_text(&options).expect("diff");
+			assert!(full.contains("+café\n"));
+			assert!(full.len() < body.len());
 
-		let roomy =
-			DiffOptions { max_bytes: Some(2 * body.len() + rendered.len()), ..DiffOptions::default() };
-		assert_eq!(repo.diff_text(&roomy).expect("diff within cap"), rendered);
+			let mut capped = DiffOptions { max_bytes: Some(full.len()), ..options };
+			assert_eq!(repo.diff_text(&capped).expect("exact rendered-byte cap"), full);
+			capped.max_bytes = Some(full.len() - 1);
+			assert!(matches!(
+				repo.diff_text(&capped),
+				Err(Error::OutputTooLarge { operation: "diffText", limit }) if limit == full.len() - 1
+			));
+		}
+	}
+
+	#[test]
+	fn max_bytes_counts_lossy_utf8_output_exactly() {
+		let dir = fixture();
+		let mut heading = b"function ".repeat(128);
+		heading.extend_from_slice(b"\xe2\x82\n");
+		let mut original = heading.clone();
+		original.extend_from_slice(b"old\n");
+		fs::write(dir.path().join("file.txt"), original).expect("write non-UTF8 text");
+		git(dir.path(), &["add", "file.txt"]);
+		git(dir.path(), &["commit", "-qm", "non-UTF8 text"]);
+		let mut changed_line = b"updated ".repeat(128);
+		changed_line.extend_from_slice(b"\x80\n");
+		let mut changed = heading;
+		changed.extend_from_slice(&changed_line);
+		fs::write(dir.path().join("file.txt"), changed).expect("modify non-UTF8 text");
+		let repo = GitRepo::discover(dir.path())
+			.expect("discover")
+			.expect("repository");
+		let options = DiffOptions { context: Some(0), ..DiffOptions::default() };
+		let full = repo.diff_text(&options).expect("lossy text diff");
+		assert!(full.contains(&format!("+{}", String::from_utf8_lossy(&changed_line))));
+		assert!(full.contains("\u{fffd}\n-old\n"));
+
+		let mut capped = DiffOptions { max_bytes: Some(full.len()), ..options };
+		assert_eq!(repo.diff_text(&capped).expect("exact lossy UTF-8 cap"), full);
+		capped.max_bytes = Some(full.len() - 1);
+		assert!(matches!(
+			repo.diff_text(&capped),
+			Err(Error::OutputTooLarge { operation: "diffText", limit }) if limit == full.len() - 1
+		));
+	}
+
+	#[test]
+	fn max_bytes_counts_binary_summaries_and_patches_across_files() {
+		let dir = fixture();
+		let mut data = vec![0_u8; 32_768];
+		fs::write(dir.path().join("z-binary.dat"), &data).expect("write binary");
+		git(dir.path(), &["add", "z-binary.dat"]);
+		git(dir.path(), &["commit", "-qm", "binary file"]);
+		data[16_384] = 1;
+		fs::write(dir.path().join("z-binary.dat"), &data).expect("modify binary");
+		fs::write(dir.path().join("file.txt"), "one\nchanged\nthree\n").expect("modify text");
+		let repo = GitRepo::discover(dir.path())
+			.expect("discover")
+			.expect("repository");
+
+		for binary in [false, true] {
+			let options = DiffOptions { binary, ..DiffOptions::default() };
+			let full = repo.diff_text(&options).expect("mixed diff");
+			assert!(full.contains(if binary {
+				"GIT binary patch\n"
+			} else {
+				"Binary files "
+			}));
+			assert!(full.contains("+changed\n"));
+			assert!(full.len() < data.len());
+
+			let mut capped = DiffOptions { max_bytes: Some(full.len()), ..options };
+			assert_eq!(repo.diff_text(&capped).expect("exact mixed-patch cap"), full);
+			capped.max_bytes = Some(full.len() - 1);
+			assert!(matches!(
+				repo.diff_text(&capped),
+				Err(Error::OutputTooLarge { operation: "diffText", limit }) if limit == full.len() - 1
+			));
+		}
 	}
 
 	// Regression for the P1 gap: the byte cap used to be checked only after a

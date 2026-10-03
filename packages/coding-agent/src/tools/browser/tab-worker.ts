@@ -18,6 +18,7 @@ import type {
 	SerializedAXNode,
 	Target,
 } from "puppeteer-core";
+import type { CdpFrame } from "puppeteer-core/internal/cdp/Frame.js";
 import { JsRuntime, type RuntimeHooks } from "../../eval/js/shared/runtime";
 import { formatScreenshot, resizeImage } from "../../utils/image-resize";
 import { resolveToCwd } from "../path-utils";
@@ -56,7 +57,6 @@ import {
 	applyStealthPatches,
 	applyViewport,
 	BROWSER_PROTOCOL_TIMEOUT_MS,
-	DEFAULT_VIEWPORT,
 	isPuppeteerHandle,
 	loadPuppeteerInWorker,
 	loadedKnownDevices,
@@ -90,7 +90,11 @@ import {
 	readReactTree,
 } from "./react/tree";
 import { collectVitals, installVitalsObservers, type VitalsOptions, type VitalsResult } from "./react/vitals";
-import { registerSemanticQueryHandlers } from "./query-handlers";
+import {
+	collectDomObservationCandidates,
+	isObservationElementVisible,
+	registerSemanticQueryHandlers,
+} from "./query-handlers";
 import {
 	type ElementQueryHelpers,
 	enrichElementQueries,
@@ -547,7 +551,6 @@ type RawHandleMethod = (...args: unknown[]) => Promise<unknown>;
 
 interface RawHandleMethods {
 	interactive: Partial<Record<GuardedHandleMethod, RawHandleMethod>>;
-	type: ElementHandle["type"];
 	invalidatedBy?: string;
 }
 
@@ -646,7 +649,7 @@ async function adoptElementArgs(
  * and disposes its handle before surfacing the named error, so catching it cannot
  * dispatch a duplicate retry through the stale handle. Puppeteer handles expose
  * `type()` but no `fill()`; the `fill()` semantics mirror the selector-based
- * `tab.fill()`: focus, clear any existing value, then type.
+ * `tab.fill()`: set the value and notify the page's input/change handlers.
  */
 export function toActionableHandle(
 	handle: ElementHandle,
@@ -663,7 +666,7 @@ export function toActionableHandle(
 				if (original) methods[method] = original;
 			}
 		}
-		enriched.fill = value => fillViaHandle(enriched, value, undefined, preserved?.type);
+		enriched.fill = value => fillViaHandle(enriched, value);
 		enriched.click = options =>
 			clickElement(enriched, "handle.click()", undefined, {
 				button: options?.button,
@@ -684,7 +687,7 @@ export function toActionableHandle(
 			const original = methods[method];
 			if (typeof original === "function") interactive[method] = original.bind(enriched);
 		}
-		originals = { interactive, type: enriched.type.bind(enriched) };
+		originals = { interactive };
 		enriched[RAW_HANDLE_METHODS] = originals;
 	}
 
@@ -722,7 +725,7 @@ export function toActionableHandle(
 				originals,
 				"handle.fill()",
 				signal,
-				() => fillViaHandle(enriched, value, signal, text => typeViaHandle(enriched, text, { delay: 0 }, signal)),
+				() => fillViaHandle(enriched, value, signal),
 				invalidate,
 			),
 		);
@@ -841,6 +844,7 @@ interface RunPageScope {
  */
 function createRunPageScope(page: Page, restoreInterception: () => Promise<void>): RunPageScope {
 	const handlers = new Map<unknown, unknown[]>();
+	let interceptionChanged = false;
 	const on = page.on;
 	const off = page.off;
 	const once = page.once;
@@ -919,6 +923,9 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 		setRequestInterception: {
 			configurable: true,
 			value: async (enabled: boolean): Promise<void> => {
+				// Mark before awaiting: a rejected protocol call can still have changed
+				// Chromium or Puppeteer's interception state and requires restoration.
+				interceptionChanged = true;
 				await Reflect.apply(setRequestInterception, page, [enabled]);
 			},
 		},
@@ -942,6 +949,7 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 				for (const handler of owned) Reflect.apply(off, page, [type, handler]);
 			}
 			handlers.clear();
+			if (!interceptionChanged) return;
 			try {
 				await withTimeout(
 					restoreInterception(),
@@ -1055,24 +1063,33 @@ async function collectObservationEntries(
 		includeAll: boolean;
 		compact: boolean;
 		interactiveAncestors: Set<SerializedAXNode>;
+		seenBackendNodeIds: Set<number>;
+		signal?: AbortSignal;
 	},
 ): Promise<void> {
+	throwIfAborted(options.signal);
 	const emptyStructural =
 		(node.role === "generic" || node.role === "none" || node.role === "group") &&
 		!node.name &&
 		!options.interactiveAncestors.has(node);
 	if ((options.includeAll || isInteractiveNode(node)) && !(options.compact && emptyStructural)) {
-		const handle = await node.elementHandle();
+		const handle = await untilAborted(options.signal, () => node.elementHandle());
 		if (handle) {
-			let inViewport = true;
-			if (options.viewportOnly) {
-				try {
-					inViewport = await handle.isIntersectingViewport();
-				} catch {
-					inViewport = false;
-				}
+			let backendNodeId: number | undefined;
+			try {
+				const visible = await untilAborted(options.signal, () =>
+					handle.evaluate(isObservationElementVisible, {
+						viewportOnly: options.viewportOnly,
+						interactive: isInteractiveNode(node),
+					}),
+				);
+				if (visible) backendNodeId = await untilAborted(options.signal, () => handle.backendNodeId());
+			} catch {
+				if (options.signal?.aborted) await handle.dispose().catch(() => undefined);
+				throwIfAborted(options.signal);
 			}
-			if (inViewport) {
+			if (backendNodeId !== undefined && !options.seenBackendNodeIds.has(backendNodeId)) {
+				options.seenBackendNodeIds.add(backendNodeId);
 				const id = core.nextElementId();
 				const states: string[] = [];
 				if (node.disabled) states.push("disabled");
@@ -1111,9 +1128,7 @@ async function collectObservationEntries(
  *
  * `interactions.ts` verifies click geometry only, and a resolved handle can still be a
  * disabled control, a read-only input, or an element that cannot receive text at all.
- * Puppeteer's click silently no-ops on the first, and `fillViaHandle` clears the value
- * before typing — an unguarded fill would wipe a read-only input or a `<select>`, then
- * type nothing. Reject those targets up front with a named reason instead.
+ * Reject those targets before dispatching input or changing a value.
  */
 async function assertActionableSelectorTarget(
 	handle: ElementHandle,
@@ -1221,6 +1236,7 @@ export class WorkerCore {
 	#browser?: Browser;
 	#page?: Page;
 	#targetId?: string;
+	#lastViewport?: ReadyInfo["viewport"];
 	#elementCache = new Map<number, ElementHandle>();
 	#elementCounter = 0;
 	#active: ActiveRun | null = null;
@@ -1375,7 +1391,9 @@ export class WorkerCore {
 				});
 				this.#observeDialogs();
 				await applyStealthPatches(this.#browser, this.#page, { browserSession: null, override: null });
-				if (payload.emulateViewport !== false) await applyViewport(this.#page, payload.viewport);
+				if (payload.viewport || payload.emulateViewport !== false) {
+					await applyViewport(this.#page, payload.viewport);
+				}
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
 			} else {
 				const target = await this.#findAttachedTarget(payload.targetId);
@@ -1389,6 +1407,7 @@ export class WorkerCore {
 				await this.#claimRelayTarget(page);
 				this.#observeDialogs();
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
+				if (payload.viewport) await applyViewport(page, payload.viewport);
 			}
 			if (payload.mode === "headless" || payload.emulateFocus) {
 				// Background Chromium tabs stop producing frames, stalling rAF,
@@ -1416,6 +1435,7 @@ export class WorkerCore {
 			this.#tracing = new BrowserTracingController(this.#page);
 			this.#network = new BrowserNetworkManager(this.#page, payload.allowedDomains);
 			await this.#network.start();
+			await this.#currentViewport();
 			if (payload.url) {
 				await this.#page.goto(payload.url, {
 					// Default to "load" because dev servers with HMR/WS never reach networkidle.
@@ -1499,6 +1519,22 @@ export class WorkerCore {
 		this.#dialogs.observe();
 	}
 
+	async #currentViewport(): Promise<ReadyInfo["viewport"]> {
+		const page = this.#requirePage();
+		const viewport =
+			page.viewport() ??
+			(await page.evaluate(() => {
+				const win = globalThis as unknown as {
+					innerWidth: number;
+					innerHeight: number;
+					devicePixelRatio: number;
+				};
+				return { width: win.innerWidth, height: win.innerHeight, deviceScaleFactor: win.devicePixelRatio };
+			}));
+		this.#lastViewport = viewport;
+		return viewport;
+	}
+
 	async #currentReadyInfo(): Promise<ReadyInfo> {
 		const page = this.#requirePage();
 		const targetId = this.#targetId ?? (await targetIdForPage(page));
@@ -1507,7 +1543,9 @@ export class WorkerCore {
 		return {
 			url: redactUrlCredentials(page.url()),
 			title: dialogPending ? undefined : await page.title().catch(() => undefined),
-			viewport: page.viewport() ?? DEFAULT_VIEWPORT,
+			// Evaluating dimensions while a modal is pending would block the dialog
+			// handling run itself. Retain the last measured dimensions in that case.
+			viewport: dialogPending && this.#lastViewport ? this.#lastViewport : await this.#currentViewport(),
 			targetId,
 		};
 	}
@@ -1531,6 +1569,30 @@ export class WorkerCore {
 			this.#log("debug", "Failed to refresh tab info", {
 				error: error instanceof Error ? error.message : String(error),
 			});
+		}
+	}
+
+	async #refreshDetachedMainFrame(signal: AbortSignal): Promise<void> {
+		const page = this.#requirePage();
+		const frame = page.mainFrame();
+		if (!frame.detached) return;
+		// Puppeteer 25's FrameTree retains its last main-frame reference after a
+		// detach. A live Electron/relay target can therefore expose a disposed
+		// frame until the next frame-tree update. Resync through the pinned CDP
+		// manager, retaining the Page and all its routes, scripts, and observers.
+		// This runs before user code only: never retry a possibly completed action.
+		const manager = (frame as unknown as CdpFrame)._frameManager;
+		this.#clearElementCache();
+		this.#ariaSnapshotBaselines.clear();
+		this.#screenshotHistory.clear();
+		// A navigation received before detachment can consume the first snapshot
+		// via FrameManager's pending-navigation marker. A second read rebuilds
+		// that frame; protocol errors are never retried or hidden.
+		for (let attempt = 0; attempt < 2 && page.mainFrame().detached; attempt++) {
+			await untilAborted(signal, () => manager.initialize(manager.client));
+		}
+		if (page.mainFrame().detached) {
+			throw new ToolError("Browser main frame is still detached after refreshing the live target");
 		}
 	}
 
@@ -1572,6 +1634,7 @@ export class WorkerCore {
 		let runPage: RunPageScope | undefined;
 		try {
 			throwIfAborted(signal);
+			await this.#refreshDetachedMainFrame(signal);
 			const page = this.#requirePage();
 			if (this.#activatePageBeforeRun) await untilAborted(signal, () => page.bringToFront());
 			await untilAborted(signal, () => this.#emulation?.reapply() ?? Promise.resolve());
@@ -2553,49 +2616,72 @@ export class WorkerCore {
 				throw new ToolError(`tab.observe: selector ${JSON.stringify(options.selector)} matched no element`);
 			}
 		}
-		let snapshot: SerializedAXNode | null;
+		const entries: ObservationEntry[] = [];
+		const seenBackendNodeIds = new Set<number>();
 		try {
-			snapshot = (await untilAborted(options.signal, () =>
-				page.accessibility.snapshot({ interestingOnly: !includeAll, root: root ?? undefined }),
+			const snapshot = (await untilAborted(options.signal, () =>
+				page.accessibility.snapshot({ interestingOnly: false, root: root ?? undefined }),
 			)) as SerializedAXNode | null;
+			if (snapshot) {
+				const interactiveAncestors = new Set<SerializedAXNode>();
+				if (options.compact) collectInteractiveObservationAncestors(snapshot, interactiveAncestors);
+				await collectObservationEntries(this, snapshot, entries, {
+					includeAll,
+					viewportOnly,
+					compact: options.compact ?? false,
+					interactiveAncestors,
+					seenBackendNodeIds,
+					signal: options.signal,
+				});
+			}
+			const candidates = await collectDomObservationCandidates(root ?? page, {
+				viewportOnly,
+				seenBackendNodeIds,
+				signal: options.signal,
+			});
+			for (const { handle, entry } of candidates) {
+				const id = this.nextElementId();
+				this.cacheElement(id, handle);
+				entries.push({ id, ...entry });
+			}
+			if (!snapshot && entries.length === 0) throw new ToolError("Accessibility snapshot unavailable");
 		} finally {
 			await root?.dispose().catch(() => undefined);
 		}
-		if (!snapshot) throw new ToolError("Accessibility snapshot unavailable");
-		const entries: ObservationEntry[] = [];
-		const interactiveAncestors = new Set<SerializedAXNode>();
-		if (options.compact) collectInteractiveObservationAncestors(snapshot, interactiveAncestors);
-		await collectObservationEntries(this, snapshot, entries, {
-			includeAll,
-			viewportOnly,
-			compact: options.compact ?? false,
-			interactiveAncestors,
-		});
-		const scroll = (await untilAborted(options.signal, () =>
+		const geometry = await untilAborted(options.signal, () =>
 			page.evaluate(() => {
 				const win = globalThis as unknown as {
 					scrollX: number;
 					scrollY: number;
 					innerWidth: number;
 					innerHeight: number;
+					devicePixelRatio: number;
 					document: { documentElement: { scrollWidth: number; scrollHeight: number } };
 				};
 				const doc = win.document.documentElement;
 				return {
-					x: win.scrollX,
-					y: win.scrollY,
-					width: win.innerWidth,
-					height: win.innerHeight,
-					scrollWidth: doc.scrollWidth,
-					scrollHeight: doc.scrollHeight,
+					viewport: {
+						width: win.innerWidth,
+						height: win.innerHeight,
+						deviceScaleFactor: win.devicePixelRatio,
+					},
+					scroll: {
+						x: win.scrollX,
+						y: win.scrollY,
+						width: win.innerWidth,
+						height: win.innerHeight,
+						scrollWidth: doc.scrollWidth,
+						scrollHeight: doc.scrollHeight,
+					},
 				};
 			}),
-		)) as Observation["scroll"];
+		);
+		this.#lastViewport = geometry.viewport;
 		return {
 			url: page.url(),
 			title: (await untilAborted(options.signal, () => page.title())) as string,
-			viewport: page.viewport() ?? DEFAULT_VIEWPORT,
-			scroll,
+			viewport: geometry.viewport,
+			scroll: geometry.scroll,
 			elements: entries,
 		};
 	}

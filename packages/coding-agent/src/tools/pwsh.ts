@@ -187,7 +187,18 @@ async function terminatePwshTree(pid: number, fallbackKill: () => void): Promise
 function buildPwshArgs(script: string): string[] {
 	const args = ["-NoProfile", "-NonInteractive"];
 	if (process.platform === "win32") args.push("-ExecutionPolicy", "Bypass");
-	args.push("-Command", script);
+	// PowerShell parses -Command before executing any prologue. Keep user source
+	// out of that parse so errors cannot bypass UTF-8 setup or the stderr pipe.
+	const encodedScript = Buffer.from(script, "utf8").toString("base64");
+	const bootstrap = `$OutputEncoding = [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+try {
+	$__ompScriptBlock = [ScriptBlock]::Create([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedScript}')))
+} catch {
+	[Console]::Error.WriteLine($_.Exception.Message)
+	exit 1
+}
+& $__ompScriptBlock`;
+	args.push("-Command", bootstrap);
 	return args;
 }
 

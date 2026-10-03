@@ -116,6 +116,52 @@ describe("read archive binary members", () => {
 		expect(text).not.toContain("<?xml");
 	});
 
+	it("lists ASAR archives and reads small member ranges beside an oversized member", async () => {
+		const packageJson = enc('{\n  "name": "asar-fixture",\n  "main": "dist/app.js"\n}\n');
+		const script = enc('const before = "before";\nconst selected = "selected";\nconst after = "after";\n');
+		const largeSize = 65 * 1024 * 1024;
+		const json = enc(
+			JSON.stringify({
+				files: {
+					"package.json": { size: packageJson.byteLength, offset: "0" },
+					dist: { files: { "app.js": { size: script.byteLength, offset: String(packageJson.byteLength) } } },
+					"geoip-city.dat": { size: largeSize, offset: String(packageJson.byteLength + script.byteLength) },
+				},
+			}),
+		);
+		const paddedJsonSize = json.byteLength + ((4 - (json.byteLength % 4)) % 4);
+		const header = Buffer.alloc(16 + paddedJsonSize);
+		header.writeUInt32LE(4, 0);
+		header.writeUInt32LE(header.byteLength - 8, 4);
+		header.writeUInt32LE(header.byteLength - 12, 8);
+		header.writeUInt32LE(json.byteLength, 12);
+		header.set(json, 16);
+		const bundlePath = path.join(testDir, "bundle.asar");
+		await Bun.write(bundlePath, Buffer.concat([header, packageJson, script]));
+		// Extend on disk without allocating or serializing the unrelated payload.
+		await fs.truncate(bundlePath, header.byteLength + packageJson.byteLength + script.byteLength + largeSize);
+		const tool = new ReadTool(makeSession(testDir));
+
+		const overview = joinText((await tool.execute("overview", { path: bundlePath })).content);
+		expect(overview).toContain("dist/");
+		expect(overview).toContain("package.json");
+		expect(overview).toContain("geoip-city.dat");
+
+		const packageRange = joinText(
+			(await tool.execute("package", { path: `${bundlePath}:package.json:2-3` })).content,
+		);
+		expect(packageRange).toContain('"name": "asar-fixture"');
+		expect(packageRange).toContain('"main": "dist/app.js"');
+		const scriptRange = joinText((await tool.execute("script", { path: `${bundlePath}:dist/app.js:2-2` })).content);
+		expect(scriptRange).toContain('const selected = "selected";');
+		expect(scriptRange).not.toContain('const before = "before";');
+		expect(scriptRange).not.toContain('const after = "after";');
+
+		await expect(tool.execute("large", { path: `${bundlePath}:geoip-city.dat:1-2` })).rejects.toThrow(
+			"Archive member 'geoip-city.dat' is too large to extract in memory",
+		);
+	});
+
 	it("keeps unknown binary members opaque", async () => {
 		const bundlePath = await writeBundle(testDir, { "clip.mp4": new Uint8Array([0, 1, 2, 3]) });
 		const tool = new ReadTool(makeSession(testDir));

@@ -405,11 +405,13 @@ export async function rewriteImports(code: string): Promise<string> {
 	}
 	return result;
 }
-export async function analyzeModuleSource(code: string): Promise<{ sources: string[]; bindings: Set<string> }> {
+export async function analyzeModuleSource(
+	code: string,
+): Promise<{ sources: string[]; bindings: Set<string>; firstStatementOffset: number }> {
 	const ast = await parseProgram(code);
 	const sources: string[] = [];
 	const bindings = new Set<string>();
-	if (!ast) return { sources, bindings };
+	if (!ast) return { sources, bindings, firstStatementOffset: 0 };
 	addDirectLexicalBindings(ast.program.body, bindings);
 	addFunctionScopedBindings(ast.program.body, bindings, false);
 	for (const node of ast.program.body) {
@@ -422,7 +424,10 @@ export async function analyzeModuleSource(code: string): Promise<{ sources: stri
 			sources.push((node as BabelModuleSourceDeclaration).source!.value);
 		}
 	}
-	return { sources, bindings };
+	// Babel stores directives and a hashbang separately from the statement body.
+	// A lexical runtime binding must follow that prologue rather than disable it.
+	const firstStatement = ast.program.body[0] as { start?: number } | undefined;
+	return { sources, bindings, firstStatementOffset: firstStatement?.start ?? code.length };
 }
 
 export async function rewriteModuleSourceSpecifiers(

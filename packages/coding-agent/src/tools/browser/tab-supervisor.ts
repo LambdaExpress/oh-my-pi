@@ -382,9 +382,9 @@ async function acquireTabImpl(
 				}
 				const reuseSteps: string[] = [];
 				if (opts.viewport && browser.kind.kind !== "cmux" && browser.kind.kind !== "tern") {
-					const dsf = opts.viewport.deviceScaleFactor;
+					const dsf = opts.viewport.deviceScaleFactor ?? DEFAULT_VIEWPORT.deviceScaleFactor;
 					reuseSteps.push(
-						`await page.setViewport({ width: ${opts.viewport.width}, height: ${opts.viewport.height}, deviceScaleFactor: ${dsf === undefined ? "undefined" : String(dsf)} });`,
+						`await page.setViewport({ width: ${opts.viewport.width}, height: ${opts.viewport.height}, deviceScaleFactor: ${dsf} });`,
 					);
 				}
 				if (opts.viewport && existing.backend === "tern") {
@@ -1386,9 +1386,9 @@ async function buildInitPayload(browser: PuppeteerBrowserHandle, opts: AcquireTa
 			mode: "headless",
 			browserWSEndpoint,
 			safeDir,
-			// Visible launches still need an OMP-owned page, stealth setup, and
-			// independent lifecycle; only their fixed device emulation is disabled.
-			emulateViewport: browser.kind.headless,
+			// Leave unspecified visible windows resizable; an explicit viewport is
+			// a per-tab contract even when the browser process is visible/shared.
+			emulateViewport: browser.kind.headless || opts.viewport !== undefined,
 			viewport: opts.viewport,
 			dialogs: opts.dialogs,
 			allowedDomains: opts.allowedDomains,
@@ -1416,6 +1416,7 @@ async function buildInitPayload(browser: PuppeteerBrowserHandle, opts: AcquireTa
 		browserWSEndpoint,
 		safeDir,
 		targetId,
+		viewport: opts.viewport,
 		dialogs: opts.dialogs,
 		allowedDomains: opts.allowedDomains,
 		initScripts: opts.initScripts,

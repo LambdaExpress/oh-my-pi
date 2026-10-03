@@ -184,3 +184,84 @@ async fn streaming_preview_keeps_body_rows_in_input_order() {
 	assert_eq!(preview.files.len(), 1);
 	assert_eq!(preview.files[0].diff.as_deref(), Some("@@\n-old one\n+new one\n-old two\n+new two"));
 }
+
+#[tokio::test]
+async fn fuzzy_deletion_does_not_rewrite_context_punctuation() {
+	let workspace = common::Workspace::new(EditMode::ApplyPatch);
+	let original_context = "      requireThat(Object.hasOwn(rpc,'id')&&(typeof \
+	                        rpc.id==='string'||Number.isSafeInteger(rpc.id)),'request_id_required'\
+	                        );id=rpc.id;";
+	workspace.write(
+		"server.js",
+		&format!(
+			"      safeLog('mcp_request',rpc.method.replaceAll('/','_'));\n{original_context}\n"
+		),
+	);
+	let patch = [
+		"*** Begin Patch",
+		"*** Update File: server.js",
+		"@@",
+		"-      safeLog('mcp_request',rpc.method.replaceAll('/','_'));",
+		"       requireThat(Object.hasOwn(rpc,'id')&&(typeof \
+		 rpc.id==='string'||Number.isSafeInteger(rpc.id))),'request_id_required');id=rpc.id;",
+		"*** End Patch",
+	]
+	.join("\n");
+	workspace
+		.apply_raw(&patch, &common::DiskWriter::default())
+		.await
+		.expect("the diagnostic deletion matches despite a context-only typo");
+	assert_eq!(workspace.read("server.js"), Some(format!("{original_context}\n")));
+}
+
+#[tokio::test]
+async fn explicit_replacements_are_not_inferred_as_context_when_moving() {
+	let workspace = common::Workspace::new(EditMode::ApplyPatch);
+	workspace.write("source.js", "// settings\nconst label = \"colour\";\nconst active = false;\n");
+	let patch = [
+		"*** Begin Patch",
+		"*** Update File: source.js",
+		"*** Move to: moved.js",
+		"@@",
+		" // settings",
+		"-const label = \"color\";",
+		"+const label = \"color\";",
+		"-const active = false;",
+		"+const active = true;",
+		"*** End Patch",
+	]
+	.join("\n");
+	workspace
+		.apply_raw(&patch, &common::DiskWriter::default())
+		.await
+		.expect("explicit +/- lines remain replacements even when their authored text is equal");
+	assert_eq!(
+		workspace.read("moved.js").as_deref(),
+		Some("// settings\nconst label = \"color\";\nconst active = true;\n")
+	);
+	assert!(!workspace.cwd().join("source.js").exists());
+}
+
+#[tokio::test]
+async fn strict_matching_rejects_inexact_internal_context_without_writes() {
+	let mut workspace = common::Workspace::new(EditMode::ApplyPatch);
+	workspace.config.allow_fuzzy = false;
+	let original = "before();\nkeepOriginal(value);\nafter();\n";
+	workspace.write("strict.js", original);
+	let writer = common::DiskWriter::default();
+	let patch = [
+		"*** Begin Patch",
+		"*** Update File: strict.js",
+		"@@",
+		"-before();",
+		"+beforeUpdated();",
+		" keepOriginal(value));",
+		"-after();",
+		"+afterUpdated();",
+		"*** End Patch",
+	]
+	.join("\n");
+	assert!(workspace.apply_raw(&patch, &writer).await.is_err());
+	assert!(writer.requests.lock().is_empty());
+	assert_eq!(workspace.read("strict.js").as_deref(), Some(original));
+}

@@ -3,12 +3,44 @@ import * as fs from "node:fs/promises";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { disposeAllVmContexts } from "@oh-my-pi/pi-coding-agent/eval/js/context-manager";
 import { createBrowserPrelude } from "@oh-my-pi/pi-coding-agent/tools/browser";
+import { acquireBrowser, holdBrowser, releaseBrowser } from "@oh-my-pi/pi-coding-agent/tools/browser/registry";
+import {
+	captureScreenshotBuffer,
+	decodePng,
+	type DecodedPng,
+} from "@oh-my-pi/pi-coding-agent/tools/browser/screenshot";
 import { releaseAllTabs } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
 import type { ScreenshotResult } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-protocol";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
+import { untilAborted } from "@oh-my-pi/pi-utils";
+import type { Page } from "puppeteer-core";
+import { CdpFrame } from "puppeteer-core/lib/puppeteer/cdp/Frame.js";
 import { chromiumAvailable } from "./chromium-probe";
 
 const CHROMIUM_AVAILABLE = await chromiumAvailable();
+
+async function withScreenshotPage(run: (page: Page, frame: CdpFrame) => Promise<void>): Promise<void> {
+	const handle = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+	if (!("browser" in handle)) throw new Error("Expected a Puppeteer browser");
+	holdBrowser(handle);
+	try {
+		const page = await handle.browser.newPage();
+		try {
+			const frame = page.mainFrame();
+			if (!(frame instanceof CdpFrame)) throw new Error("Expected a CDP frame");
+			await run(page, frame);
+		} finally {
+			await page.close();
+		}
+	} finally {
+		await releaseBrowser(handle, { kill: true });
+	}
+}
+
+function pixelAt(image: DecodedPng, x: number, y: number): number[] {
+	const offset = (y * image.width + x) * 4;
+	return [...image.pixels.subarray(offset, offset + 4)];
+}
 
 function createHost() {
 	const session: ToolSession = {
@@ -42,6 +74,118 @@ afterAll(async () => {
 });
 
 describe.skipIf(!CHROMIUM_AVAILABLE)("browser screenshot parity", () => {
+	test("captures viewport, offscreen selector, and full page without animation or visibility callbacks", async () => {
+		await withScreenshotPage(async (page, frame) => {
+			await page.setViewport({ width: 400, height: 300, deviceScaleFactor: 1 });
+			await page.setContent(`<!doctype html><style>
+body { margin: 0; width: 800px; height: 1800px; background: white; }
+#target { position: absolute; left: 520px; top: 1150px; width: 180px; height: 420px; background: #1473e6; }
+#marker { position: absolute; right: 0; bottom: 0; width: 20px; height: 20px; background: #e62929; }
+</style><div id="target"><div id="marker"></div></div>`);
+			// Model a background relay tab in both worlds, including Puppeteer's
+			// visibility-observer path used by ElementHandle.screenshot().
+			for (const realm of [frame.mainRealm(), frame.isolatedRealm()]) {
+				await realm.evaluate(`{
+					globalThis.requestAnimationFrame = () => 1;
+					globalThis.IntersectionObserver = class {
+						observe() {}
+						unobserve() {}
+						disconnect() {}
+						takeRecords() { return []; }
+					};
+				}`);
+			}
+			const viewport = decodePng(
+				await captureScreenshotBuffer(page, {}, AbortSignal.timeout(5_000), selector => page.$(selector)),
+			);
+			expect([viewport.width, viewport.height]).toEqual([400, 300]);
+			expect(pixelAt(viewport, 100, 100)).toEqual([255, 255, 255, 255]);
+
+			const selected = decodePng(
+				await captureScreenshotBuffer(page, { selector: "#target" }, AbortSignal.timeout(5_000), selector =>
+					page.$(selector),
+				),
+			);
+			expect([selected.width, selected.height]).toEqual([180, 420]);
+			expect(pixelAt(selected, 0, 0)).toEqual([20, 115, 230, 255]);
+			expect(pixelAt(selected, 179, 399)).toEqual([20, 115, 230, 255]);
+			expect(pixelAt(selected, 179, 419)).toEqual([230, 41, 41, 255]);
+			const scroll = (await page.evaluate("({ x: scrollX, y: scrollY })")) as { x: number; y: number };
+			expect(scroll.x).toBeGreaterThan(0);
+			expect(scroll.y).toBeGreaterThan(0);
+
+			const fullPage = decodePng(
+				await captureScreenshotBuffer(page, { fullPage: true }, AbortSignal.timeout(5_000), selector =>
+					page.$(selector),
+				),
+			);
+			expect([fullPage.width, fullPage.height]).toEqual([800, 1800]);
+			expect(pixelAt(fullPage, 520, 1150)).toEqual([20, 115, 230, 255]);
+			expect(pixelAt(fullPage, 699, 1569)).toEqual([230, 41, 41, 255]);
+		});
+	}, 30_000);
+
+	test("aborts a selector capture while page-side scrolling is paused", async () => {
+		await withScreenshotPage(async (page, frame) => {
+			await page.setContent('<div id="target" style="width:80px;height:40px;background:blue"></div>');
+			for (const realm of [frame.mainRealm(), frame.isolatedRealm()]) {
+				await realm.evaluate("document.querySelector('#target').scrollIntoView = () => { debugger; }");
+			}
+			const client = await page.createCDPSession();
+			const paused = Promise.withResolvers<void>();
+			client.once("Debugger.paused", () => paused.resolve());
+			await client.send("Debugger.enable");
+			const controller = new AbortController();
+			const reason = new Error("Screenshot cancelled");
+			const capture = captureScreenshotBuffer(page, { selector: "#target" }, controller.signal, selector =>
+				page.$(selector),
+			).then(
+				buffer => ({ buffer }),
+				error => ({ error }),
+			);
+			try {
+				await untilAborted(AbortSignal.timeout(5_000), () => paused.promise);
+				controller.abort(reason);
+				expect(await untilAborted(AbortSignal.timeout(1_000), () => capture)).toEqual({
+					error: expect.objectContaining({ name: "AbortError", cause: reason }),
+				});
+			} finally {
+				controller.abort();
+				await client.send("Debugger.resume").catch(() => undefined);
+				await capture;
+				await client.detach();
+			}
+		});
+	}, 15_000);
+
+	test("propagates selector scrolling and invisible-element failures", async () => {
+		await withScreenshotPage(async (page, frame) => {
+			await page.setContent('<div id="target" style="width:80px;height:40px"></div>');
+			for (const realm of [frame.mainRealm(), frame.isolatedRealm()]) {
+				await realm.evaluate(
+					"document.querySelector('#target').scrollIntoView = () => { throw new Error('Scrolling blocked by page'); }",
+				);
+			}
+			await expect(
+				captureScreenshotBuffer(page, { selector: "#target" }, AbortSignal.timeout(5_000), selector =>
+					page.$(selector),
+				),
+			).rejects.toThrow("Scrolling blocked by page");
+			for (const realm of [frame.mainRealm(), frame.isolatedRealm()]) {
+				await realm.evaluate(`{
+					const target = document.querySelector('#target');
+					delete target.scrollIntoView;
+					target.style.display = 'none';
+				}`);
+			}
+			await expect(
+				captureScreenshotBuffer(page, { selector: "#target" }, AbortSignal.timeout(5_000), selector =>
+					page.$(selector),
+				),
+			).rejects.toMatchObject({ name: "Error" });
+		});
+	}, 15_000);
+
 	test("annotates observed ids, detects pixel changes, writes JPEG screenshots, and prints PDF", async () => {
 		const invoke = createHost();
 		const name = `screenshot-plus-${crypto.randomUUID()}`;

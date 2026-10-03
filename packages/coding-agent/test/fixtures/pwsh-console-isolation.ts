@@ -31,10 +31,10 @@ if (process.argv[2] === "child") {
 		} finally {
 			kernel.symbols.CloseHandle(handle);
 		}
-		process.stdout.write(`native-stdout\ndirect-written=${written[0]}\n`);
+		process.stdout.write(`native-stdout\n子进程标准输出\ndirect-written=${written[0]}\n`);
 		const window = kernel.symbols.GetConsoleWindow();
 		process.stdout.write(`console-visible=${!!window && !!user.symbols.IsWindowVisible(window)}\n`);
-		process.stderr.write("native-stderr\n");
+		process.stderr.write("native-stderr\n子进程错误输出\n");
 	} finally {
 		user.close();
 		kernel.close();
