@@ -552,7 +552,7 @@ export class ToolExecutionComponent extends Container {
 	/**
 	 * Signal that this specific call has begun executing (`tool_execution_start`).
 	 * Distinct from {@link setArgsComplete}: exclusive writes are marked complete
-	 * at `message_end` but stay queued until this fires for that call.
+	 * when their arguments close but stay queued until this fires for that call.
 	 */
 	setExecutionStarted(_toolCallId?: string): void {
 		if (this.#executionStarted) return;
@@ -746,7 +746,9 @@ export class ToolExecutionComponent extends Container {
 			(pendingCallConsumesSpinner || partialResultConsumesSpinner);
 		// TSP terminals clock spinners themselves; the frame counter is ANSI-only.
 		const needsSpinner =
-			!isNativeRendering() && (isStreamingArgs || isLivePartialTool || this.#displaceableByToolName === "wait");
+			!this.#toolRowsFolded &&
+			!isNativeRendering() &&
+			(isStreamingArgs || isLivePartialTool || this.#displaceableByToolName === "wait");
 		if (needsSpinner && !this.#spinnerActive) {
 			const frameCount = theme.spinnerFrames.length;
 			const frame = sharedSpinnerFrame(frameCount);
@@ -1002,8 +1004,11 @@ export class ToolExecutionComponent extends Container {
 		const content = [label];
 		if (summary.detail) content.push(span(": ", "dim"), ...styledSpans(summary.detail));
 		const children: NativeChild[] = [];
+		const activity = this.#foldedActivityStatus();
 		if (failed) children.push(node("icon", { name: "x-circle", tone: "error" }));
-		else if (this.#isRunning()) children.push(node("spinner", {}, undefined, "running"));
+		else if (activity) {
+			children.push(node("icon", { name: activity === "writing" ? "pencil" : "clock", tone: "accent" }));
+		}
 		children.push(text(content, { lines: 1, wrap: "none", truncate: "end", grow: 1 }));
 		return node(
 			"row",
@@ -1290,6 +1295,7 @@ export class ToolExecutionComponent extends Container {
 	setToolRowsFolded(folded: boolean): void {
 		if (this.#toolRowsFolded === folded) return;
 		this.#toolRowsFolded = folded;
+		this.#updateSpinnerAnimation();
 		this.#blockVersion++;
 		super.invalidate();
 	}
@@ -1365,6 +1371,11 @@ export class ToolExecutionComponent extends Container {
 		return !this.#sealed && (this.#result === undefined || this.#isPartial);
 	}
 
+	#foldedActivityStatus(): "writing" | "waiting" | undefined {
+		if (!this.#isRunning()) return undefined;
+		return this.#argsComplete || this.#result !== undefined ? "waiting" : "writing";
+	}
+
 	/**
 	 * One-line row for `display.foldToolRows`: `Label: detail`, prefixed by the
 	 * shared status glyph while the call is live or failed. The full card's
@@ -1378,11 +1389,8 @@ export class ToolExecutionComponent extends Container {
 		this.#partialResultShapePainted = false;
 		const summary = this.#foldedSummary();
 		const failed = this.#result?.isError === true && !this.#isBenignSkip();
-		const glyph = failed
-			? `${formatStatusIcon("error", theme)} `
-			: this.#isRunning() && this.#spinnerFrame !== undefined
-				? `${formatStatusIcon("running", theme, this.#spinnerFrame)} `
-				: "";
+		const status = failed ? "error" : this.#foldedActivityStatus();
+		const glyph = status ? `${formatStatusIcon(status, theme)} ` : "";
 		const label = theme.fg(failed ? "error" : "toolTitle", theme.bold(summary.label));
 		const detail = summary.detail ? `${theme.fg("dim", ":")} ${summary.detail}` : "";
 		return [truncateToWidth(` ${glyph}${label}${detail}`, width)];

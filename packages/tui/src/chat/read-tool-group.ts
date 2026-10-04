@@ -14,7 +14,13 @@ import {
 	readSourceFsPath,
 	splitPathAndSel,
 } from "../tools/read";
-import { PREVIEW_LIMITS, sanitizeDisplayWarning, shortenPath, truncateToWidth } from "../render/render-utils";
+import {
+	formatStatusIcon,
+	PREVIEW_LIMITS,
+	sanitizeDisplayWarning,
+	shortenPath,
+	truncateToWidth,
+} from "../render/render-utils";
 import { fileHyperlink, renderCodeCell, WidthAwareText } from "../render";
 import { canonicalizeMessage } from "./thinking-display";
 import { internalUrlSchemeSpec, splitUrlScheme, targetMayStillBecomeInternalUrl } from "../tools/url-scheme-host";
@@ -130,6 +136,7 @@ type ReadEntry = {
 	displayPaths?: ReadDisplayPathSpec[];
 	linkPath?: string;
 	status: "pending" | "success" | "warning" | "error";
+	argsComplete: boolean;
 	correctedFrom?: string;
 	contentText?: string;
 	conflictCount?: number;
@@ -415,8 +422,10 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	 * turn aborted or ended), allowing the container to retire it as history.
 	 */
 	seal(): void {
-		if (!this.#sealed) this.#blockVersion++;
+		if (this.#sealed) return;
+		this.#blockVersion++;
 		this.#sealed = true;
+		this.#updateDisplay();
 	}
 
 	/** Reads never park as background tasks; the handle method is a no-op. */
@@ -434,6 +443,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			toolCallId,
 			path: rawPath,
 			status: "pending",
+			argsComplete: false,
 		};
 		entry.path = rawPath;
 		this.#entries.set(toolCallId, entry);
@@ -474,7 +484,10 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		if (!toolCallId) return;
 		const entry = this.#entries.get(toolCallId);
 		if (!entry) return;
-		if (isPartial) return;
+		if (isPartial) {
+			this.setArgsComplete(toolCallId);
+			return;
+		}
 		this.#blockVersion++;
 		const details = result.details as ReadToolDetails | undefined;
 		const rawSuffix = details?.suffixResolution;
@@ -549,12 +562,16 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		return true;
 	}
 
-	setArgsComplete(_toolCallId?: string): void {
+	setArgsComplete(toolCallId?: string): void {
+		if (!toolCallId) return;
+		const entry = this.#entries.get(toolCallId);
+		if (!entry || entry.argsComplete) return;
+		entry.argsComplete = true;
 		this.#updateDisplay();
 	}
 
-	setExecutionStarted(_toolCallId?: string): void {
-		this.#updateDisplay();
+	setExecutionStarted(toolCallId?: string): void {
+		this.setArgsComplete(toolCallId);
 	}
 
 	setExpanded(expanded: boolean): void {
@@ -1115,7 +1132,15 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		const targets = this.#displayTargetsForEntries([...this.#entries.values()]);
 		const rows = this.#buildSummaryRows(targets);
 		const status = this.#statusForTargets(targets);
-		const statusPrefix = status === "success" ? "" : `${this.#formatStatus(status)} `;
+		let statusPrefix = "";
+		if (status === "pending") {
+			if (!this.#sealed) {
+				const writing = targets.some(target => target.entry.status === "pending" && !target.entry.argsComplete);
+				statusPrefix = `${formatStatusIcon(writing ? "writing" : "waiting", theme)} `;
+			}
+		} else if (status !== "success") {
+			statusPrefix = `${this.#formatStatus(status)} `;
+		}
 		const label = theme.fg("toolTitle", theme.bold("Read"));
 		const targetsDisplay = rows
 			.map(row => theme.fg("accent", sanitizeDisplayWarning(shortenPath(row.targetPath))))

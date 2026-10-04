@@ -319,6 +319,10 @@ export function formatStatusIcon(status: ToolUIStatus, theme: Theme, spinnerFram
 			return theme.styledSymbol("status.info", "accent");
 		case "pending":
 			return theme.styledSymbol("status.pending", "muted");
+		case "writing":
+			return theme.fg("accent", theme.symbol("cmd.pencil") || "[write]");
+		case "waiting":
+			return theme.styledSymbol("icon.time", "accent");
 		case "running":
 			if (spinnerFrame !== undefined) {
 				const frames = theme.spinnerFrames;
@@ -537,7 +541,17 @@ export function formatCodeFrameLine(
 // =============================================================================
 
 /** Status states supported by shared tool renderer icons. */
-export type ToolUIStatus = "success" | "done" | "error" | "warning" | "info" | "pending" | "running" | "aborted";
+export type ToolUIStatus =
+	| "success"
+	| "done"
+	| "error"
+	| "warning"
+	| "info"
+	| "pending"
+	| "writing"
+	| "waiting"
+	| "running"
+	| "aborted";
 /** Semantic foreground colors used by tool renderer labels. */
 export type ToolUIColor = "success" | "error" | "warning" | "accent" | "muted";
 

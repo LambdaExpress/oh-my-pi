@@ -110,14 +110,21 @@ describe("folded tool rows", () => {
 		expect(visibleRows(card).join("\n")).toContain("Fix Advisor and SSH transcript folding");
 	});
 
-	it("keeps a live call's spinner on the folded row", () => {
-		const card = toolCard("eval", { language: "py", title: "still running", code: "sleep(1)" }, "Eval");
-		card.setExecutionStarted();
+	it("distinguishes argument generation from waiting even for a headerless tool", () => {
+		const card = toolCard("bash", { command: "sleep 5" }, "Bash");
 		card.setToolRowsFolded(true);
-
-		const row = visibleRows(card)[0] ?? "";
-		expect(row.trim().endsWith("Eval: still running")).toBe(true);
-		expect(row.trim()).not.toBe("Eval: still running");
+		try {
+			expect(visibleRows(card)[0]).toContain(`${theme.symbol("cmd.pencil")} Bash: sleep 5`);
+			card.setArgsComplete();
+			expect(visibleRows(card)[0]).toContain(`${theme.icon.time} Bash: sleep 5`);
+			card.setExecutionStarted();
+			card.updateResult({ content: [{ type: "text", text: "progress" }] }, true);
+			expect(visibleRows(card)[0]).toContain(`${theme.icon.time} Bash: sleep 5`);
+			settle(card);
+			expect(visibleRows(card)[0]?.trim()).toBe("Bash: sleep 5");
+		} finally {
+			card.dispose();
+		}
 	});
 
 	it("folds an edit to its path and green/red change counts", () => {
@@ -303,7 +310,7 @@ describe("folded tool rows", () => {
 		expect(visibleRows(late)[0]?.trim()).not.toBe("Read: src/index.ts");
 	});
 
-	it("folds a read group into a single row listing every target", () => {
+	it("keeps a read group writing until every pending call finishes its arguments", () => {
 		const group = new ReadToolGroupComponent();
 		group.updateArgs({ path: "src/alpha.ts" }, "read-1");
 		group.updateArgs({ path: "src/beta.ts" }, "read-2");
@@ -314,6 +321,15 @@ describe("folded tool rows", () => {
 		expect(rows).toHaveLength(1);
 		expect(rows[0]).toContain("src/alpha.ts");
 		expect(rows[0]).toContain("src/beta.ts");
+		expect(rows[0]).toContain(theme.symbol("cmd.pencil"));
+		group.setExecutionStarted("read-1");
+		expect(visibleRows(group)[0]).toContain(theme.symbol("cmd.pencil"));
+		group.setArgsComplete("read-2");
+		expect(visibleRows(group)[0]).toContain(theme.icon.time);
+		group.updateResult({ content: [{ type: "text", text: "alpha" }] }, false, "read-1");
+		expect(visibleRows(group)[0]).toContain(theme.icon.time);
+		group.seal();
+		expect(visibleRows(group)[0]?.trim()).toBe("Read: src/alpha.ts, src/beta.ts");
 	});
 
 	it("drops the block gap between folded rows and keeps it around prose", () => {

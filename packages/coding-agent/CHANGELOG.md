@@ -68,6 +68,7 @@
 
 ### Changed
 
+- Folded tool rows distinguish argument generation with a pen icon from queued or running calls with a clock icon; completed calls remove the activity icon and failures retain their error marker.
 - Kept `Read` and `SSH Transfer` tool names in English when using the Chinese interface.
 - Clarified task effort guidance to use `lo`/`med`/`hi` and avoid invalid model reasoning-effort values such as `high`.
 - `scripts/extract-i18n-keys.ts` now extracts command example blocks (resolving `${APP_NAME}` like the help renderer does) and slash-command metadata (`description` / `acpDescription` in `slash-commands/**` and bundled custom commands, which the registry translates at materialization), and reports keys reached only through indirect call sites (`t(CONST[id])`, `.map(t)`) as their own bucket instead of as orphans, so the audit no longer buries real stale entries in false positives.

@@ -1862,12 +1862,13 @@ export class EventController {
 				this.#streamedToolCallIdByIndex.set(contentIndex, content.id);
 				const tool = this.ctx.viewSession.getToolByName(content.name);
 				const renderToolName = toolRenderName(content.name, tool);
+				const partialJson = getStreamingPartialJson(content);
 				if (renderToolName === "read") {
 					// Defer until the path can no longer change, so the routing below reads a
 					// settled target: a streamed prefix (`"s"`, `"skill:"`) has no scheme yet and
 					// would lock a `skill://` read into the group. Creating either component early
 					// freezes the shape — nothing re-routes a card that already exists.
-					const shape = readTranscriptShape(content.arguments, getStreamingPartialJson(content) !== undefined);
+					const shape = readTranscriptShape(content.arguments, partialJson !== undefined);
 					if (shape === undefined) continue;
 					if (shape) {
 						const existing = this.ctx.pendingTools.get(content.id);
@@ -1884,6 +1885,7 @@ export class EventController {
 							this.#toolTimelineComponents.set(content.id, group);
 							this.#settleHeldCompletionIfPresent(content.id, group);
 						}
+						if (partialJson === undefined) this.ctx.pendingTools.get(content.id)?.setArgsComplete(content.id);
 						continue;
 					}
 					// Other internal-URL reads fall through to ToolExecutionComponent below.
@@ -1896,7 +1898,6 @@ export class EventController {
 				// delivers large batches); once it closes, the final args render
 				// as-is — mirroring how assistant text snaps at message_end.
 				let renderArgs: Record<string, unknown>;
-				const partialJson = getStreamingPartialJson(content);
 				const rawInput = content.customWireName !== undefined;
 				if (partialJson) {
 					renderArgs = this.#toolArgsReveal.setTarget(content.id, partialJson, {
@@ -1950,6 +1951,7 @@ export class EventController {
 						this.#toolArgsReveal.bind(content.id, component);
 					}
 				}
+				if (partialJson === undefined) this.ctx.pendingTools.get(content.id)?.setArgsComplete(content.id);
 			}
 			for (const [toolCallId, segment] of timeline.afterToolCalls) {
 				if (this.#postToolAssistantComponents.get(toolCallId)?.isTranscriptBlockFinalized()) continue;
@@ -2226,6 +2228,8 @@ export class EventController {
 				if (!this.#toolTimelineComponents.has(event.toolCallId)) {
 					const group = this.#getReadGroup();
 					group.updateArgs(event.args, event.toolCallId);
+					group.setExecutionStarted(event.toolCallId);
+					this.#executionStartedCallIds.add(event.toolCallId);
 					this.ctx.pendingTools.set(event.toolCallId, group);
 					this.#toolTimelineComponents.set(event.toolCallId, group);
 					this.#settleHeldCompletionIfPresent(event.toolCallId, group);
