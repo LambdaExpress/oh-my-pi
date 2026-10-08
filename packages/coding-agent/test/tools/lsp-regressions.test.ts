@@ -6759,148 +6759,283 @@ describe("lsp regressions", () => {
 	});
 });
 
-/**
- * tsserver answers file-specific requests with `<semantic> TypeScript Server
- * Error` + `No Project.` when the queried file has no ScriptInfo in the server
- * or when its project's language service is disabled (a JavaScript project over
- * the non-TS file-size budget, for example). The server dump that OMP forwarded
- * verbatim told users nothing they could act on, so a matched failure must keep
- * the dump and add the condition plus the real remedies.
- */
-describe("lsp typescript no project hint", () => {
-	afterEach(() => {
-		vi.restoreAllMocks();
-	});
+describe("lsp TypeScript semantic project readiness", () => {
+	interface ProjectFixture {
+		tool: LspTool;
+		server: FakeLspServer;
+		source: string;
+		project: string;
+		tsserverPath: string;
+		setDisabled(disabled: boolean): void;
+	}
 
-	/**
-	 * Route one mocked server to a JavaScript fixture and run `references` so
-	 * the server answers with the configured JSON-RPC error.
-	 */
-	async function referencesError(options: {
-		serverName: string;
-		command: string;
-		message: string;
-	}): Promise<{ text: string; requestCount: number }> {
-		const tempDir = TempDir.createSync("@omp-lsp-ts-no-project-");
+	async function withProject(
+		options: {
+			disabled?: boolean;
+			referencesError?: string;
+			serverName?: string;
+			advertiseProjectInfo?: boolean;
+			abortProjectInfo?: AbortController;
+		},
+		run: (fixture: ProjectFixture) => Promise<void>,
+	): Promise<void> {
+		const tempDir = TempDir.createSync("@omp-lsp-semantic-project-");
+		const root = tempDir.path();
 		try {
-			await Bun.write(
-				path.join(tempDir.path(), "widget.js"),
-				"export function renderWidget() {}\nrenderWidget();\n",
-			);
+			const projectRoot = path.join(root, "client");
+			const source = path.join(projectRoot, "src", "service.js");
+			const consumer = path.join(projectRoot, "src", "consumer.js");
+			const project = path.join(projectRoot, "jsconfig.json");
+			const tsserverPath = path.join(root, "compiler", "tsserver.js");
+			await Bun.write(path.join(root, "package.json"), "{}\n");
+			await Bun.write(path.join(root, "other", "package.json"), "{}\n");
+			await Bun.write(project, '{"include":["src/**/*.js"]}\n');
+			await Bun.write(source, "export const updateRegion = () => {};\n");
+			await Bun.write(consumer, 'import { updateRegion } from "./service.js";\nupdateRegion();\n');
+
+			const advertiseProjectInfo = options.advertiseProjectInfo ?? true;
+			let disabled = options.disabled ?? false;
+			let workspaceUri = "";
+			let semanticProjectLoaded = !advertiseProjectInfo;
+			const openDocuments = new Set<string>();
 			const server = installFakeLsp((message, srv) => {
 				if (message.method === "initialize") {
-					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
-					// Settle the client's projectLoaded promise so the request does
-					// not wait out the auto-resolve timeout.
+					workspaceUri = (message.params as { rootUri: string }).rootUri;
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: {
+							capabilities: {
+								executeCommandProvider: {
+									commands: advertiseProjectInfo ? ["typescript.tsserverRequest"] : ["unrelated.command"],
+								},
+							},
+						},
+					});
+					if (advertiseProjectInfo) {
+						srv.send({
+							jsonrpc: "2.0",
+							method: "window/logMessage",
+							params: {
+								type: 3,
+								message: `Using Typescript version (user-setting) 5.9.3 from path "${tsserverPath}"`,
+							},
+						});
+						srv.send({
+							jsonrpc: "2.0",
+							method: "$/typescriptVersion",
+							params: { version: "5.9.3", source: "user-setting" },
+						});
+					}
+					// Initial progress has finished before didOpen. It cannot establish
+					// that the lazily opened file has a usable semantic project.
 					srv.send({
 						jsonrpc: "2.0",
 						method: "$/progress",
-						params: { token: "ts", value: { kind: "begin" } },
+						params: { token: "startup", value: { kind: "end" } },
 					});
-					srv.send({ jsonrpc: "2.0", method: "$/progress", params: { token: "ts", value: { kind: "end" } } });
+				} else if (message.method === "textDocument/didOpen") {
+					const uri = documentUri(message.params);
+					if (uri) openDocuments.add(uri);
+				} else if (message.method === "workspace/executeCommand") {
+					const params = message.params as {
+						command: string;
+						arguments: [string, unknown, { executionTarget?: number }];
+					};
+					if (options.abortProjectInfo) {
+						options.abortProjectInfo.abort();
+						return;
+					}
+					if (
+						!advertiseProjectInfo ||
+						params.command !== "typescript.tsserverRequest" ||
+						params.arguments[0] !== "projectInfo" ||
+						params.arguments[2]?.executionTarget !== 0
+					) {
+						srv.send({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Unsupported" } });
+					} else if (workspaceUri !== fileToUri(projectRoot) || !openDocuments.has(fileToUri(source))) {
+						srv.send({ jsonrpc: "2.0", id: message.id, error: { code: 1, message: "No Project." } });
+					} else {
+						semanticProjectLoaded = true;
+						srv.send({
+							jsonrpc: "2.0",
+							id: message.id,
+							result: { body: { configFileName: project, languageServiceDisabled: disabled } },
+						});
+					}
 				} else if (message.method === "textDocument/references") {
-					srv.send({ jsonrpc: "2.0", id: message.id, error: { code: 1, message: options.message } });
+					if (disabled || !semanticProjectLoaded || options.referencesError) {
+						srv.send({
+							jsonrpc: "2.0",
+							id: message.id,
+							error: { code: 1, message: options.referencesError ?? "<semantic> No Project." },
+						});
+					} else {
+						srv.send({
+							jsonrpc: "2.0",
+							id: message.id,
+							result: [
+								{
+									uri: fileToUri(source),
+									range: { start: { line: 0, character: 13 }, end: { line: 0, character: 25 } },
+								},
+								{
+									uri: fileToUri(consumer),
+									range: { start: { line: 1, character: 0 }, end: { line: 1, character: 12 } },
+								},
+							],
+						});
+					}
+				} else if (message.method === "textDocument/documentSymbol") {
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: [
+							{
+								name: "updateRegion",
+								kind: 13,
+								range: { start: { line: 0, character: 0 }, end: { line: 0, character: 37 } },
+								selectionRange: { start: { line: 0, character: 13 }, end: { line: 0, character: 25 } },
+							},
+						],
+					});
 				} else if (message.method === "shutdown") {
 					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
 				} else if (message.method === "exit") {
 					srv.exit(0);
 				}
 			});
-
+			const serverName = options.serverName ?? "typescript-language-server";
 			const serverConfig: ServerConfig = {
-				command: options.command,
-				resolvedCommand: options.command,
+				command: serverName,
+				resolvedCommand: serverName,
 				fileTypes: [".js"],
-				rootMarkers: [],
+				rootMarkers: ["jsconfig.json", "package.json"],
 			};
-			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
-				servers: { [options.serverName]: serverConfig },
-				idleTimeoutMs: undefined,
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: { [serverName]: serverConfig } });
+			const tool = new LspTool(makeLspSession(root));
+			await run({
+				tool,
+				server,
+				source,
+				project,
+				tsserverPath,
+				setDisabled(value) {
+					disabled = value;
+				},
 			});
-			vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([[options.serverName, serverConfig]]);
-
-			const result = await new LspTool(makeLspSession(tempDir.path())).execute("no-project", {
-				action: "references",
-				file: "widget.js",
-				line: 1,
-				symbol: "renderWidget",
-				timeout: 20,
-			});
-			return {
-				text: textResult(result),
-				requestCount: server.received.filter(message => message.method === "textDocument/references").length,
-			};
 		} finally {
 			await lspClient.shutdownAll();
+			configCache.delete(root);
 			tempDir.removeSync();
 		}
 	}
 
-	it("explains the tsserver No Project failure while keeping the server dump", async () => {
-		const { text, requestCount } = await referencesError({
-			serverName: "typescript-language-server",
-			command: "typescript-language-server",
-			message:
-				"<semantic> TypeScript Server Error (5.9.3)\nNo Project.\n    at ProjectService.getDefaultProjectForFile (tsserver.js:1:1)",
-		});
+	const referencesParams = {
+		action: "references" as const,
+		file: "client/src/service.js",
+		line: 1,
+		symbol: "updateRegion",
+		timeout: 20,
+	};
 
-		// Original information survives: error prefix, JSON-RPC code, server text.
-		expect(text).toContain("LSP error: LSP error 1: <semantic> TypeScript Server Error (5.9.3)");
-		expect(text).toContain("No Project.");
-		expect(text).toContain("at ProjectService.getDefaultProjectForFile");
-		// The failing server is named next to the explanation.
-		expect(text).toContain("[typescript-language-server]");
-		// Actionable reading: the two server-side conditions and the real remedies.
-		expect(text).toContain("has no project open for this file");
-		expect(text).toContain("language service is disabled");
-		expect(text).toContain("tsconfig.json/jsconfig.json include");
-		expect(text).toContain("public/fontawesome/js");
-		// Project-side remedy: `compilerOptions.disableSizeLimit` is a real
-		// tsconfig editor-support option, not a server switch.
-		expect(text).toContain("compilerOptions.disableSizeLimit");
-		expect(text).toContain(".lsp.json initOptions");
-		expect(text).toContain("maxTsServerMemory");
-		expect(text).toContain("tsserver.path");
-		// Never advertise .lsp.json initOptions the server does not have: the
-		// hint closes with exactly the switches typescript-language-server
-		// accepts, so no invented option can ride along with the supported ones.
-		expect(text.slice(text.indexOf(".lsp.json initOptions"))).toBe(
-			".lsp.json initOptions; typescript-language-server supports maxTsServerMemory, tsserver.path and tsserver.fallbackPath.",
-		);
-		expect(requestCount).toBeGreaterThan(0);
+	function projectStates(project: string) {
+		return lspClient.getActiveClients().find(client => client.cwd === path.dirname(project))?.semanticProjects;
+	}
+
+	it("returns cross-file references after opening the nested client's semantic project", async () => {
+		await withProject({}, async ({ tool, source, project }) => {
+			const result = await tool.execute("nested-js-references", referencesParams);
+			const output = textResult(result).replaceAll("\\", "/");
+			expect(result.details?.success).toBe(true);
+			expect(output).toContain("client/src/service.js");
+			expect(output).toContain("client/src/consumer.js");
+			expect(output).toContain("updateRegion();");
+			expect(projectStates(project)).toMatchObject([
+				{ file: source, project, status: "available", languageServiceDisabled: false },
+			]);
+		});
 	});
 
-	it("matches the phrase case-insensitively with collapsed whitespace", async () => {
-		const { text } = await referencesError({
-			serverName: "typescript-language-server",
-			command: "typescript-language-server",
-			message: "TypeScript Server Error\nno   PROJECT\n",
-		});
+	it("identifies a disabled project before issuing references and reports its nested status", async () => {
+		await withProject({ disabled: true }, async ({ tool, server, source, project, tsserverPath }) => {
+			const result = await tool.execute("disabled-js-references", referencesParams);
+			expect(result.details?.success).toBe(false);
+			expect(textResult(result)).toContain(project);
+			expect(textResult(result)).toContain(tsserverPath);
+			expect(server.received.filter(message => message.method === "textDocument/references")).toHaveLength(0);
+			expect(projectStates(project)).toMatchObject([
+				{ file: source, project, status: "unavailable", languageServiceDisabled: true },
+			]);
+			const status = await tool.execute("disabled-project-status", { action: "status" });
+			expect(textResult(status)).toContain("semantic unavailable in client");
+			expect(textResult(status)).toContain(project);
+			expect(textResult(status)).not.toContain("configured, not started)");
 
-		expect(text).toContain("no   PROJECT");
-		expect(text).toContain("has no project open for this file");
+			// Disabling semantics must not disable the server's syntax-only surface.
+			const symbols = await tool.execute("disabled-project-syntax", {
+				action: "symbols",
+				file: referencesParams.file,
+			});
+			expect(symbols.details?.success).toBe(true);
+			expect(textResult(symbols)).toContain("updateRegion @ line 1");
+			expect(projectStates(project)?.[0]?.languageServiceDisabled).toBe(true);
+		});
 	});
 
-	it("leaves unrelated TypeScript server errors unchanged", async () => {
-		const { text } = await referencesError({
-			serverName: "typescript-language-server",
-			command: "typescript-language-server",
-			message: "Some unrelated server failure",
+	it("rechecks the project after its semantic service is re-enabled", async () => {
+		await withProject({ disabled: true }, async ({ tool, source, project, setDisabled }) => {
+			const unavailable = await tool.execute("disabled-before-config-change", referencesParams);
+			expect(unavailable.details?.success).toBe(false);
+			setDisabled(false);
+			const available = await tool.execute("enabled-after-config-change", referencesParams);
+			expect(available.details?.success).toBe(true);
+			expect(textResult(available).replaceAll("\\", "/")).toContain("client/src/consumer.js");
+			expect(projectStates(project)).toMatchObject([
+				{ file: source, project, status: "available", languageServiceDisabled: false },
+			]);
 		});
-
-		expect(text).toBe("LSP error: LSP error 1: Some unrelated server failure");
-		expect(text).not.toContain("tsconfig.json");
 	});
 
-	it("leaves the same error from a non-TypeScript server unchanged", async () => {
-		const { text } = await referencesError({
-			serverName: "csharp-ls",
-			command: "csharp-ls",
-			message: "No Project.",
+	it("preserves a real No Project diagnosis and does not retry the failing references", async () => {
+		const diagnosis =
+			"<semantic> TypeScript Server Error (5.9.3)\nno   PROJECT\n    at getReferences (tsserver.js:1:1)";
+		await withProject({ referencesError: diagnosis }, async ({ tool, server, source, project }) => {
+			const result = await tool.execute("unavailable-real-diagnosis", referencesParams);
+			expect(result.details?.success).toBe(false);
+			expect(textResult(result).startsWith(`LSP error: LSP error 1: ${diagnosis}`)).toBe(true);
+			expect(server.received.filter(message => message.method === "textDocument/references")).toHaveLength(1);
+			expect(projectStates(project)).toMatchObject([
+				{
+					file: source,
+					project,
+					status: "unavailable",
+					languageServiceDisabled: undefined,
+					error: `LSP error 1: ${diagnosis}`,
+				},
+			]);
 		});
+	});
 
-		expect(text).toBe("LSP error: LSP error 1: No Project.");
-		expect(text).not.toContain("tsconfig.json");
+	for (const serverName of ["typescript-native", "csharp-ls"]) {
+		it(`keeps ${serverName} references working without a TLS-specific command`, async () => {
+			await withProject({ serverName, advertiseProjectInfo: false }, async ({ tool, server }) => {
+				const result = await tool.execute("other-server-references", referencesParams);
+				expect(result.details?.success).toBe(true);
+				expect(textResult(result).replaceAll("\\", "/")).toContain("client/src/consumer.js");
+				expect(server.received.filter(message => message.method === "workspace/executeCommand")).toHaveLength(0);
+			});
+		});
+	}
+
+	it("honors caller cancellation while waiting for semantic projectInfo", async () => {
+		const controller = new AbortController();
+		await withProject({ abortProjectInfo: controller }, async ({ tool, server }) => {
+			await expect(tool.execute("abort-project-info", referencesParams, controller.signal)).rejects.toBeInstanceOf(
+				ToolAbortError,
+			);
+			expect(server.received.filter(message => message.method === "textDocument/references")).toHaveLength(0);
+		});
 	});
 });
 

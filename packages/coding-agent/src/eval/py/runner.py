@@ -1075,11 +1075,7 @@ def cell_magic(
 
 
 def _emit_status(op: str, **data: Any) -> None:
-    bundle = {"application/x-omp-status": {"op": op, **data}}
-    rid = _CURRENT_RID.get()
-    if rid is None:
-        return
-    _emit({"type": "display", "id": rid, "bundle": bundle})
+    _emit_display({"application/x-omp-status": {"op": op, **data}})
 
 
 _SHELL_READ_CHUNK_BYTES = 8192
@@ -1668,11 +1664,57 @@ def _mime_bundle(value: Any) -> dict:
     return bundle
 
 
+_JS_MAX_SAFE_INTEGER = (1 << 53) - 1
+
+
+def _lossless_display_value(value: Any, ancestors: set[int] | None = None) -> Any:
+    """Use decimal strings for integers JS cannot safely represent.
+
+    Match the host's bigint JSON convention. Copy only containers with changed
+    descendants, leaving ordinary bundles and displayed user values untouched.
+    """
+    if isinstance(value, int):
+        # bool is an int subclass, but its values are safe and stay boolean.
+        if -_JS_MAX_SAFE_INTEGER <= value <= _JS_MAX_SAFE_INTEGER:
+            return value
+        return int.__repr__(value)
+    if not isinstance(value, (dict, list, tuple)):
+        return value
+
+    if ancestors is None:
+        ancestors = set()
+    marker = id(value)
+    if marker in ancestors:
+        raise ValueError("Circular reference detected")
+    ancestors.add(marker)
+    try:
+        if isinstance(value, dict):
+            copied_dict = None
+            for key, item in value.items():
+                converted = _lossless_display_value(item, ancestors)
+                if converted is not item:
+                    if copied_dict is None:
+                        copied_dict = dict(value)
+                    copied_dict[key] = converted
+            return value if copied_dict is None else copied_dict
+
+        copied_list = None
+        for index, item in enumerate(value):
+            converted = _lossless_display_value(item, ancestors)
+            if converted is not item:
+                if copied_list is None:
+                    copied_list = list(value)
+                copied_list[index] = converted
+        return value if copied_list is None else copied_list
+    finally:
+        ancestors.remove(marker)
+
+
 def _emit_display(bundle: dict, *, kind: str = "display") -> None:
     rid = _CURRENT_RID.get()
     if rid is None:
         return
-    _emit({"type": kind, "id": rid, "bundle": bundle})
+    _emit({"type": kind, "id": rid, "bundle": _lossless_display_value(bundle)})
 
 
 def __omp_display(value: Any, *, raw: bool = False, kind: str = "display") -> None:

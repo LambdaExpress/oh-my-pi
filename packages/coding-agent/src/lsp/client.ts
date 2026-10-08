@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import {
 	isEnoent,
+	isRecord,
 	logger,
 	normalizePathForComparison,
 	postmortem,
@@ -45,6 +46,172 @@ const clientLocks = new Map<string, PendingClient>();
 const invalidatedClientKeys = new Set<string>();
 const clientReloadBarriers = new Map<string, Promise<unknown>>();
 const fileOperationLocks = new Map<string, Promise<void>>();
+
+interface TypeScriptProjectStatus {
+	file: string;
+	project?: string;
+	status: "available" | "unavailable";
+	languageServiceDisabled?: boolean;
+	error?: string;
+}
+
+interface TypeScriptClientState {
+	version?: string;
+	source?: string;
+	tsserverPath?: string;
+	projects: Map<string, TypeScriptProjectStatus>;
+}
+
+const typeScriptClientStates = new WeakMap<LspClient, TypeScriptClientState>();
+export const TSSERVER_REQUEST_COMMAND = "typescript.tsserverRequest";
+const TYPESCRIPT_SEMANTIC_DOCUMENT_METHODS = new Set([
+	"textDocument/definition",
+	"textDocument/typeDefinition",
+	"textDocument/implementation",
+	"textDocument/references",
+	"textDocument/hover",
+	"textDocument/rename",
+	"textDocument/prepareRename",
+]);
+
+export function supportsTsserverRequest(capabilities: unknown): boolean {
+	if (!isRecord(capabilities)) return false;
+	const executeCommandProvider = capabilities.executeCommandProvider;
+	if (!isRecord(executeCommandProvider)) return false;
+	const commands = executeCommandProvider.commands;
+	return Array.isArray(commands) && commands.includes(TSSERVER_REQUEST_COMMAND);
+}
+
+function typeScriptClientState(client: LspClient): TypeScriptClientState {
+	let state = typeScriptClientStates.get(client);
+	if (!state) {
+		state = { projects: new Map() };
+		typeScriptClientStates.set(client, state);
+	}
+	return state;
+}
+
+/** Keep the server's actual selection, not a guess based on the launcher or PATH. */
+function captureTypeScriptServerInfo(client: LspClient, method: string, params: unknown): void {
+	if (!params || typeof params !== "object") return;
+	if (method === "$/typescriptVersion") {
+		const info = params as { version?: unknown; source?: unknown };
+		if (typeof info.version !== "string") return;
+		const state = typeScriptClientState(client);
+		state.version = info.version;
+		if (typeof info.source === "string") state.source = info.source;
+	} else if (method === "window/logMessage") {
+		const info = params as { message?: unknown };
+		if (typeof info.message !== "string") return;
+		const match = /^Using Typescript version \(([^)]+)\) (\S+) from path "([^"]+)"$/.exec(info.message);
+		if (!match) return;
+		const state = typeScriptClientState(client);
+		[, state.source, state.version, state.tsserverPath] = match;
+	}
+}
+
+function typeScriptProjectUnavailableMessage(client: LspClient, project: TypeScriptProjectStatus): string {
+	const state = typeScriptClientStates.get(client);
+	const lines = [
+		"TypeScript semantic service unavailable for this file.",
+		`File: ${project.file}`,
+		`Workspace root: ${client.cwd}`,
+		`Project: ${project.project ?? "not reported by tsserver"}`,
+		`Document: ${client.openFiles.has(fileToUri(project.file)) ? "didOpen sent" : "not open"}`,
+		`Server command: ${client.config.resolvedCommand ?? client.config.command}`,
+	];
+	if (state?.version) lines.push(`TypeScript: ${state.version}${state.source ? ` (${state.source})` : ""}`);
+	if (state?.tsserverPath) lines.push(`tsserver path: ${state.tsserverPath}`);
+	if (project.languageServiceDisabled === true) {
+		lines.push("tsserver reports languageServiceDisabled=true for this project.");
+	} else {
+		lines.push(
+			'The server did not identify an enabled semantic project. "No Project." alone does not establish that the language service was disabled or that a size limit was exceeded.',
+		);
+	}
+	lines.push(
+		`Check this file's inclusion in ${project.project ?? "its tsconfig.json/jsconfig.json"} and the tsserver project-load logs. If those logs report a program-size limit, narrow that project's include/exclude to source files and omit built or vendored JavaScript. Increasing maxTsServerMemory does not lift the program-size limit.`,
+	);
+	return lines.join("\n");
+}
+
+/** Record a real semantic failure without changing or retrying the server's diagnosis. */
+export function recordTypeScriptProjectFailure(client: LspClient, filePath: string, error: string): string {
+	const state = typeScriptClientState(client);
+	const uri = fileToUri(filePath);
+	const project: TypeScriptProjectStatus = {
+		...state.projects.get(uri),
+		file: filePath,
+		status: "unavailable",
+		languageServiceDisabled: undefined,
+		error,
+	};
+	state.projects.set(uri, project);
+	return typeScriptProjectUnavailableMessage(client, project);
+}
+
+/**
+ * An advertised tsserver projectInfo command is a semantic-server barrier after
+ * didOpen, and reports disabled services that TLS does not forward as events.
+ * Do not infer semantic availability from initialize, a syntax-server response,
+ * or the launcher's binary resolving.
+ */
+export async function prepareTypeScriptProject(
+	client: LspClient,
+	filePath: string,
+	signal?: AbortSignal,
+): Promise<TypeScriptProjectStatus | undefined> {
+	if (!supportsTsserverRequest(client.serverCapabilities)) return undefined;
+	throwIfAborted(signal);
+	await ensureFileOpen(client, filePath, signal);
+	let response: { body?: unknown } | null;
+	try {
+		response = (await sendRequest(
+			client,
+			"workspace/executeCommand",
+			{
+				command: TSSERVER_REQUEST_COMMAND,
+				arguments: [
+					"projectInfo",
+					{ file: fileToUri(filePath), needFileNameList: false },
+					{ executionTarget: 0, expectsResult: true, isAsync: false, lowPriority: false },
+				],
+			},
+			signal,
+		)) as { body?: unknown } | null;
+	} catch (err) {
+		if (err instanceof Error && /\bno\s+project\b/i.test(err.message)) {
+			recordTypeScriptProjectFailure(client, filePath, err.message);
+		}
+		throw err;
+	}
+	const body = response?.body;
+	if (
+		!body ||
+		typeof body !== "object" ||
+		!("configFileName" in body) ||
+		typeof body.configFileName !== "string" ||
+		!("languageServiceDisabled" in body) ||
+		typeof body.languageServiceDisabled !== "boolean"
+	) {
+		throw new Error(
+			`TypeScript projectInfo did not report a project and semantic availability for ${filePath} (workspace ${client.cwd}).`,
+		);
+	}
+	const project: TypeScriptProjectStatus = {
+		file: filePath,
+		project: body.configFileName,
+		status: body.languageServiceDisabled ? "unavailable" : "available",
+		languageServiceDisabled: body.languageServiceDisabled,
+	};
+	typeScriptClientState(client).projects.set(fileToUri(filePath), project);
+	if (body.languageServiceDisabled) {
+		const message = typeScriptProjectUnavailableMessage(client, project);
+		project.error = message;
+		throw new Error(message);
+	}
+	return project;
+}
 
 /**
  * URIs whose server overlay OMP has intentionally advanced ahead of the on-disk
@@ -508,6 +675,7 @@ async function startMessageReader(client: LspClient): Promise<void> {
 							await handleServerRequest(client, message as LspJsonRpcRequest);
 						} else {
 							// Server notification
+							captureTypeScriptServerInfo(client, message.method, message.params);
 							if (message.method === MUX_SERVER_EXIT_METHOD && message.params) {
 								const params = message.params as MuxServerExitParams;
 								if (typeof params.exitCode === "number" && typeof params.stderr === "string") {
@@ -2008,6 +2176,22 @@ export async function sendRequest(
 	signal?: AbortSignal,
 	timeoutMs?: number,
 ): Promise<unknown> {
+	const textDocument = isRecord(params) && isRecord(params.textDocument) ? params.textDocument : undefined;
+	const uri = typeof textDocument?.uri === "string" ? textDocument.uri : undefined;
+	if (
+		uri?.startsWith("file:") &&
+		TYPESCRIPT_SEMANTIC_DOCUMENT_METHODS.has(method) &&
+		supportsTsserverRequest(client.serverCapabilities)
+	) {
+		// The probe and the requested method share one budget, including didOpen
+		// writes. Servers without the advertised TLS command take the old path.
+		const budgetMs = timeoutMs ?? (signal ? undefined : DEFAULT_REQUEST_TIMEOUT_MS);
+		if (budgetMs !== undefined) {
+			const deadline = AbortSignal.timeout(budgetMs);
+			signal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+		}
+		await prepareTypeScriptProject(client, uriToFile(uri), signal);
+	}
 	// Atomically increment and capture request ID
 	const id = ++client.requestId;
 	if (signal?.aborted) {
@@ -2079,6 +2263,14 @@ export async function sendRequest(
 			if (timeout) clearTimeout(timeout);
 			client.lastActivity = Date.now();
 			cleanup();
+			if (
+				uri?.startsWith("file:") &&
+				TYPESCRIPT_SEMANTIC_DOCUMENT_METHODS.has(method) &&
+				supportsTsserverRequest(client.serverCapabilities) &&
+				/\bno\s+project\b/i.test(err.message)
+			) {
+				recordTypeScriptProjectFailure(client, uriToFile(uri), err.message);
+			}
 			reject(err);
 		},
 		method,
@@ -2149,6 +2341,8 @@ export interface LspServerStatus {
 	name: string;
 	clientKey?: string;
 	status: "connecting" | "ready" | "error";
+	cwd?: string;
+	semanticProjects?: TypeScriptProjectStatus[];
 	fileTypes: string[];
 	error?: string;
 }
@@ -2161,6 +2355,10 @@ export function getActiveClients(): LspServerStatus[] {
 		name: client.config.command,
 		status: client.status,
 		clientKey: client.name,
+		cwd: client.cwd,
+		semanticProjects: typeScriptClientStates.has(client)
+			? Array.from(typeScriptClientStates.get(client)!.projects.values())
+			: undefined,
 		fileTypes: client.config.fileTypes,
 	}));
 }

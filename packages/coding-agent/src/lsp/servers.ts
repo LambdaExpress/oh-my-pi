@@ -297,9 +297,10 @@ export function isMethodNotFoundError(err: unknown): boolean {
  * tsserver raises it when the queried file has no ScriptInfo in the server or
  * when the project that owns the file has its language service disabled — a
  * JavaScript project over the server's non-TS file-size budget, for example.
- * typescript-language-server 6.x does not forward `projectLanguageServiceState`,
- * so the raw message is the only signal OMP can match on. Match on message text
- * alone is too broad (any server can say "no project"), so the server identity
+ * typescript-language-server 6.x does not forward `projectLanguageServiceState`;
+ * OMP checks its advertised projectInfo command before semantic requests, but
+ * older/custom servers can still expose only the raw failure. Match on message
+ * text alone is too broad (any server can say "no project"), so the server identity
  * must look like tsserver underneath: the packaged names, or a command basename
  * of `typescript-language-server`/`tsc`/`tsgo`.
  */

@@ -302,7 +302,7 @@ function getTaskTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: st
 	return phases.flatMap(phase => phase.tasks);
 }
 
-/** Phase name for `init` given a flat `items` list with no explicit `phase`. */
+/** Default phase for flat init or implicit append into an empty list. */
 const DEFAULT_INIT_PHASE = "Tasks";
 
 function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
@@ -342,7 +342,7 @@ function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 }
 
 function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
-	if (!entry.phase) {
+	if (entry.phase === "") {
 		errors.push("Missing phase name for append operation");
 		return phases;
 	}
@@ -364,9 +364,16 @@ function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 	}
 	if (hasDuplicate) return phases;
 
-	let phase = findPhaseByName(phases, entry.phase);
+	// Follow the active task, then the earliest pending task; a finished list
+	// continues in its final phase without reopening any completed work.
+	const actionable = entry.phase ? undefined : nextActionableTask(phases);
+	let phase = entry.phase
+		? findPhaseByName(phases, entry.phase)
+		: actionable
+			? phases.find(candidate => candidate.tasks.includes(actionable))
+			: phases.at(-1);
 	if (!phase) {
-		phase = { name: entry.phase, tasks: [] };
+		phase = { name: entry.phase ?? DEFAULT_INIT_PHASE, tasks: [] };
 		phases.push(phase);
 	}
 

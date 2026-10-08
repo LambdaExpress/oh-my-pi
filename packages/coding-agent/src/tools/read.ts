@@ -685,7 +685,7 @@ interface LocatedRead {
 function formatLocatedFileNotice(url: string, backingPath: string, size: number, rawBlocked: boolean): string {
 	const workflows = `Use ${url}:raw:1-3000 for bounded verbatim chunks, ${url}:1-3000 for numbered exploration, and the backing file path for search/copy workflows`;
 	return rawBlocked
-		? `Unbounded raw read blocked for ${url} (${formatBytes(size)}). Reading the whole file verbatim can exhaust memory. ${workflows}: ${shortenPath(backingPath)}`
+		? `Unbounded raw read blocked for ${url} (${formatBytes(size)}); the whole-file raw inline limit is ${formatBytes(MAX_URL_RAW_INLINE_BYTES)}. ${workflows}: ${shortenPath(backingPath)}`
 		: `Backing file: ${shortenPath(backingPath)} (${formatBytes(size)}). ${workflows}.`;
 }
 

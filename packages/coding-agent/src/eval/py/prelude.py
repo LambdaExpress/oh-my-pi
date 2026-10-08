@@ -24,7 +24,11 @@ if "__omp_prelude_loaded__" not in globals():
     )
 
     def display(value):
-        """Render a value. Falls back to a JSON+text/plain bundle for plain dict/list/tuple."""
+        """Render a value, using JSON+text/plain for plain dict/list/tuple.
+
+        Structured integers outside JS's safe range arrive as exact decimal
+        strings. The original value and its text/plain repr remain unchanged.
+        """
         if any(hasattr(value, attr) for attr in _PRESENTABLE_REPRS):
             _omp_display(value)
             return

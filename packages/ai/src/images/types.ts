@@ -17,7 +17,7 @@ export interface ImageGenerationRequest {
 export interface GeneratedImage {
 	data: string;
 	mimeType: string;
-	/** Output dimensions (`WIDTHxHEIGHT`) the provider reports for this image, which may differ from the request. */
+	/** Delivered dimensions (`WIDTHxHEIGHT`), measured from bytes when available; otherwise provider-reported. */
 	size?: string;
 	/** Rendering quality the provider reports for this image. */
 	quality?: string;

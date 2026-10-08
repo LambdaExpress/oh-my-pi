@@ -206,52 +206,6 @@ describe("Tool argument coercion", () => {
 		},
 	);
 
-	it("tries another matching union branch when the first normalization invalidates its candidate", () => {
-		const tool: Tool = {
-			name: "overlapping-nullable-union",
-			description: "",
-			parameters: {
-				type: "object",
-				properties: {
-					payload: {
-						anyOf: [
-							{
-								type: "object",
-								additionalProperties: false,
-								properties: {
-									x: { type: ["string", "null"] },
-									y: { type: ["string", "null"] },
-								},
-								minProperties: 1,
-							},
-							{
-								type: "object",
-								additionalProperties: false,
-								properties: {
-									x: { type: ["string", "null"] },
-									y: { type: ["string", "null"] },
-								},
-								required: ["x"],
-							},
-						],
-					},
-				},
-				required: ["payload"],
-			} as never,
-		};
-		const args = { payload: { x: null, y: null } };
-
-		expect(
-			validateToolArguments(tool, {
-				type: "toolCall",
-				id: "overlapping-nullable-union",
-				name: tool.name,
-				arguments: args,
-			}),
-		).toEqual({ payload: { x: null } });
-		expect(args).toEqual({ payload: { x: null, y: null } });
-	});
-
 	it.each(["anyOf", "oneOf"] as const)("retains required nested nulls through %s normalization", keyword => {
 		const tool = createHistoryTool(keyword);
 		const args = workHistoryArgs();
@@ -1507,6 +1461,108 @@ describe("Tool argument coercion", () => {
 
 		const result = validateToolArguments(tool, toolCall);
 		expect(result).toEqual({ requiredText: "ok" });
+	});
+
+	it("preserves explicit nullable ArkType fields while omitting invalid null placeholders", () => {
+		const tool: Tool = {
+			name: "nullable-update",
+			description: "",
+			parameters: type({
+				count: "number",
+				"username?": "string | null",
+				"port?": "number | null",
+				"compat?": "boolean | null",
+				"omitted?": "string | null",
+				"invalid?": "number",
+				changes: type({
+					"label?": "string | null",
+					"invalid?": "boolean",
+				}).array(),
+			}),
+		};
+		const args = {
+			count: "4",
+			username: null,
+			port: null,
+			compat: null,
+			invalid: null,
+			changes: [{ label: null, invalid: null }],
+		};
+
+		expect(
+			validateToolArguments(tool, {
+				type: "toolCall",
+				id: "nullable-update",
+				name: tool.name,
+				arguments: args,
+			}),
+		).toEqual({
+			count: 4,
+			username: null,
+			port: null,
+			compat: null,
+			changes: [{ label: null }],
+		});
+		expect(args.count).toBe("4");
+		expect(args.changes).toEqual([{ label: null, invalid: null }]);
+	});
+
+	it.each([
+		["type union", { type: ["string", "null"] }],
+		["anyOf", { anyOf: [{ type: "string" }, { type: "null" }] }],
+		["oneOf", { oneOf: [{ type: "string" }, { type: "null" }] }],
+		["nullable", { type: "string", nullable: true }],
+		["reference", { $ref: "#/$defs/NullableText" }],
+	] as const)("preserves explicit optional null through a JSON Schema %s", (_encoding, propertySchema) => {
+		const tool: Tool = {
+			name: "nullable-json-update",
+			description: "",
+			parameters: {
+				type: "object",
+				$defs: { NullableText: { type: ["string", "null"] } },
+				properties: {
+					count: { type: "integer" },
+					clear: propertySchema,
+					omitted: propertySchema,
+					invalid: { type: "boolean" },
+				},
+				required: ["count"],
+				additionalProperties: false,
+			},
+		};
+
+		expect(
+			validateToolArguments(tool, {
+				type: "toolCall",
+				id: "nullable-json-update",
+				name: tool.name,
+				arguments: { count: "4", clear: null, invalid: null },
+			}),
+		).toEqual({ count: 4, clear: null });
+	});
+
+	it("does not replace a schema-valid null with a required field default", () => {
+		const tool: Tool = {
+			name: "nullable-default",
+			description: "",
+			parameters: {
+				type: "object",
+				properties: {
+					keep: { type: ["string", "null"], default: "keep-default" },
+					repair: { type: "string", default: "repair-default" },
+				},
+				required: ["keep", "repair"],
+			},
+		};
+
+		expect(
+			validateToolArguments(tool, {
+				type: "toolCall",
+				id: "nullable-default",
+				name: tool.name,
+				arguments: { keep: null, repair: null },
+			}),
+		).toEqual({ keep: null, repair: "repair-default" });
 	});
 
 	it("strips empty strings from optional properties before schema validation", () => {

@@ -1,7 +1,17 @@
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
+import * as vm from "node:vm";
+import type { AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { wrapToolWithMetaNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
+import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { TempDir } from "@oh-my-pi/pi-utils/temp";
 import { createHelpers, type HelperContext } from "../../src/eval/js/shared/helpers";
+import { JAVASCRIPT_PRELUDE_SOURCE } from "../../src/eval/js/shared/prelude";
+import { callSessionTool } from "../../src/eval/js/tool-bridge";
 
 /**
  * The eval helpers (`read`/`write`) must substitute injected on-disk
@@ -65,5 +75,46 @@ describe("eval js helpers internal-url resolution", () => {
 
 		await helpers.writeFile("foo/bar.txt", "bar");
 		expect(await helpers.read("foo/bar.txt")).toBe("bar");
+	});
+});
+
+describe("eval read() artifact recovery", () => {
+	it("follows the first delegated read footer to verbatim bounded artifact content", async () => {
+		using tmp = TempDir.createSync("@eval-read-artifact-recovery-");
+		const manager = SessionManager.create(tmp.path(), path.join(tmp.path(), "sessions"));
+		const settings = Settings.isolated();
+		const context = { sessionManager: manager, settings } as unknown as AgentToolContext;
+		const session: ToolSession = {
+			cwd: tmp.path(),
+			hasUI: false,
+			getSessionFile: () => manager.getSessionFile() ?? null,
+			getSessionSpawns: () => "*",
+			getArtifactsDir: () => manager.getArtifactsDir(),
+			getToolContext: () => context,
+			sessionManager: manager,
+			settings,
+		};
+		const tool = wrapToolWithMetaNotice(new ReadTool(session)) as AgentTool;
+		session.getToolByName = name => (name === "read" ? tool : undefined);
+		const sandbox = vm.createContext({
+			__omp_helpers__: createHelpers(makeCtx(tmp.path(), { local: path.join(tmp.path(), "local") })),
+			__omp_call_tool__: (name: string, args: unknown) => callSessionTool(name, args, { session }),
+		});
+		vm.runInContext(JAVASCRIPT_PRELUDE_SOURCE, sandbox);
+		const content = `\ufeff${"α".repeat(28_000)}\r\nsecond\r\n`;
+		const filePath = path.join(tmp.path(), "template.txt");
+		await Bun.write(filePath, content);
+
+		try {
+			const initial: string = await vm.runInContext(
+				`read(${JSON.stringify(`${pathToFileURL(filePath).href}:raw`)})`,
+				sandbox,
+			);
+			const selector = initial.match(/\bartifact:\/\/\d+:raw:\d+-\d+/u)?.[0];
+			if (!selector) throw new Error("The eval read helper did not expose the bounded artifact selector");
+			expect(await vm.runInContext(`read(${JSON.stringify(selector)})`, sandbox)).toBe(content);
+		} finally {
+			await manager.close();
+		}
 	});
 });

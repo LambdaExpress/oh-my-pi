@@ -10,7 +10,12 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
-import { type ArchiveMemberContent, writeArchive } from "@oh-my-pi/pi-utils/ar";
+import {
+	type ArchiveMemberContent,
+	archiveFormatFromPath,
+	parseArchivePathCandidates,
+	writeArchive,
+} from "@oh-my-pi/pi-utils/ar";
 
 const enc = (value: string): Uint8Array => new TextEncoder().encode(value);
 
@@ -77,6 +82,47 @@ describe("read archive binary members", () => {
 	afterEach(async () => {
 		vi.restoreAllMocks();
 		await removeWithRetries(testDir);
+	});
+
+	it.each(["unitypackage", "UNITYPACKAGE", "tar.gz", "tgz"])(
+		"lists gzip TAR Unity assets and reads pathname members through .%s",
+		async extension => {
+			const guid = "0123456789abcdef0123456789abcdef";
+			const assetPath = "Assets/Clothing/Lime&Chiffon.prefab";
+			const bundlePath = path.join(testDir, `EveningGlow_Lime&Chiffon.${extension}`);
+			await writeArchive(bundlePath, "tar.gz", [
+				[`${guid}/asset`, "%YAML 1.1\n--- !u!1 &1000\nGameObject:\n  m_Name: EveningGlow\n"],
+				[`${guid}/asset.meta`, `fileFormatVersion: 2\nguid: ${guid}\n`],
+				[`${guid}/pathname`, assetPath],
+			]);
+			const tool = new ReadTool(makeSession(testDir));
+
+			const overview = await tool.execute("overview", { path: bundlePath });
+			expect(overview.details?.isDirectory).toBe(true);
+			expect(joinText(overview.content)).toBe(`${guid}/`);
+
+			const directory = await tool.execute("directory", { path: `${bundlePath}:${guid}` });
+			expect(directory.details?.isDirectory).toBe(true);
+			expect(joinText(directory.content)).toContain("asset.meta");
+			expect(joinText(directory.content)).toContain("pathname");
+
+			const pathname = await tool.execute("pathname", { path: `${bundlePath}:${guid}/pathname` });
+			expect(pathname.details?.displayContent?.text).toBe(assetPath);
+
+			const rawPathname = await tool.execute("raw-pathname", { path: `${bundlePath}:${guid}/pathname:raw` });
+			expect(joinText(rawPathname.content)).toBe(assetPath);
+		},
+	);
+
+	it("requires a complete archive extension before a member selector or end of path", () => {
+		for (const extension of ["unitypackage", "tar.gz", "tgz"]) {
+			const archivePath = `EveningGlow_Lime&Chiffon.${extension}`;
+			expect(archiveFormatFromPath(`${archivePath}.txt`)).toBeUndefined();
+			expect(parseArchivePathCandidates(`${archivePath}.txt:pathname`)).toEqual([]);
+			expect(parseArchivePathCandidates(`${archivePath}:0123456789abcdef/pathname`)).toEqual([
+				{ archivePath, subPath: "0123456789abcdef/pathname" },
+			]);
+		}
 	});
 
 	it("decodes a PNG member into an inline image block", async () => {

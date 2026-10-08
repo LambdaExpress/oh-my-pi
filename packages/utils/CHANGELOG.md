@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed archive recognition omitting Unity `.unitypackage` files, including archive-member selectors and uppercase extensions.
 - Fixed ASAR indexing rejecting oversized members before extraction, allowing archive listings and small-member reads while preserving extraction limits.
 - Fixed import-only and wildcard package exports resolving incorrectly while preserving private export boundaries.
 - Fixed concurrent SQLite corruption recovery on Windows while preserving committed writes and incomplete backup evidence.

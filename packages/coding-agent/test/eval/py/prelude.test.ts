@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { $which, TempDir } from "@oh-my-pi/pi-utils";
-import { PythonKernel } from "../../../src/eval/py/kernel";
+import { type KernelDisplayOutput, PythonKernel } from "../../../src/eval/py/kernel";
 import { PYTHON_PRELUDE } from "../../../src/eval/py/prelude";
 const pythonPath =
 	Bun.env.PYTHON ??
@@ -41,6 +41,64 @@ async function runPrelude(
 }
 
 describe("python prelude", () => {
+	it("preserves unsafe integer identities in structured display without changing Python values", async () => {
+		using dir = TempDir.createSync("@omp-py-display-");
+		const kernel = await PythonKernel.start({ cwd: dir.absolute(), interpreter: pythonPath });
+		const outputs: KernelDisplayOutput[] = [];
+		let text = "";
+		try {
+			const result = await kernel.execute(
+				[
+					"file_id = 137193637465486999",
+					"payload = {'fileID': file_id, 'negative': -file_id, 'nested': {'values': [(True, False, 0, 1.5, None)], 'safe': [2**53 - 1, -(2**53 - 1)], 'boundaries': [2**53, 2**53 + 1, -2**53, -(2**53 + 1)]}}",
+					"nested = payload['nested']",
+					"values = nested['values']",
+					"flags = values[0]",
+					"print('Exact Python integer:', file_id)",
+					"display(payload)",
+					"assert payload['nested'] is nested and nested['values'] is values and values[0] is flags",
+					"assert type(payload['fileID']) is int and payload['fileID'] == file_id",
+					"assert type(payload['negative']) is int and payload['negative'] == -file_id",
+					"assert nested['safe'] == [2**53 - 1, -(2**53 - 1)]",
+					"assert all(type(value) is int for value in nested['boundaries'])",
+					"assert nested['boundaries'] == [2**53, 2**53 + 1, -2**53, -(2**53 + 1)]",
+					"assert type(flags) is tuple and flags[0] is True and flags[1] is False",
+				].join("\n"),
+				{
+					timeoutMs: 10_000,
+					onChunk: chunk => {
+						text += chunk;
+					},
+					onDisplay: output => {
+						outputs.push(output);
+					},
+				},
+			);
+
+			expect(result.status).toBe("ok");
+			expect(text).toBe(
+				"Exact Python integer: 137193637465486999\n" +
+					"{'fileID': 137193637465486999, 'negative': -137193637465486999, 'nested': {'values': [(True, False, 0, 1.5, None)], 'safe': [9007199254740991, -9007199254740991], 'boundaries': [9007199254740992, 9007199254740993, -9007199254740992, -9007199254740993]}}\n",
+			);
+			expect(outputs).toEqual([
+				{
+					type: "json",
+					data: {
+						fileID: "137193637465486999",
+						negative: "-137193637465486999",
+						nested: {
+							values: [[true, false, 0, 1.5, null]],
+							safe: [Number.MAX_SAFE_INTEGER, -Number.MAX_SAFE_INTEGER],
+							boundaries: ["9007199254740992", "9007199254740993", "-9007199254740992", "-9007199254740993"],
+						},
+					},
+				},
+			]);
+		} finally {
+			await kernel.shutdown();
+		}
+	});
+
 	it.each([
 		{ name: "LF", content: "alpha\n中文\n", local: false },
 		{ name: "CRLF", content: "alpha\r\n中文\r\n", local: true },

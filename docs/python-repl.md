@@ -213,6 +213,15 @@ Additionally captured as structured outputs:
 - `image/png` / `image/jpeg` → image payloads
 - `application/x-omp-status` → status events
 
+Python integers outside the JavaScript-safe range `−(2^53−1)` through `2^53−1` are converted to exact decimal strings in display JSON before the host parses the NDJSON frame. This applies recursively to nested values and to `application/json` from custom MIME bundles, including `display(..., raw=True)`. Safe integers remain numbers and booleans remain booleans. Plain-text representations are unchanged, and conversion does not mutate the user's Python objects.
+
+```python
+value = {"id": 9007199254740993, "count": 7, "ready": True}
+display(value)
+# Structured JSON: {"id": "9007199254740993", "count": 7, "ready": true}
+# value["id"] is still the original Python int.
+```
+
 ### Matplotlib
 
 The runner sets `MPLBACKEND=Agg` as an environ default so figures render off-screen. After every cell, remaining figures are emitted as PNG and closed. Figures already emitted by `display()` in that cell are closed without a duplicate image.

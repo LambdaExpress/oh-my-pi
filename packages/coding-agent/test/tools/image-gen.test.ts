@@ -1,5 +1,7 @@
 import { afterAll, describe, expect, it } from "bun:test";
+import { deflateSync, inflateSync } from "node:zlib";
 import { type Api, type FetchImpl, type Model } from "@oh-my-pi/pi-ai";
+import { ProviderResponseError } from "@oh-my-pi/pi-ai/error";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { modelKind } from "@oh-my-pi/pi-catalog/types";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -11,7 +13,7 @@ import {
 	getImageGenToolsWithRegistry,
 	imageGenTool,
 } from "@oh-my-pi/pi-coding-agent/tools/image-gen";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { parseImageMetadata, removeWithRetries } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
 
 const generatedImagePaths: string[] = [];
@@ -98,6 +100,205 @@ function hostedResponse(): Response {
 function collectPaths(result: CustomToolResult<{ imagePaths: string[] }>): void {
 	generatedImagePaths.push(...(result.details?.imagePaths ?? []));
 }
+
+function pngChunk(type: string, data: Buffer): Buffer {
+	const chunk = Buffer.alloc(data.length + 12);
+	chunk.writeUInt32BE(data.length, 0);
+	chunk.write(type, 4, 4, "ascii");
+	data.copy(chunk, 8);
+	chunk.writeUInt32BE(Bun.hash.crc32(chunk.subarray(4, -4)) >>> 0, chunk.length - 4);
+	return chunk;
+}
+
+async function makeRgbaWebp(width: number, height: number): Promise<Uint8Array> {
+	const header = Buffer.alloc(13);
+	header.writeUInt32BE(1, 0);
+	header.writeUInt32BE(1, 4);
+	header[8] = 8;
+	header[9] = 6;
+	// Uniform half-transparent red makes the alpha value invariant under resizing.
+	const seed = Buffer.concat([
+		Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+		pngChunk("IHDR", header),
+		pngChunk("IDAT", deflateSync(Buffer.from([0, 255, 0, 0, 128]))),
+		pngChunk("IEND", Buffer.alloc(0)),
+	]);
+	return new Bun.Image(seed).resize(width, height, { filter: "nearest" }).webp({ lossless: true }).bytes();
+}
+
+async function sampledAlpha(bytes: Uint8Array): Promise<number> {
+	const png = Buffer.from(await new Bun.Image(bytes).resize(1, 1, { filter: "nearest" }).png().bytes());
+	expect(parseImageMetadata(png)).toMatchObject({ mimeType: "image/png", channels: 4, hasAlpha: true });
+	const chunks: Buffer[] = [];
+	for (let offset = 8; offset + 12 <= png.length;) {
+		const length = png.readUInt32BE(offset);
+		if (png.toString("ascii", offset + 4, offset + 8) === "IDAT") {
+			chunks.push(png.subarray(offset + 8, offset + 8 + length));
+		}
+		offset += length + 12;
+	}
+	// PNG filters have zero-valued neighbours for the first RGBA pixel.
+	return inflateSync(Buffer.concat(chunks)).readUInt8(4);
+}
+
+function sizedHostedContext(
+	bytes: Uint8Array,
+	api: "openai-responses" | "openai-codex-responses",
+	reportedSize = "1024x1024",
+): CustomToolContext {
+	const provider = api === "openai-codex-responses" ? "openai-codex" : "openai";
+	const image = catalogModel(provider, "gpt-image-selected", api);
+	const carrier = catalogModel(provider, "gpt-5.5", api, "chat");
+	const output = {
+		type: "image_generation_call",
+		result: bytes.toBase64(),
+		size: reportedSize,
+		quality: "medium",
+	};
+	const fetchMock: FetchImpl = async () => {
+		if (api === "openai-codex-responses") {
+			const events = [
+				{ type: "response.output_item.done", item: output },
+				{
+					type: "response.completed",
+					response: {
+						output: [],
+						tools: [{ type: "image_generation", model: "gpt-image-2-codex" }],
+					},
+				},
+			];
+			return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), {
+				headers: { "content-type": "text/event-stream" },
+			});
+		}
+		return Response.json({ output: [output] });
+	};
+	return createContext({
+		models: [image, carrier],
+		settings: Settings.isolated({ modelRoles: { image: `${provider}/gpt-image-selected` } }),
+		fetch: fetchMock,
+		activeModel: carrier,
+	});
+}
+
+describe("imageGenTool output dimensions", () => {
+	it("delivers explicit square pixels and alpha when the Codex stream returns a larger WEBP", async () => {
+		const ctx = sizedHostedContext(await makeRgbaWebp(1254, 1254), "openai-codex-responses");
+		const result = await imageGenTool.execute(
+			"explicit-square",
+			{ subject: "transparent clothing", image_size: "1024x1024", aspect_ratio: "1:1" },
+			undefined,
+			ctx,
+		);
+		collectPaths(result);
+		const savedPath = result.details!.imagePaths[0]!;
+		const saved = await Bun.file(savedPath).bytes();
+
+		expect(await new Bun.Image(saved).metadata()).toMatchObject({ width: 1024, height: 1024, format: "png" });
+		expect(await sampledAlpha(saved)).toBe(128);
+		expect(result.details!.images[0]).toMatchObject({
+			data: saved.toBase64(),
+			mimeType: "image/png",
+			size: "1024x1024",
+			quality: "medium",
+		});
+		expect(savedPath.endsWith(".png")).toBe(true);
+	});
+
+	it.each(["1536x1024", "1024x1536"] as const)("delivers exact rectangular pixels for %s", async size => {
+		const [width, height] = size.split("x").map(Number);
+		const sourceWidth = size === "1536x1024" ? 1254 : 836;
+		const sourceHeight = size === "1536x1024" ? 836 : 1254;
+		const ctx = sizedHostedContext(await makeRgbaWebp(sourceWidth, sourceHeight), "openai-responses");
+		const result = await imageGenTool.execute(
+			"explicit-rectangle",
+			{ subject: "transparent clothing", image_size: size },
+			undefined,
+			ctx,
+		);
+		collectPaths(result);
+		const saved = await Bun.file(result.details!.imagePaths[0]!).bytes();
+
+		expect(await new Bun.Image(saved).metadata()).toMatchObject({ width, height });
+		expect(await sampledAlpha(saved)).toBe(128);
+		expect(result.details!.images[0]!.size).toBe(size);
+		expect(result.details!.images[0]!.data).toBe(saved.toBase64());
+	});
+
+	it("preserves correctly sized bytes while correcting false provider metadata", async () => {
+		const original = await makeRgbaWebp(1024, 1024);
+		const ctx = sizedHostedContext(original, "openai-codex-responses", "1254x1254");
+		const result = await imageGenTool.execute(
+			"already-correct",
+			{ subject: "transparent clothing", image_size: "1024x1024" },
+			undefined,
+			ctx,
+		);
+		collectPaths(result);
+		const savedPath = result.details!.imagePaths[0]!;
+		const saved = await Bun.file(savedPath).bytes();
+
+		expect(Buffer.from(saved)).toEqual(Buffer.from(original));
+		expect(result.details!.images[0]).toMatchObject({
+			data: original.toBase64(),
+			mimeType: "image/webp",
+			size: "1024x1024",
+		});
+		expect(savedPath.endsWith(".webp")).toBe(true);
+	});
+
+	it("leaves implicit sizes at the native provider resolution and reports their actual dimensions", async () => {
+		const original = await makeRgbaWebp(1254, 1254);
+		const ctx = sizedHostedContext(original, "openai-codex-responses");
+		const result = await imageGenTool.execute(
+			"implicit-size",
+			{ subject: "transparent clothing", aspect_ratio: "1:1" },
+			undefined,
+			ctx,
+		);
+		collectPaths(result);
+		const saved = await Bun.file(result.details!.imagePaths[0]!).bytes();
+
+		expect(Buffer.from(saved)).toEqual(Buffer.from(original));
+		expect(await new Bun.Image(saved).metadata()).toMatchObject({ width: 1254, height: 1254, format: "webp" });
+		expect(result.details!.images[0]!.size).toBe("1254x1254");
+	});
+
+	it("applies the same explicit-size guarantee to non-hosted generation", async () => {
+		const original = await makeRgbaWebp(1254, 1254);
+		const model = catalogModel("openrouter", "native-image", "openrouter-images");
+		const ctx = createContext({
+			models: [model],
+			settings: Settings.isolated({ modelRoles: { image: "openrouter/native-image" } }),
+			fetch: async () => Response.json({ data: [{ b64_json: original.toBase64(), media_type: "image/webp" }] }),
+		});
+		const result = await imageGenTool.execute(
+			"native-size",
+			{ subject: "transparent clothing", image_size: "1024x1024" },
+			undefined,
+			ctx,
+		);
+		collectPaths(result);
+		const saved = await Bun.file(result.details!.imagePaths[0]!).bytes();
+
+		expect(await new Bun.Image(saved).metadata()).toMatchObject({ width: 1024, height: 1024 });
+		expect(await sampledAlpha(saved)).toBe(128);
+		expect(result.details!.images[0]!.size).toBe("1024x1024");
+	});
+
+	it("rejects undecodable output instead of claiming an explicit-size success", async () => {
+		const ctx = sizedHostedContext(new TextEncoder().encode("not an image"), "openai-codex-responses");
+
+		await expect(
+			imageGenTool.execute(
+				"invalid-image",
+				{ subject: "transparent clothing", image_size: "1024x1024" },
+				undefined,
+				ctx,
+			),
+		).rejects.toBeInstanceOf(ProviderResponseError);
+	});
+});
 
 describe("imageGenTool catalog routing", () => {
 	it("registers without resolving credentials", async () => {

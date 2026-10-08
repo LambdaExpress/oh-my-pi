@@ -132,7 +132,7 @@ export function formatGroupedDiagnosticMessages(messages: string[]): string {
 
 /** Format a recoverable output artifact link. */
 export function formatFullOutputReference(artifactId: string): string {
-	return `Read artifact://${artifactId} for full output`;
+	return `Read artifact://${artifactId} for full output; use artifact://${artifactId}:raw:1-3000 for bounded verbatim chunks`;
 }
 
 /** Strip the last literal notice or a matching final line; optionally preserve surrounding whitespace. */
@@ -205,7 +205,7 @@ export function formatTruncationMetaNotice(truncation: TruncationMeta, source?: 
 		truncation.artifactId == null
 			? undefined
 			: source?.type === "report"
-				? `Read artifact://${truncation.artifactId} for full report (${source.value})`
+				? `${formatFullOutputReference(truncation.artifactId)} (report: ${source.value})`
 				: formatFullOutputReference(truncation.artifactId);
 
 	if (truncation.direction === "middle") {

@@ -24,16 +24,16 @@ The custom tool is registered only when `generate_image.enabled=true` (default `
 | `text` | `string` | No | Text to render in the image. Keep short and specify legibility when needed. |
 | `changes` | `string[]` | No | Edit instructions for input images. |
 | `aspect_ratio` | `"1:1" \| "3:4" \| "4:3" \| "9:16" \| "16:9" \| "3:2" \| "2:3"` | No | Requested output aspect ratio. |
-| `image_size` | `"1024x1024" \| "1536x1024" \| "1024x1536"` | No | Requested output size where the selected model transport supports it. |
+| `image_size` | `"1024x1024" \| "1536x1024" \| "1024x1536"` | No | Exact output pixel dimensions for returned images. Sent upstream where supported and enforced at the tool's common output boundary across providers. |
 | `input` | `Array<{ path?: string; data?: string; mime_type?: string }>` | No | Input images by local path or inline base64 data. |
 | `model` | `string` | No | Image-model selector for this request, for example `openrouter/google/gemini-3-pro-image` or `xai/grok-imagine-image`. When omitted, the configured `image` role chain is used. |
 
 ## Outputs
 - Success with image data:
   - `content[0].type = "text"`
-  - `content[0].text` summarizes provider/model and saved image paths, with each image's reported size/quality when the provider returns them.
+  - `content[0].text` summarizes provider/model and saved image paths, with each image's size/quality when available. Explicit `image_size` results report the enforced dimensions.
   - `details = { provider, model, imageCount, imagePaths, images, responseText?, usage? }`; each image includes base64 `data` and `mimeType`.
-  - `model` is the image model the provider reports having run when it echoes one (hosted OpenAI transports), otherwise the selected catalog model id. When they differ, the text shows both, e.g. `Model: gpt-image-2-codex (catalog entry openai-codex/gpt-image-2)`. Each `images[]` entry may carry the provider-reported `size` and `quality`.
+  - `model` is the image model the provider reports having run when it echoes one (hosted OpenAI transports), otherwise the selected catalog model id. When they differ, the text shows both, e.g. `Model: gpt-image-2-codex (catalog entry openai-codex/gpt-image-2)`. Each `images[]` entry may carry `size` and provider-reported `quality`. Hosted output MIME and dimensions are read from the actual image bytes when available, rather than trusting upstream size metadata. With explicit `image_size`, every returned image's base64 bytes, MIME type, file extension, and `size` describe the enforced output.
 - Model responses with no image data return `No image data returned.`, `imageCount: 0`, empty `imagePaths` / `images`, and any response text/usage available. No image content blocks are returned; open the saved paths with `read`.
 
 ## Flow
@@ -49,7 +49,8 @@ The custom tool is registered only when `generate_image.enabled=true` (default `
    - `openai-responses`: OpenAI hosted Responses image generation.
    - `openai-codex-responses`: ChatGPT/Codex hosted Responses image generation through a connected subscription.
 6. Hosted Responses transports use a model with the catalog's `hostedImage` capability as carrier. A selected hosted-capable model carries its own request; otherwise the active model is preferred only when it has that capability and the same provider, then the available same-provider carrier with the lowest input cost. For an `openai-responses` image-kind entry, the image tool names the selected image model. For Codex, or a chat model carrying its own image request, the host chooses the image model. The request always selects `image_generation` and requests WebP; a resolved size is sent for both hosted transports.
-7. Inline images in a successful response are saved to temporary files; paths and base64/MIME image metadata are returned. A response with no image data returns a normal zero-image result rather than `isError`.
+7. At `imageGenTool`'s common output boundary, explicit `image_size` is checked against each returned image's decoded dimensions, regardless of provider. Already-correct bytes are retained with actual MIME and requested-size metadata. Mismatching images are resized to exactly the requested width and height (`fit: "fill"`) and encoded as lossless PNG, preserving transparency; returned base64, MIME, extension, and size all describe those new bytes. Undecodable output fails instead of returning an unverified explicit size. Without explicit `image_size`, the tool leaves the provider's image bytes and resolution unchanged.
+8. Images are saved to temporary files; paths and base64/MIME image metadata are returned. A response with no image data returns a normal zero-image result rather than `isError`.
 
 ## Modes / Variants
 - Text-to-image: provide `subject` and optional style/composition fields, no `input`.
@@ -68,11 +69,12 @@ The custom tool is registered only when `generate_image.enabled=true` (default `
 - A path input must exist and have a supported content-sniffed image type. Each input object must contain `path` or `data`; `path` wins when both are present.
 - Raw base64 `data` requires `mime_type`; a data URL supplies its own MIME type.
 - Request timeout is `3 * 60 * 1000` ms.
-- OpenAI hosted output is requested as WebP. Other response files use MIME-derived extensions (`png`, `jpg`, `gif`, or `webp`; unknown MIME types fall back to `.png`).
+- OpenAI hosted output is requested as WebP, but the returned bytes determine its MIME and extension when detectable. Explicit-size output requiring resizing is PNG, including hosted output. Response files use MIME-derived extensions (`png`, `jpg`, `gif`, or `webp`; unknown MIME types fall back to `.png`).
 - The schema accepts `1:1`, `3:4`, `4:3`, `9:16`, `16:9`, `3:2`, and `2:3`; upstream support depends on the selected model transport. xAI/xAI OAuth receive the ratio unchanged, defaulting to `1:1`.
 - `image_size` accepts `1024x1024`, `1536x1024`, and `1024x1536`. On xAI these map to `1k`, `2k`, and `2k`; omission defaults to `1k`.
-- OpenAI-compatible and hosted transports prefer explicit `image_size`; otherwise `1:1` maps to `1024x1024`, `3:4` / `9:16` to `1024x1536`, and `4:3` / `16:9` to `1536x1024`. `3:2` / `2:3` have no inferred OpenAI size. OpenRouter and Gemini receive the requested ratio/size directly. Upstream acceptance and actual dimensions remain provider-dependent.
-- The ChatGPT/Codex subscription backend chooses the image model; the tool does send requested/resolved size rather than discarding it. Results report the backend-returned model, size, and quality when available.
+- OpenAI-compatible and hosted transports prefer explicit `image_size`; otherwise `1:1` maps to `1024x1024`, `3:4` / `9:16` to `1024x1536`, and `4:3` / `16:9` to `1536x1024`. `3:2` / `2:3` have no inferred OpenAI size. OpenRouter and Gemini receive the requested ratio/size directly. Upstream request acceptance remains provider-dependent, but explicit `image_size` guarantees the dimensions of images successfully returned by the tool. An implicit size inferred from `aspect_ratio` is not locally enforced; actual dimensions remain provider-dependent in that case.
+- Explicit `image_size` controls final dimensions even if the provider returns a different aspect ratio. Resizing fills the requested dimensions without cropping or padding and may change proportions; lossless PNG encoding avoids additional lossy compression but does not make resizing pixel-preserving.
+- The ChatGPT/Codex subscription backend chooses the image model; the tool does send requested/resolved size rather than discarding it. Results report the backend-returned model and quality when available, with dimensions derived from actual bytes or the explicit-size output boundary.
 - xAI/xAI OAuth edit requests are limited to 3 input images.
 
 ## Errors
@@ -82,6 +84,7 @@ The custom tool is registered only when `generate_image.enabled=true` (default `
 - Antigravity credentials that do not contain both an access token and `projectId` cause that candidate to be skipped as `invalid credentials`.
 - More than three xAI/xAI OAuth edit references: `<provider> image edits accept up to 3 reference images; got <N>`.
 - Credentialed model HTTP failures fall through to later candidates in the image chain. If every candidate fails or is skipped, the tool throws an `AggregateError` naming the attempted models and containing collected provider HTTP errors.
+- Explicit-size output that cannot be decoded or resized with the requested dimensions and transparency throws `ProviderResponseError`: `Could not produce generated image at requested size <image_size>`. It does not return unchanged mismatching bytes or silently try another provider.
 - Cancellation, the three-minute timeout, malformed provider responses, and local I/O errors throw directly.
 
 ## Notes

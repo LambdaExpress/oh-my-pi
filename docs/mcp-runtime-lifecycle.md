@@ -152,6 +152,14 @@ Connected manager tools become enabled immediately. Presentation is reconciled w
 
 Both preserve MCP content and metadata; `structuredContent` is retained in `details.structuredContent` and rendered as text when not already duplicated in a text block. Server `isError` results propagate the error flag. Remaining exceptions become an `MCP failure` diagnostic with server/tool, transport, stage, failure class, retryability, message, optional code/trace/data, and next-step guidance; abort remains abort. Structured stdio/HTTP errors drive retry classification, and failures after an accepted request SSE POST are not replayed.
 
+### Undiagnosed domain results
+
+An exact domain envelope `{ "success": false, "message": null, "data": null }` with no explanatory content receives a client advisory. The envelope must have only these three fields, whether supplied as `structuredContent`, JSON text, or both; extra fields, other text, or non-text content prevent this classification.
+
+The bridge adds `details.diagnostic` with `source: "client"`, `kind: "undiagnosed_server_result"`, `executionOutcome: "unknown"`, and `automaticRetry: false`, and appends a visible `MCP client advisory` text block. It retains the original content in `details.rawContent`, the structured payload in `details.structuredContent`, and metadata in `details.mcpMeta`. The server's `isError` semantics are unchanged: the advisory does not promote a domain `success: false` result into a transport error.
+
+This is missing-outcome guidance, not a new retry policy or proof of a timeout. It cannot recover C# execution results or upstream errors discarded by an external plugin. A plugin may continue executing after its response wait expires, so inspect server/application logs, execution history, and generated result files before considering a manual retry, especially for operations with side effects. The plugin must preserve its upstream error or execution result to diagnose what happened.
+
 ## Refresh/reload paths (startup vs live reload)
 
 ### Initial startup path
@@ -238,6 +246,7 @@ Top-level sessions own managers they create. `AgentSession.dispose()` disconnect
 | `tools/list` still pending at startup with cache hit | Deferred tools returned immediately                                                                                       | Best-effort fast startup       |
 | `tools/list` still pending at startup without cache  | No tools at startup; background continuation registers them via `#onToolsChanged` when ready                              | Best-effort late registration  |
 | Late background tool-load failure                    | Logged after startup gate                                                                                                 | Best-effort logging            |
+| Exact undiagnosed `{success:false,message:null,data:null}` result | Original domain result and server `isError` retained; client advisory reports unknown execution outcome without automatic retry | Advisory, not transport failure |
 | Runtime dropped transport                            | Manager attempts reconnect; stale tools remain while reconnecting and future calls may retry once or fail with MCP errors | Best-effort automatic recovery |
 | Previously connected remote server still unavailable after retry ladder | Quiet single-attempt probes continue from 15s up to 5-minute intervals until recovery/disconnect/reconfiguration | Best-effort background recovery |
 | More than 5 reconnect invocations within 30s         | Circuit breaker closes/removes the stale connection but leaves tools registered; manual reconnect resets the history      | Automatic reconnect suspended  |

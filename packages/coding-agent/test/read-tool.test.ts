@@ -2,13 +2,18 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { registerArtifactsDir } from "@oh-my-pi/pi-coding-agent/internal-urls/registry-helpers";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { wrapToolWithMetaNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
+import { DEFAULT_MAX_BYTES } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+import { TempDir } from "@oh-my-pi/pi-utils/temp";
 
 const TINY_PNG_BASE64 =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
@@ -156,5 +161,76 @@ describe("读取代理报告字段的行选择器", () => {
 		await expect(
 			tool.execute("read-null-value-tail", { path: `agent://${outputId}/empty:raw:-2` }),
 		).rejects.toBeInstanceOf(ToolError);
+	});
+});
+
+describe("read artifact spill recovery", () => {
+	it("recovers a 53.8 KiB output from the first footer even when one line exceeds the spill budget", async () => {
+		using tmp = TempDir.createSync("@read-artifact-recovery-");
+		const manager = SessionManager.create(tmp.path(), path.join(tmp.path(), "sessions"));
+		const session = createSession(tmp.path(), "");
+		session.sessionManager = manager;
+		session.getArtifactsDir = () => manager.getArtifactsDir();
+		const tool = wrapToolWithMetaNotice(new ReadTool(session));
+		const context = { sessionManager: manager, settings: session.settings } as unknown as AgentToolContext;
+		const prefix = '\ufeff<section data-image="';
+		const suffix = '">\r\n第二行\r\n</section>\r\n';
+		const content = prefix + "x".repeat(55_091 - Buffer.byteLength(prefix + suffix, "utf8")) + suffix;
+		const filePath = path.join(tmp.path(), "template.html");
+		fs.writeFileSync(filePath, content);
+
+		try {
+			const initial = await tool.execute(
+				"read-large-template",
+				{ path: `${filePath}:raw` },
+				undefined,
+				undefined,
+				context,
+			);
+			const initialText = initial.content.map(block => (block.type === "text" ? block.text : "")).join("\n");
+			const selector = initialText.match(/\bartifact:\/\/\d+:raw:\d+-\d+/u)?.[0];
+			if (!selector) throw new Error("The first spill footer did not provide a bounded raw artifact selector");
+
+			const recovered = await tool.execute(
+				"read-template-artifact-page",
+				{ path: selector },
+				undefined,
+				undefined,
+				context,
+			);
+			expect(recovered.content).toEqual([{ type: "text", text: content }]);
+			expect(recovered.details?.meta?.pagedSource).toBe(true);
+			expect(recovered.details?.meta?.truncation).toBeUndefined();
+		} finally {
+			await manager.close();
+		}
+	});
+
+	it("keeps the unbounded raw byte boundary and recovers the refused artifact through its bounded selector", async () => {
+		using tmp = TempDir.createSync("@read-artifact-raw-boundary-");
+		const manager = SessionManager.create(tmp.path(), path.join(tmp.path(), "sessions"));
+		const session = createSession(tmp.path(), "");
+		session.sessionManager = manager;
+		session.getArtifactsDir = () => manager.getArtifactsDir();
+		const tool = new ReadTool(session);
+		const atLimit = "x".repeat(DEFAULT_MAX_BYTES);
+		const aboveLimit = `${atLimit}y`;
+
+		try {
+			const acceptedId = await manager.saveArtifact(atLimit, "read");
+			const refusedId = await manager.saveArtifact(aboveLimit, "read");
+			const accepted = await tool.execute("read-at-raw-limit", { path: `artifact://${acceptedId}:raw` });
+			expect(accepted.content).toEqual([{ type: "text", text: atLimit }]);
+
+			const refused = await tool.execute("read-above-raw-limit", { path: `artifact://${refusedId}:raw` });
+			expect(refused.details?.displayContent).toBeUndefined();
+			const refusedText = refused.content.map(block => (block.type === "text" ? block.text : "")).join("\n");
+			const selector = refusedText.match(/\bartifact:\/\/\d+:raw:\d+-\d+/u)?.[0];
+			if (!selector) throw new Error("The raw guard did not provide a bounded artifact selector");
+			const recovered = await tool.execute("read-refused-artifact-page", { path: selector });
+			expect(recovered.content).toEqual([{ type: "text", text: aboveLimit }]);
+		} finally {
+			await manager.close();
+		}
 	});
 });

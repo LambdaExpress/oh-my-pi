@@ -38,7 +38,7 @@ For normal file-like reads, `splitPathAndSel()` in `packages/tui/src/tools/read.
 
 | Suffix                        | Meaning                                                                                                                                        |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `:raw`                        | Raw/verbatim mode. Disables structural summaries and line prefixes.                                                                            |
+| `:raw`                        | Verbatim formatting without structural summaries or line prefixes; output and large-file limits still apply.                                                                            |
 | `:img`                        | Rasterize a local `.svg`/`.svgz` file and return it as an image block for vision input. Only local SVG/SVGZ files are supported.               |
 | `:conflicts`                  | Scan a local file for unresolved Git merge-conflict regions, register them in session conflict history, and render a compact `#N Lx-Ly` index. |
 | `:N` / `:LN` / `:N-` / `:N..` | Start at 1-indexed line `N`, open-ended.                                                                                                       |
@@ -144,8 +144,9 @@ Literal filesystem paths take precedence over selector interpretation, so an exi
 
 ### Archives
 
-- Supported archive containers (extension table in `packages/utils/src/ar/registry.ts`): tar family `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`/`.tbz`, `.tar.xz`/`.txz`, `.tar.zst`/`.tzst`, `.tar.z`; ZIP family `.zip`, `.jar`, `.war`, `.ear`, `.apk`, `.whl`, `.ipa`, `.xpi`, `.vsix`, `.nupkg`, `.cbz`; standalone `.rar`/`.cbr`, `.7z`, `.iso`, `.cab`, `.cpio`, `.rpm`, `.ar`/`.a`/`.lib`, `.deb`, `.lzh`/`.lha`, `.arj`, `.asar`; single-stream `.gz`, `.bz2`, `.xz`, `.zst`, `.z`, `.lzma`.
+- Supported archive containers (extension table in `packages/utils/src/ar/registry.ts`): tar family `.tar`, `.tar.gz`/`.tgz`/`.unitypackage` (gzip-compressed TAR), `.tar.bz2`/`.tbz2`/`.tbz`, `.tar.xz`/`.txz`, `.tar.zst`/`.tzst`, `.tar.z`; ZIP family `.zip`, `.jar`, `.war`, `.ear`, `.apk`, `.whl`, `.ipa`, `.xpi`, `.vsix`, `.nupkg`, `.cbz`; standalone `.rar`/`.cbr`, `.7z`, `.iso`, `.cab`, `.cpio`, `.rpm`, `.ar`/`.a`/`.lib`, `.deb`, `.lzh`/`.lha`, `.arj`, `.asar`; single-stream `.gz`, `.bz2`, `.xz`, `.zst`, `.z`, `.lzma`.
 - Syntax: `archive.ext`, `archive.ext:path/inside`, `archive.ext:path/inside:50-60`.
+- Unity packages use the same listing and member selectors, for example `assets.unitypackage:<asset-directory>/pathname`.
 - `openArchive()` dispatches through the `@oh-my-pi/pi-utils/ar` registry (`packages/utils/src/ar/open.ts`); limits live in `packages/utils/src/ar/limits.ts`: in-memory archives cap at 256 MiB, index reads at 64 MiB, and individual member extraction at 64 MiB.
 - Archive paths normalize `/`, drop `.` segments, and reject `..`.
 - Directory reads list immediate children; files show `name` plus ` (size)` when size > 0.
@@ -266,6 +267,7 @@ Literal filesystem paths take precedence over selector interpretation, so an exi
 - `issue://<N>` / `pr://<N>` (and the long form `issue://<owner>/<repo>/<N>` / `pr://<owner>/<repo>/<N>`) route through the same SQLite cache the `github` tool writes to; `?comments=0` selects the no-comments rendering. Bare `issue://` / `pr://` (and repository-qualified variants) browse live lists with `?state=`, `?limit=`, `?author=`, and `?label=`. PR diffs use `pr://<N>/diff`, `/diff/<i>`, and `/diff/all`. Every repository-qualified form also accepts a GitHub Enterprise host prefix (`pr://ghe.example.com/<owner>/<repo>/<N>`), and a host with no dot (`pr://ghe/<owner>/<repo>/<N>`) is recognized in the numbered form. Short forms resolve the host from the session checkout, so an enterprise repo needs no prefix.
 - `memory://` accepts two grammars. `memory://root[/path]` reads file-backed memory artifacts under the project memory root (`memory://root` resolves to the compact startup summary `memory_summary.md`; deeper paths address files such as `MEMORY.md` and `skills/<name>/SKILL.md`, and `memory://root/...` supports glob patterns for `glob`). `memory://<memory-id>` looks up a live Mnemopi memory row by id — working or episodic — and returns the full stored content (not the clipped recall preview) behind a YAML frontmatter header carrying `id`, `bank`, `store`, `memory_type`, `source`, `timestamp`/`created_at`, `importance`, `veracity`, `session_id`, and `metadata`. The id grammar resolves against the calling session: it needs that session on `memory.backend = mnemopi` and searches only its own scoped banks, so a row held by another live session is not reachable; with `hindsight` it returns a corrective pointer (hindsight memories are not addressable), and unknown ids error with a pointer to `recall` for the available ids. This is the read counterpart to `memory_edit update`: read the full row before overwriting a truncated preview.
 - `artifact://<id>` locates the session artifact's backing file and reads it through the filesystem pipeline: reads stream at any size, and unbounded `:raw` follows the located-file raw cap below. Protocol-level whole-resource resolution by other consumers is hard-capped at 8 MiB (`MAX_INLINE_ARTIFACT_BYTES` in `packages/coding-agent/src/internal-urls/artifact-protocol.ts`); larger artifacts reject the whole-resource read with selector and backing-path hints. Path consumers (search/grep, the bash URL filesystem) use `locate` and work on artifacts of any size.
+- The shared full-output footer advertises `artifact://<id>:raw:1-3000` for bounded verbatim chunks. `:raw` changes formatting, not the output budget; continue with later bounded ranges as needed.
 
 ### Web URLs
 
@@ -345,6 +347,7 @@ Notes: ...
 - Unique suffix auto-resolution glob timeout: `5000` ms.
 - The local read buffering cap is `4 MiB` (`SNAPSHOT_MAX_BYTES`); larger files use streamed windows instead of a whole-file buffer.
 - An unbounded `:raw` read of a URL-located file (any file-backed scheme except `unbounded` ones such as `skill://`) is refused above `50 KiB` (`MAX_URL_RAW_INLINE_BYTES`) with a notice naming bounded ranges (`<url>:raw:1-3000`, `<url>:1-3000`) and the backing file path.
+- This guard keeps spilled session output from being pulled back into one unbounded inline response. The `50 KiB` inline budget is separate from the `8 MiB` whole-resource artifact-resolution cap and the `4 MiB` local buffering cap.
 - A numbered page of an immutable URL-located file (for example `artifact://`) over `50 KiB` appends the same backing-file notice; writable schemes (`local://`, `vault://`) never get it, so a write-back cannot persist it. Only `artifact://` pages (`SchemeSpec.artifactStore`) skip the artifact spill; every other URL read spills over `tools.artifactSpillThreshold` like a plain file.
 
 ## Errors

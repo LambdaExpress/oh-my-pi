@@ -11,7 +11,7 @@ import {
 	type Model,
 	parseAntigravityCredentials,
 } from "@oh-my-pi/pi-ai";
-import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
+import { ProviderHttpError, ProviderResponseError } from "@oh-my-pi/pi-ai/error";
 import { isEnoent, logger, parseImageMetadata, prompt, ptree, Snowflake, untilAborted } from "@oh-my-pi/pi-utils";
 import { type RoleChainCandidate, resolveModelRoleValue, resolveRoleChain } from "../config/model-resolver";
 import { roleCandidatePool } from "../config/model-roles";
@@ -26,7 +26,7 @@ const IMAGE_TIMEOUT = 3 * 60 * 1000;
 const MAX_IMAGE_SIZE = 35 * 1024 * 1024;
 
 const aspectRatioSchema = type('"1:1" | "3:4" | "4:3" | "9:16" | "16:9" | "3:2" | "2:3"').describe("aspect ratio");
-const imageSizeSchema = type('"1024x1024" | "1536x1024" | "1024x1536"').describe("image size");
+const imageSizeSchema = type('"1024x1024" | "1536x1024" | "1024x1536"').describe("exact output pixel dimensions");
 const inputImageSchema = type({
 	"path?": type("string").describe("input image path"),
 	"data?": type("string").describe("base64 image data"),
@@ -181,7 +181,48 @@ function defaultImageCandidates(chain: RoleChainCandidate[], sessionModel: Model
 async function buildToolResult(
 	model: Model,
 	result: ImageGenerationResult,
+	imageSize?: ImageGenParams["image_size"],
 ): Promise<AgentToolResult<ImageGenToolDetails, ImageGenParams>> {
+	if (imageSize) {
+		const separator = imageSize.indexOf("x");
+		const width = Number(imageSize.slice(0, separator));
+		const height = Number(imageSize.slice(separator + 1));
+		const images: GeneratedImage[] = [];
+		for (const image of result.images) {
+			try {
+				const bytes = Buffer.from(image.data, "base64");
+				const pipeline = new Bun.Image(bytes, { autoOrient: false });
+				const metadata = await pipeline.metadata();
+				if (metadata.width === width && metadata.height === height) {
+					images.push({ ...image, mimeType: `image/${metadata.format}`, size: imageSize });
+					continue;
+				}
+				// Providers can ignore their requested resolution. PNG preserves decoded colours and alpha.
+				const resized = await pipeline.resize(width, height, { fit: "fill" }).png().bytes();
+				const resizedMetadata = parseImageMetadata(resized);
+				if (
+					!resizedMetadata ||
+					resizedMetadata.width !== width ||
+					resizedMetadata.height !== height ||
+					(parseImageMetadata(bytes)?.hasAlpha && !resizedMetadata.hasAlpha)
+				) {
+					throw new Error("Image resizing did not preserve the requested dimensions and transparency");
+				}
+				images.push({
+					...image,
+					data: resized.toBase64(),
+					mimeType: resizedMetadata.mimeType,
+					size: `${resizedMetadata.width}x${resizedMetadata.height}`,
+				});
+			} catch (cause) {
+				throw new ProviderResponseError(`Could not produce generated image at requested size ${imageSize}`, {
+					provider: model.provider,
+					cause,
+				});
+			}
+		}
+		result = { ...result, images };
+	}
 	const imagePaths = await saveImagesToTemp(result.images);
 	// Hosted backends may run a different model than the selected catalog entry; report what actually ran.
 	const ranModel = result.model ?? model.id;
@@ -318,7 +359,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 						carrier: resolvedCarrier,
 						sessionId,
 					});
-					return buildToolResult(model, result);
+					return buildToolResult(model, result, params.image_size);
 				} catch (error) {
 					if (!(error instanceof ProviderHttpError) || requestSignal?.aborted) throw error;
 					failures.push(error);

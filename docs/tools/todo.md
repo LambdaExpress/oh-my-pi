@@ -26,7 +26,7 @@ The params object **is** a single op — the discriminator and its fields live a
 | `block` | `task` or `phase` | `reason` | Marks actionable target tasks `blocked`; completed/abandoned tasks are left closed. Whitespace in `reason` is collapsed to one line. |
 | `unblock` | `task` or `phase` | None | Returns blocked target tasks to `pending` and clears their blocker notes. |
 | `rm` | `task` or `phase` or neither | None | Removes the target task, clears the phase's task list, or clears all task lists. |
-| `append` | `phase`, `items` | None | Appends new `pending` tasks to a phase; creates the phase if missing. |
+| `append` | `items` | `phase` | Appends new `pending` tasks to the named phase, creating it if missing. Without a phase, follows the earliest active phase, then the earliest pending phase, then the final existing phase; when no phases exist, creates `Tasks`. |
 | `view` | None | None | Echoes the current list. A `view` call is read-only: no normalization, no state write. |
 
 ### Fields
@@ -36,7 +36,7 @@ The params object **is** a single op — the discriminator and its fields live a
 | `op` | `"init" \| "start" \| "done" \| "rm" \| "drop" \| "block" \| "unblock" \| "append" \| "view"` | Yes in the schema | Operation discriminator. At execution time, an omitted op is repaired only for unambiguous `list`/`items` payloads (see Flow). |
 | `list` | `{ phase: string; items: string[] }[]` | For `init` (unless a flat `items` list is given) | Full replacement payload. Each phase's `items` has `minItems: 1`; an explicit `list: []` clears all phases. |
 | `task` | `string` | For `start`; for task-targeted `done`/`drop`/`block`/`unblock`/`rm` | Exact task content match. |
-| `phase` | `string` | For `append`; for phase-targeted `done`/`drop`/`block`/`unblock`/`rm`; optional for a flat `init` | Exact phase name match, except `append` lazily creates a missing phase and a flat `init` synthesizes one (default `Tasks`). |
+| `phase` | `string` | For phase-targeted `done`/`drop`/`block`/`unblock`/`rm`; optional for `append` and a flat `init` | Exact phase name match, except `append` lazily creates a missing phase and a flat `init` synthesizes one (default `Tasks`). An omitted append phase selects an existing phase as described below. Provider-supplied `null` is normalized to omission; an explicitly empty append phase remains invalid. |
 | `items` | `string[]` | For `append`; or as a flat `init` payload | Tasks to append, or the full task list for a flat `init`. Op-specific validation requires at least one item; a stray empty array on an unrelated op is schema-valid and ignored. |
 | `reason` | `string` | No | Optional blocker note for `block`; normalized to a single trimmed line. |
 
@@ -62,7 +62,7 @@ The TUI renderer (`todoToolRenderer`) merges call and result into one transcript
 
 ## Flow
 1. `TodoTool.execute(...)` clones the current cached phases from `session.getTodoPhases?.() ?? []` (`packages/coding-agent/src/tools/todo.ts`).
-2. `resolveTodoParams(...)` validates the raw single-op payload. With `lenientArgValidation`, an omitted `op` can be inferred from non-empty `list` (`init`), non-empty `items` plus a non-empty `phase` (`append`), or non-empty `items` without that phase when no phases exist (`init`). Targeting fields alone cannot infer an op. Other schema failures return `Invalid todo arguments: ...`.
+2. Provider argument validation treats optional `phase: null` as omitted while preserving `phase: ""` for op-specific validation. `resolveTodoParams(...)` validates the single-op payload. With `lenientArgValidation`, an omitted `op` can be inferred from non-empty `list` (`init`), non-empty `items` plus a non-empty `phase` (`append`), or non-empty `items` without that phase when no phases exist (`init`). Targeting fields alone cannot infer an op. Other schema failures return `Invalid todo arguments: ...`.
 3. `applyParams(...)` applies the resolved op with `applyEntry(...)`.
 4. Each op mutates the working phase array:
    - `initPhases(...)` rebuilds the list from scratch.
@@ -71,7 +71,7 @@ The TUI renderer (`todoToolRenderer`) merges call and result into one transcript
    - `block` requires a task or phase target. It marks only `pending`, `in_progress`, or already-`blocked` targets as blocked, preserving completed/abandoned tasks; a repeated block can replace or clear the note.
    - `unblock` requires a task or phase target and changes only blocked targets to `pending`.
    - `rm` removes one task, clears one phase's `tasks`, or clears all phases' task arrays.
-   - `appendItems(...)` resolves or creates the target phase and pushes new `pending` tasks unless the same task content already exists anywhere.
+   - `appendItems(...)` resolves or creates an explicitly named phase. Without `phase`, it selects the first phase containing an `in_progress` task, else the first phase containing a `pending` task, else the final existing phase, else creates `Tasks`. It pushes new `pending` tasks unless the same task content already exists anywhere; existing completed/abandoned tasks stay closed.
 5. Missing task/phase references and op-specific failures are recorded in an `errors` array; any error discards the op's mutations at the end.
 6. After a successful mutation, `normalizeInProgressTask(...)` enforces the single-active-task invariant:
    - if multiple tasks are `in_progress`, only the first stays active and the rest become `pending`;
@@ -102,7 +102,7 @@ Normalization then re-applies the single-active-task rule after the op runs.
   - else `phase` set: affect every task in that exact-name phase.
   - else: affect every task in every phase.
 - `block` and `unblock` use the same task-or-phase lookup but reject an omitted target.
-- `append` is the only op that creates a missing phase.
+- `append` creates a missing named phase. With no phase, it follows the earliest `in_progress` task, then the earliest `pending` task, then the final existing phase, or creates `Tasks` when no phases exist. Appending does not reopen completed tasks; normal auto-start promotes the first pending task if there is no active task.
 - `init` discards previous phases entirely.
 
 ### Markdown round-trip helpers
@@ -145,7 +145,7 @@ The same file also exposes non-tool helpers used by `/todo`:
   - `Task "..." not found` with an extra empty-list hint when applicable, or a hint that tasks are referenced by content (not `task-N` IDs) when the missing content looks like an ID
   - `Missing phase name`
   - `Phase "..." not found`
-  - `Missing phase name for append operation`
+  - `Missing phase name for append operation` for an explicitly empty phase, not an omitted phase
   - `block requires a task or phase target`
   - `unblock requires a task or phase target`
   - `Missing items for append operation`

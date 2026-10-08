@@ -12,6 +12,8 @@
 
 ### Fixed
 
+- Fixed tool argument validation discarding schema-valid explicit `null` values and replacing valid nulls with required-field defaults.
+- Fixed hosted image results reporting requested dimensions instead of the actual dimensions encoded in returned image bytes.
 - Fixed native Codex WebSocket lanes aborting active answers when they reject in-flight steering; deferred input now resumes once through an independent request while preserving streamed output and tool progress.
 - Fixed Codex streams stopping with an unexplained abort after an internal timeout; timeouts now retry correctly, and unexpected transport aborts remain recoverable without overriding caller cancellation.
 - Fixed credential databases retaining file locks after explicit close on Windows.

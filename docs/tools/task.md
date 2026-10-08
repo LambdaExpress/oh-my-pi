@@ -14,6 +14,7 @@
   - `packages/coding-agent/src/task/discovery.ts` — discover project/user/plugin/bundled agents.
   - `packages/coding-agent/src/task/agents.ts` — bundled agent definitions and frontmatter parsing.
   - `packages/coding-agent/src/task/executor.ts` — create child sessions, run subagents, collect output, hand finished sessions to the lifecycle manager.
+  - `packages/coding-agent/src/tools/yield.ts`, `tools/output-schema-validator.ts`, `task/yield-assembly.ts`, and `packages/tui/src/tools/task-yield-assembly.ts` — schema-aware result submission and incremental section assembly.
   - `packages/coding-agent/src/registry/agent-lifecycle.ts` — idle-TTL parking and revival of finished subagents.
   - `packages/coding-agent/src/registry/agent-registry.ts` — process-global agent directory (`running | idle | parked | aborted`).
   - `packages/coding-agent/src/async/job-manager.ts` — background job registration, progress, and result delivery.
@@ -85,6 +86,27 @@ Artifacts and side channels:
 - A subagent's own children are dot-qualified (`<id>.<child>`); `agent://<id>.<child>` reads that nested output. A slash path is always JSON extraction: `agent://<id>/<key>/<index>/…` extracts that value from a JSON output (e.g. `agent://<id>.<child>/reports/0/data`).
 - Each subagent gets `<id>.jsonl` session history when the parent persists artifacts; `history://<id>` renders it as a concise transcript (works for live and parked agents).
 - Isolated patch mode writes `<id>.patch` before merge; nested changes write `<id>.nested-<n>-<path>.patch` files in both merge modes.
+
+### Subagent result submission (`yield`)
+
+- Success uses `{"data": <output>}`; failure uses `{"error": "reason"}`. `data` and `error` are mutually exclusive.
+- Omitting `type`, or supplying a string such as `"result"`, is terminal. Terminal `data` must satisfy the complete effective output schema and is used as the full result, not wrapped under the string type. An explicit terminal payload supersedes accumulated sections.
+- A non-empty `type` array submits incremental sections without ending the turn. With a constrained object output schema, labels name its top-level fields; `data` is the selected field's value, not the full output object.
+- For an array field, each incremental call supplies **one element**, validated against the field's item schema, rather than a batch array. To submit the complete array at once, include it in the full output object of a terminal yield.
+- Multiple labels receive the **same payload**, which must be valid for every selected field. A keyed object is not split by label. Submit different field shapes in separate single-label calls.
+- Closed schemas with finite field names enumerate accepted incremental labels in the wire schema and reject unknown labels. Open schemas keep labels open; schemas with `patternProperties` also accept matching labels rather than restricting the wire array to a finite enum.
+- Repeated scalar-field sections replace the earlier value. Array-field sections accumulate elements into an array, even when only one element is submitted. The assembled object is validated against the full output schema at finalization.
+- `{"type": "result"}` with no `data` finalizes accumulated sections. Without accumulated sections, a data-less typed terminal yield uses the last assistant turn's text; this is rejected when a constrained output schema requires a structured result.
+
+For an output schema declaring `report` as a string, an incremental call is:
+
+```json
+{"type":["report"],"data":"The changed path returned the expected result."}
+```
+
+Here `data` is the string itself, not `{"report": "..."}`. Finish with `{"type":"result"}` to retain the accumulated `report`, or submit a complete terminal object through `data`.
+
+Workpool workers use a separate item-submission contract: `{"key": <1-based batch item number>, "data": <outcome>}` or `{"key": <number>, "error": "reason"}`. The key identifies an item in the current worker batch, not a schema field label or a pool-wide item id. Each key is submitted once; the last outstanding key ends the turn automatically, without a separate terminal yield.
 
 ## Flow
 1. `TaskTool.create(...)` discovers agents through a process-level memo keyed by resolved cwd and effective extension roots (`discoverAgentsForCreate`). `refreshAgentDiscovery(...)` replaces the matching description snapshot after explicit reloads.

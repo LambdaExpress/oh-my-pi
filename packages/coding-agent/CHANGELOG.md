@@ -9,6 +9,14 @@
 
 ### Fixed
 
+- Fixed flat todo appends requiring a phase after completed work; omitted phases now select the existing actionable phase without reopening completed tasks.
+- Fixed session SSH updates losing explicit `null` fields before execution, preventing password and other optional configuration from being cleared.
+- Fixed generated images ignoring explicit pixel dimensions; mismatched outputs now retain transparency and return the requested size with consistent saved-file metadata.
+- Fixed schema-bound subagent yield guidance advertising invalid labels and payload shapes; tool schemas and injected instructions now describe valid field sections.
+- Fixed Unity `.unitypackage` archives being treated as unsupported binaries instead of gzip-compressed TAR containers.
+- Fixed Python Eval structured displays rounding large integer identifiers; unsafe integers now remain exact decimal strings while safe numbers retain their types.
+- Fixed truncated-output footers omitting bounded raw artifact selectors and read guidance hiding the whole-file inline limit.
+- Fixed opaque MCP execution failures lacking actionable diagnostics; original responses remain intact alongside an explicit unknown-execution-outcome advisory.
 - Fixed Windows workspaces starting duplicate language servers when the same directory is addressed with different separators, casing, or equivalent paths.
 - Fixed idle language-server indexes and local embedding models being retained indefinitely in long-running sessions; unused resources now retire automatically while active work remains protected.
 - Fixed shared language-server teardown hanging on blocked writes or leaving wrapper descendants alive after their launcher exits.
@@ -56,7 +64,7 @@
 - `write` reports the real UTF-8 byte count in its progress and success messages instead of the JavaScript character count, so non-ASCII content no longer understates the written size.
 - Fixed mixed line endings being rewritten across a whole file: a patch or edit now keeps every untouched line's original terminator, only new lines adopt the surrounding style.
 - Fixed `bash` failing with `command not found` on Windows when a relative executable path (`./tool.exe`) is combined with a different working directory; relative program paths now resolve against the shell's working directory.
-- Fixed `lsp` returning a raw `No Project.` server dump for TypeScript projects whose language service is disabled: the error now names the cause (including tsserver's 20 MB non-TypeScript program budget, the usual reason a JavaScript project is not loaded) and the concrete fixes (`tsconfig.json`/`jsconfig.json` `include`/`exclude`, `compilerOptions.disableSizeLimit`, `.lsp.json` `initOptions`).
+- Fixed TypeScript semantic requests and LSP status treating disabled projects as ready; supported servers now report per-project availability and actual compiler context before navigation.
 - Fixed JavaScript Eval failing to load packages installed in the session's `node_modules` inside compiled builds: `import()`, `require()` and `createRequire()` now resolve against the on-disk package roots, so CommonJS packages load together with their own dependencies instead of failing with `Cannot find module` or `exports is not defined`.
 - Fixed `debug` reporting `js-debug-adapter` as available when its server script was not runnable, and adapter readiness failures now include the adapter's stderr.
 - Failed subagent jobs with no model output are reported as unavailable instead of a fabricated schema violation with an empty payload.

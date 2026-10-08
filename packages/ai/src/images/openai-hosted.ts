@@ -87,10 +87,12 @@ function collectResponse(response: HostedResponse): ImageGenerationResult {
 	for (const output of response.output ?? []) {
 		if (output.type === "image_generation_call" && output.result) {
 			const bytes = Buffer.from(output.result, "base64");
+			const metadata = parseImageMetadata(bytes);
+			const size = metadata?.width && metadata.height ? `${metadata.width}x${metadata.height}` : output.size;
 			images.push({
 				data: output.result,
-				mimeType: parseImageMetadata(bytes)?.mimeType ?? "image/webp",
-				...(output.size ? { size: output.size } : {}),
+				mimeType: metadata?.mimeType ?? "image/webp",
+				...(size ? { size } : {}),
 				...(output.quality ? { quality: output.quality } : {}),
 			});
 		}

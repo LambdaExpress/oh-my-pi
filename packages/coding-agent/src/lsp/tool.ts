@@ -7,7 +7,7 @@ import type {
 	AgentToolUpdateCallback,
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
-import { isEnoent, isFsError, logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { isEnoent, isFsError, logger, normalizePathForComparison, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import lspDescription from "../prompts/tools/lsp.md" with { type: "text" };
 import type { ToolSession } from "../tools";
@@ -29,8 +29,10 @@ import {
 	type LspServerStatus,
 	notifyClientWatchedFiles,
 	prepareFileForRequest,
+	prepareTypeScriptProject,
 	reconcileFileFromDisk,
 	reconcileIdleChecker,
+	recordTypeScriptProjectFailure,
 	sendNotification,
 	sendRequest,
 	shutdownStaleClients,
@@ -142,19 +144,6 @@ function getFileClientCwd(resolvedFile: string, serverConfig: ServerConfig, sess
 
 const CSHARP_LS_INDEXING_HINT =
 	"csharp-ls may not have indexed this project or the file may be outside its loaded MSBuild workspace. Retry after project load completes; if it persists, verify the initialized project root and csharp-ls logs.";
-
-/**
- * tsserver's "No Project." only says that the queried file is not part of any
- * open project; the raw server dump names no cause and no remedy. The usual
- * cause in a JavaScript tree is tsserver's program budget: a project whose
- * non-TypeScript files exceed `maxProgramSizeForNonTsFiles` (20 MB) is not
- * loaded at all, so semantic requests fail while syntax-only actions still
- * work. Spell out that budget, the two conditions the server cannot report,
- * and the knobs that actually change them, without inventing switches the
- * server does not support.
- */
-const TYPESCRIPT_NO_PROJECT_HINT =
-	'The TypeScript server has no project open for this file, or the project\'s language service is disabled. tsserver refuses to load a project whose non-TypeScript files exceed its 20 MB program budget, which is the usual cause in a JavaScript tree: semantic requests then fail with "No Project." while syntax-only actions still work. Keep large vendored JavaScript (for example public/fontawesome/js or built bundles) out of the project with tsconfig.json/jsconfig.json include/exclude, or set compilerOptions.disableSizeLimit to lift the budget, then retry. Server-specific options can be passed through .lsp.json initOptions; typescript-language-server supports maxTsServerMemory, tsserver.path and tsserver.fallbackPath.';
 
 /**
  * Enumerate the {oldUri, newUri} pairs needed for an LSP willRenameFiles/didRenameFiles request.
@@ -311,11 +300,16 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			// "started" (have a live in-process client) so callers cannot mistake
 			// presence-on-PATH for a working server.
 			const startedClients = getActiveClients();
-			const startedByConfigName = new Map<string, LspServerStatus>();
+			const startedByConfigName = new Map<string, LspServerStatus[]>();
+			const sessionRoot = normalizePathForComparison(this.session.cwd);
 			for (const [name, serverConfig] of Object.entries(config.servers)) {
-				const expectedKey = getLspClientKey(serverConfig, this.session.cwd);
-				const matched = startedClients.find(c => c.clientKey === expectedKey);
-				if (matched) startedByConfigName.set(name, matched);
+				const matched = startedClients.filter(client => {
+					const cwd = client.cwd ?? this.session.cwd;
+					const relative = path.relative(sessionRoot, normalizePathForComparison(cwd));
+					if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return false;
+					return client.clientKey === getLspClientKey(serverConfig, cwd);
+				});
+				if (matched.length > 0) startedByConfigName.set(name, matched);
 			}
 
 			const lines: string[] = [];
@@ -325,12 +319,28 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				const labelled = configuredNames.map(name => {
 					const started = startedByConfigName.get(name);
 					if (!started) return `${name} (configured, not started)`;
-					return `${name} (${started.status})`;
+					const statuses = started.map(client => {
+						const unavailable = client.semanticProjects?.some(project => project.status === "unavailable");
+						const status = unavailable ? "semantic unavailable" : client.status;
+						const relative = client.cwd ? path.relative(this.session.cwd, client.cwd) : "";
+						return relative ? `${status} in ${relative}` : status;
+					});
+					return `${name} (${statuses.join("; ")})`;
 				});
 				lines.push(`Language servers: ${labelled.join(", ")}`);
 				lines.push(
-					"  note: 'configured, not started' means the binary resolves on PATH but no request has spawned it yet; 'ready' means a client process is live for this cwd.",
+					"  note: 'configured, not started' means the binary resolves but no client is live; 'ready' means the initialize handshake completed, not that every file has semantic service. TypeScript semantic availability is checked per requested project.",
 				);
+				for (const [name, started] of startedByConfigName) {
+					for (const client of started) {
+						for (const project of client.semanticProjects ?? []) {
+							lines.push(
+								`  [${name}] ${project.project ?? project.file}: semantic ${project.status} (file ${project.file}; workspace ${client.cwd ?? this.session.cwd})`,
+							);
+							if (project.error) lines.push(project.error);
+						}
+					}
+				}
 			}
 			if (lspmuxStatus) lines.push(lspmuxStatus);
 
@@ -429,6 +439,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						if (isProjectAwareLspServer(serverConfig)) {
 							await waitForProjectLoaded(client, signal);
 							throwIfAborted(signal);
+							await prepareTypeScriptProject(client, resolved, signal);
 						}
 						const expectedDocumentVersion = client.openFiles.get(uri)?.version;
 						// Project-aware servers (Roslyn, tsserver, …) compute pull diagnostics
@@ -1308,8 +1319,10 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 		if (action === "reload") clearInitializationFailure(serverConfig, clientCwd);
 
+		let requestedClient: LspClient | undefined;
 		try {
 			const client = await getOrCreateClient(serverConfig, clientCwd, undefined, signal);
+			requestedClient = client;
 			const targetFile = resolvedFile;
 			const isRustAnalyzerServer = isRustAnalyzerClient(client) || serverName === "rust-analyzer";
 			const needsProjectIndex =
@@ -1772,11 +1785,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				throw new ToolAbortError();
 			}
 			const errorMessage = err instanceof Error ? err.message : String(err);
-			// Keep the original server dump (name, code, message) for debugging,
-			// then append the only actionable reading of tsserver's "No Project.".
-			const noProjectHint = isTypeScriptNoProjectError(serverName, serverConfig, err)
-				? `\n[${serverName}] ${TYPESCRIPT_NO_PROJECT_HINT}`
-				: "";
+			// Preserve the original dump and record unavailable semantics; the
+			// phrase alone is not evidence of a program-size disable.
+			const noProjectHint =
+				requestedClient && resolvedFile && isTypeScriptNoProjectError(serverName, serverConfig, err)
+					? `\n[${serverName}] ${recordTypeScriptProjectFailure(requestedClient, resolvedFile, errorMessage)}`
+					: "";
 			return {
 				content: [{ type: "text", text: `LSP error: ${errorMessage}${noProjectHint}` }],
 				details: { serverName, action, success: false, request: params },

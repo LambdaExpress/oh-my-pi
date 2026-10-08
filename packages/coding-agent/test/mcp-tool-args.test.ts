@@ -2,8 +2,9 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { CustomToolContext } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools";
+import { bridgeValueFromToolResult } from "@oh-my-pi/pi-coding-agent/eval/js/tool-bridge";
 import { DeferredMCPTool, MCPTool, type MCPToolDefinition } from "@oh-my-pi/pi-coding-agent/mcp";
-import type { MCPServerConnection } from "@oh-my-pi/pi-coding-agent/mcp/types";
+import type { MCPServerConnection, MCPToolCallResult } from "@oh-my-pi/pi-coding-agent/mcp/types";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { createMockConnection, createMockTransport } from "./mcp-test-utils";
@@ -422,5 +423,135 @@ describe("MCP tool arguments", () => {
 				params: { name: "read_image_with_model", arguments: { image_path: expectedPath } },
 			},
 		]);
+	});
+});
+
+describe("MCP undiagnosed results", () => {
+	const definition: MCPToolDefinition = {
+		name: "validate",
+		inputSchema: { type: "object" },
+		annotations: { destructiveHint: true },
+	};
+
+	it("exposes execution uncertainty without replacing the server payload or retrying", async () => {
+		const payload = { success: false, message: null, data: null };
+		const upstream = {
+			content: [{ type: "text", text: JSON.stringify(payload) }],
+			structuredContent: payload,
+			_meta: { requestId: "validation-request" },
+			isError: false,
+		} satisfies MCPToolCallResult;
+		let calls = 0;
+		let reconnects = 0;
+		const connection = createMockConnection(
+			{ tools: {} },
+			createMockTransport(new Map([["tools/call", [upstream]]]), () => calls++),
+		);
+		const tool = new MCPTool(connection, definition, async () => {
+			reconnects++;
+			return connection;
+		});
+
+		const result = await tool.execute("validation", {}, undefined, unusedContext);
+		const value = bridgeValueFromToolResult(tool.name, {}, result);
+		if (typeof value !== "object" || value === null || !("text" in value) || !("details" in value)) {
+			throw new Error("Expected an MCP bridge value");
+		}
+
+		expect(calls).toBe(1);
+		expect(reconnects).toBe(0);
+		expect(result.isError).toBeUndefined();
+		expect(result.details?.isError).toBe(false);
+		expect(value.hasError).toBeUndefined();
+		expect(result.details?.structuredContent).toBe(payload);
+		expect(result.details?.rawContent).toBe(upstream.content);
+		expect(result.details?.mcpMeta).toBe(upstream._meta);
+		expect(result.content[0]).toEqual(upstream.content[0]);
+		expect(result.details?.diagnostic).toMatchObject({
+			source: "client",
+			kind: "undiagnosed_server_result",
+			executionOutcome: "unknown",
+			automaticRetry: false,
+		});
+		const diagnostics = result.content.flatMap(block =>
+			block.type === "text"
+				? [...block.text.matchAll(/```json\n([\s\S]*?)\n```/g)].map(match => JSON.parse(match[1]!))
+				: [],
+		);
+		expect(diagnostics).toEqual([{ diagnostic: result.details?.diagnostic }]);
+	});
+
+	it("recognizes a text-only failure envelope while preserving standard MCP isError", async () => {
+		const payload = { success: false, message: null, data: null };
+		const upstream: MCPToolCallResult = {
+			content: [{ type: "text", text: JSON.stringify(payload) }],
+			isError: true,
+		};
+		const connection = createMockConnection(
+			{ tools: {} },
+			createMockTransport(new Map([["tools/call", [upstream]]])),
+		);
+		const tool = new DeferredMCPTool(connection.name, definition, async () => connection);
+
+		const result = await tool.execute("validation-error", {}, undefined, unusedContext);
+
+		expect(result.isError).toBe(true);
+		expect(result.details?.isError).toBe(true);
+		expect(result.details?.rawContent).toBe(upstream.content);
+		expect(result.details?.diagnostic?.executionOutcome).toBe("unknown");
+		expect(result.details?.structuredContent).toBeUndefined();
+	});
+
+	it.each([
+		{ success: false },
+		{ success: false, message: "Validation rejected the input", data: null },
+		{ success: false, message: null, data: { failures: ["Invalid configuration"] } },
+		{ success: false, message: null, data: false },
+		{ success: false, message: null, data: 0 },
+		{ success: false, message: null, data: [] },
+		{ success: false, message: null, data: null, reason: "Already completed" },
+		{ success: true, message: null, data: null },
+	])("leaves domain results and useful diagnostics unchanged: %j", async payload => {
+		const upstream = {
+			content: [{ type: "text", text: JSON.stringify(payload) }],
+			structuredContent: payload,
+			isError: false,
+		} satisfies MCPToolCallResult;
+		const connection = createMockConnection(
+			{ tools: {} },
+			createMockTransport(new Map([["tools/call", [upstream]]])),
+		);
+
+		const result = await new MCPTool(connection, definition).execute("domain-result", {}, undefined, unusedContext);
+
+		expect(result.details?.diagnostic).toBeUndefined();
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toEqual(upstream.content);
+	});
+
+	it("does not call a failure undiagnosed when explanatory content is present", async () => {
+		const payload = { success: false, message: null, data: null };
+		const upstream: MCPToolCallResult = {
+			content: [
+				{ type: "text", text: JSON.stringify(payload) },
+				{ type: "text", text: "Validation found an invalid configuration; inspect the generated report." },
+			],
+			structuredContent: payload,
+			isError: true,
+		};
+		const connection = createMockConnection(
+			{ tools: {} },
+			createMockTransport(new Map([["tools/call", [upstream]]])),
+		);
+
+		const result = await new MCPTool(connection, definition).execute(
+			"diagnosed-result",
+			{},
+			undefined,
+			unusedContext,
+		);
+
+		expect(result.details?.diagnostic).toBeUndefined();
+		expect(result.isError).toBe(true);
 	});
 });

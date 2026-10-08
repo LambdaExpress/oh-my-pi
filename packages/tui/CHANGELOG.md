@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- Fixed full-output recovery notices offering only bare artifact links; notices now include a bounded verbatim read selector.
 - Fixed combined forward and tail read selectors being misidentified as separate paths, including raw-selector ordering and grouped read displays.
 - Fixed debug-server mouse click actions delivering concatenated SGR press and release reports that standard mouse handlers could not parse.
 - Fixed debug input requests losing their acknowledgement when an input handler stops the TUI.

@@ -57,7 +57,7 @@
 7. The message reader in `client.ts` parses LSP frames, resolves pending requests, caches `publishDiagnostics`, tracks `$/progress` tokens for project-load completion, answers `workspace/configuration`, handles dynamic capability registration, and applies `workspace/applyEdit` through `applyWorkspaceEditWithLsp()`.
 8. Semantic single-file actions and concrete-file raw requests call `reconcileFileFromDisk()` before querying: unopened files are opened; externally changed files send `didChange` and discard stale diagnostics. An in-flight OMP write is not reconciled back to its older disk contents. Column resolution uses `resolveSymbolColumn()` from `utils.ts` on the target line and honors `#N` occurrence selectors.
 9. Actions dispatch in `LspTool.execute()` through dedicated branches in `tool.ts`: workspace and multi-server branches (`status`, `diagnostics`, `rename_file`, workspace `symbols`, workspace `reload`, `capabilities`, `request`) run before the single-file switch; other actions share one client lookup.
-10. Requests go through `sendRequest()` in `client.ts`, which allocates an incrementing JSON-RPC id, installs abort and timeout handling, sends `$/cancelRequest` on abort, and rejects on timeout or process exit.
+10. Requests go through `sendRequest()` in `client.ts`. For supported TypeScript servers advertising `typescript.tsserverRequest`, document semantic requests first open the file and query tsserver `projectInfo` on the semantic server. The probe and requested method share one deadline; both normal actions and raw semantic requests use this boundary. The client then allocates an incrementing JSON-RPC id, installs abort and timeout handling, sends `$/cancelRequest` on abort, and rejects on timeout or process exit.
 11. Returned edits preview with `formatWorkspaceEdit()` or apply through `applyWorkspaceEditWithLsp()`, which updates affected live LSP documents. `rename_file` uses `applyEditsThenRename()` for reference edits and the filesystem move, then sends `workspace/didRenameFiles`.
 12. Ordinary failures inside the single-file action block become `LSP error: ...`; `ToolError` and aborts are rethrown. Many precondition failures return explicit text without throwing.
 
@@ -70,6 +70,13 @@
 - `rename_file` sends `workspace/willRenameFiles` and `workspace/didRenameFiles` to every non-custom LSP server from `getLspServers(config)` whose `fileTypes` match the source, destination, or any enumerated rename pair — not just one file-scoped server.
 - Diagnostics are the only tool action that queries both normal LSP servers and custom linter clients (`BiomeClient`, `SwiftLintClient`, or `LspLinterClient`).
 
+### Initialization and semantic availability
+- A resolvable server binary, a completed `initialize` / `initialized` handshake (`ready`), and semantic service for a particular file are distinct states.
+- For servers advertising `typescript.tsserverRequest`, `sendRequest()` preflights `textDocument/definition`, `typeDefinition`, `implementation`, `references`, `hover`, `rename`, and `prepareRename` when their params contain a local `textDocument.uri`. The `projectInfo` response must identify the project and report `languageServiceDisabled: false` before the semantic method is sent.
+- Availability is recorded per queried file and its reported project, not assumed for all files handled by the same client. File-scoped clients use the nearest matching project root, including nested projects.
+- Explicit file/glob diagnostics also use this project-readiness check after opening/refreshing the document and waiting for project load. Workspace diagnostics remain external compiler/checker commands.
+- Servers without the advertised command, including native TypeScript and C# servers that do not advertise it, retain their existing request behavior; there is no generic tsserver probe or inferred TypeScript availability for them.
+
 ### `diagnostics`
 **Inputs**
 - Required: `file`, unless using workspace mode with `file: "*"`.
@@ -78,11 +85,11 @@
 **Execution**
 - `file: "*"`: `runWorkspaceDiagnostics()` detects every supported root-marker language in Rust → TypeScript → Go → Python order and runs up to two checkers concurrently. It runs `cargo check --message-format=short` for `Cargo.toml`, `npx tsc --noEmit` for `tsconfig.json`, `pyright` for `pyproject.toml` / `pyrightconfig.json`, and `go build` for `go.work` / `go.mod`. `go.work` takes precedence over `go.mod`: it reads `go work edit -json` and builds every `Use[].DiskPath/...` pattern (falling back to `./...`); a single module uses `./...`. Polyglot output contains ordered per-language sections. Unknown projects return a supported-marker message without spawning a checker.
 - Concrete file or glob: `resolveDiagnosticTargets()` treats non-globs as one target, otherwise expands a `Bun.Glob` up to `MAX_GLOB_DIAGNOSTIC_TARGETS`.
-- Per file, every matching server runs: custom clients call `lint(file)`; real LSP servers optionally wait for project load, capture `diagnosticsVersion`, `refreshFile()`, then `waitForDiagnostics()`. It accepts fresh push diagnostics (exact document versions immediately, otherwise a settled publish) and issues `textDocument/diagnostic` when the server supports pull diagnostics. A failed pull with no usable fresh publish is a server failure, not a clean result.
+- Per file, every matching server runs: custom clients call `lint(file)`; real LSP servers capture `diagnosticsVersion`, open/refresh the document, and, for project-aware servers, wait for project load and check TypeScript project readiness when supported before `waitForDiagnostics()`. It accepts fresh push diagnostics (exact document versions immediately, otherwise a settled publish) and issues `textDocument/diagnostic` when the server supports pull diagnostics. A failed readiness check is a server failure, not a clean result; a failed pull with no usable fresh publish is also a server failure.
 - Results are deduplicated by range+message and severity-sorted.
 
 **Output text**
-- Single target with no issues from at least one successful server: `OK`, with a warning if other servers failed. Total server failure returns `details.success: false` and an explicit failure message.
+- Single target with no issues from at least one successful server and no unavailable diagnostic results: `OK`, with a warning if other servers failed, including a failed project-readiness check. Total server failure returns `details.success: false` and an explicit failure message; a server that produced no fresh diagnostics is reported as unavailable rather than clean.
 - Single target with issues: `<summary>:\n<grouped diagnostics>`.
 - Batch/glob target: one section per file, plus an initial truncation warning when the glob exceeds the file cap.
 - Workspace mode: `Workspace diagnostics (<detected descriptions>):\n<command output>`. An empty successful checker reports `No issues found`; a non-zero empty result reports that the workspace was not verified.
@@ -200,11 +207,12 @@ Uses the same location normalization and output shape as `definition`, but sends
 - None.
 
 **Execution**
-- Reads configured servers from cached `LspConfig` and cross-references `getActiveClients()` so each server is labelled `(configured, not started)` or with its live client status.
+- Reads configured servers from cached `LspConfig` and cross-references `getActiveClients()` by client identity and workspace root, including nested roots, so each server is labelled `(configured, not started)` or with its live client statuses.
+- A client with a recorded unavailable TypeScript project is labelled `semantic unavailable`, even when its initialization status is `ready`. Queried file/project availability and recorded errors appear below the server summary; unqueried projects are not implicitly verified.
 - Calls `detectLspmux()` and appends status text when `lspmux` is installed.
 
 **Output text**
-- `Language servers: <name (configured, not started) | name (<status>)>` plus an explanatory note line, or `No language servers configured for this project`, optionally followed by `lspmux: active (multiplexing enabled)` or `lspmux: installed but server not running`.
+- `Language servers: <name (configured, not started) | name (<status> [in <nested-root>])>` plus an explanatory note and any per-file/project semantic availability lines, or `No language servers configured for this project`, optionally followed by `lspmux: active (multiplexing enabled)` or `lspmux: installed but server not running`.
 
 ### `reload`
 **Inputs**
@@ -245,6 +253,7 @@ Uses the same location normalization and output shape as `definition`, but sends
   3. Else if `file` is concrete, build `{ textDocument: { uri } }`.
   4. Else use `{}`.
 - Reconciles the file with disk before sending the request when `file` is concrete.
+- Raw document semantic requests pass through the same `sendRequest()` TypeScript project preflight as normal actions, including when `payload` supplies the local `textDocument.uri`.
 
 **Output text**
 - Success: `<server> ← <method>:\n<formatted result>`, where non-string results are `JSON.stringify(..., null, 2)` and nullish values become `null`.
@@ -266,7 +275,7 @@ Uses the same location normalization and output shape as `definition`, but sends
   - Optional external `lspmux` detection spawns `lspmux status`; supported servers may be wrapped through `lspmux client`.
 - Session state (transcript, memory, jobs, checkpoints, registries)
   - Caches config per cwd in `configCache`; workspace `reload` invalidates the entry.
-  - Caches LSP clients by spawn/initialization identity and cwd, with `pendingRequests`, `diagnostics`, `openFiles`, `serverCapabilities`, and project-load state. The transport may represent a shared mux link rather than an owned process.
+  - Caches LSP clients by spawn/initialization identity and cwd, with `pendingRequests`, `diagnostics`, `openFiles`, `serverCapabilities`, and project-load state. TypeScript state additionally records the server-reported compiler selection and per-queried-file project availability. The transport may represent a shared mux link rather than an owned process.
   - Caches custom linter clients by `serverName:cwd`.
   - Updates client `lastActivity`, including indexing progress; idle cleanup defaults to five minutes and can be overridden by workspace `idleTimeoutMs` or `setIdleTimeout()`. Nonpositive overrides disable it; pending requests and active progress prevent retirement.
 - Background work / cancellation
@@ -302,6 +311,8 @@ Uses the same location normalization and output shape as `definition`, but sends
 - Client process exit rejects all pending requests with an exit-code/stderr error assembled in `getOrCreateClient()`.
 - Ordinary single-file action failures inside the main `try` become `LSP error: <message>`; `ToolError` is rethrown.
 - `request` has its own error envelope: `LSP error from <server> on <method>: <message>`.
+- TypeScript `No Project.` errors retain the original server error/stack rather than being replaced by a guessed diagnosis. Single-file action errors append availability context: actual file, client workspace root, reported project (or explicitly not reported), whether `didOpen` was sent, server command, and compiler version/source/tsserver path when the server supplied them. Supported raw semantic requests also record the failure for `status` while preserving the original error.
+- A reported `languageServiceDisabled: true` prevents the semantic request and surfaces an unavailable-project error. `No Project.` alone does not prove a disabled service or a 20 MiB program-size limit. Check file inclusion and tsserver project-load logs; when those logs identify a size-disabled project, narrow that project's `include` / `exclude` to source files and omit built or vendored JavaScript. Raising `maxTsServerMemory` does not lift the program-size limit. The tool does not automatically edit project configuration.
 - Some server failures are intentionally softened:
   - diagnostics continue when one server fails
   - `rename_file` suppresses `workspace/willRenameFiles` “method not found” errors; other errors are notes in preview mode but abort apply mode before mutation
@@ -309,7 +320,7 @@ Uses the same location normalization and output shape as `definition`, but sends
 - Caller aborts are not converted to text. In the main single-file action block, a wall-clock timeout without caller cancellation throws `ToolError`: `LSP <action> timed out after <N>s on <server>. ...`; the separate raw-request branch reports aborts as `ToolAbortError`.
 
 ## Notes
-- `status` reports configured servers from `LspConfig` and labels each one via `getActiveClients()`: `(configured, not started)` means the binary resolves on PATH but no request has spawned it; a live client reports its status.
+- `status` reports configured servers from `LspConfig` and labels their matching live clients, including nested project roots, via `getActiveClients()`: `(configured, not started)` means the binary resolves on PATH but no client is live. `ready` proves initialization only; recorded TypeScript semantic availability is file/project-specific.
 - `getLspServerForFile()` excludes `createClient` adapters; navigation/refactor actions never target Biome/SwiftLint custom clients. Ordinary LSP servers marked `isLinter` remain eligible after primary servers.
 - `getServersForFile()` matches both file extensions and exact basenames from `fileTypes`; config can target names like `Dockerfile` if present.
 - `symbol` matching uses identifier boundaries for bare identifiers, exact case first, then case-insensitive matching, and selects the Nth occurrence on the specified line only. Repeated matches default to the first; use `#N` to select another. It never scans other lines.

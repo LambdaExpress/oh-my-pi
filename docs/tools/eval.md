@@ -135,6 +135,7 @@ With `eval.autoBackground.enabled` (default `false`), a cell that outlives `eval
 - Retained kernels are keyed by `python:${sessionId}`, normalized cwd, and interpreter. `python.kernelMode="per-call"` instead creates and shuts down a fresh kernel for each invocation.
 - The runner uses one persistent asyncio event loop, so top-level `await` works; `asyncio.run(...)` is invalid there.
 - MIME frames support status, PNG, JSON, markdown, plain text, and HTML-to-markdown conversion.
+- Before the host parses display JSON, Python integers outside `−(2^53−1)` through `2^53−1` become exact decimal strings, including nested values and custom MIME-bundle `application/json` output. Safe integers and booleans retain their types; text representations and the user's Python objects are unchanged.
 - Interactive stdin is rejected with `Kernel requested stdin; interactive input is not supported.`
 - Synchronous blocks use the default executor with copied ContextVars; Python bytecode still contends on the GIL.
 
@@ -209,6 +210,7 @@ Registers one background subagent job and returns an `AgentHandle` immediately:
 - JS: `await agent(prompt, { agent?, label?, schema?, schemaMode?, isolated?, apply?, merge?, tools? })`; Python uses keyword arguments (`schema_mode`).
 - Preflight (spawn policy, unknown agent, `task.maxRecursionDepth`, hard turn budget, plan-mode isolation controls, unknown `tools` names) fails handle allocation; Python raises directly, JS's pending handle rejects when awaited/used. Execution failures surface from `.wait()`.
 - `agent` defaults from the current spawn policy; the selected agent's frontmatter model and settings always apply (no per-call `model`). `schema` overrides agent/session schemas; `schemaMode`/`schema_mode` chooses `permissive` or `strict`.
+- Child results use the same schema-aware [yield contract](./task.md#subagent-result-submission-yield) as `task`: incremental labels select top-level fields, and terminal data is the complete output.
 - `isolated` requests isolation. `apply` controls whether captured changes are integrated; `merge=false` selects patch mode while the normal setting controls branch mode.
 - `tools`: names of kernel-defined tools (see below) the child may call; each call executes inside the caller's kernel.
 - Handle surface: `.id`, `.agent`, `.handle` (`agent://<id>`), `.status`, `.done()`, `.wait(timeout?)`, `.send(message)`, `.cancel()`, `.output()`. Python handles are awaitable; JavaScript uses `await handle.wait()`.
@@ -223,7 +225,7 @@ Registers one background subagent job and returns an `AgentHandle` immediately:
 `workpool(agent=None, name=None, context=None, tools=None)` creates a pool of keep-alive subagents bounded by the live `task.maxConcurrency`:
 
 - `.push(*items)` returns item ids (`<pool>#<seq>`). An item goes to the idle worker with the lowest context usage, spawns a new worker while the pool has room, or is queued round-robin onto a busy worker and handed over as one batch when that worker's turn ends. `eval.workpool.freshAgents=true` instead queues for a fresh agent whenever capacity frees, so every item gets a new context and no follow-up batching occurs.
-- A worker submits each batch item separately through `yield({ key: <1-based number>, data: {...} })` or `yield({ key, error })`; each response names the remaining keys, and the final key ends the turn automatically.
+- A worker submits each batch item separately through `yield({ key: <1-based batch item number>, data: <outcome> })` or `yield({ key, error })`. The key is local to the current worker batch, not a pool-wide item id or an incremental schema-field label; submit each key once. Each response names the remaining keys, and the final key ends the turn automatically without a separate terminal yield.
 - The pool name is both its aggregate async-job id and label. Its first full drain settles and closes the pool; create a new named pool for another phase. The aggregate result auto-delivers once, while internal batch jobs are consumed.
 - Completely blocked? Leave eval and call the zero-argument `wait` tool. Results auto-deliver; never poll. There is no `pool.wait()`, so the kernel remains free to serve `@tool` calls.
 - `.status()` reports worker/item counts and context usage; `.peek()` returns a non-consuming `{ batches, pending }` snapshot; `.close()` drops still-queued items. Pools are process-local; after a restart their workers remain parked keep-alive agents reachable via `write agent://<id>`.

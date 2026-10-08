@@ -370,6 +370,15 @@ export interface MCPToolDetails {
 	structuredContent?: Record<string, unknown>;
 	/** Structured metadata from the MCP response */
 	mcpMeta?: Record<string, unknown>;
+	/** Client advisory, separate from the unchanged server payload and MCP isError flag. */
+	diagnostic?: {
+		source: "client";
+		kind: "undiagnosed_server_result";
+		executionOutcome: "unknown";
+		automaticRetry: false;
+		message: string;
+		next: string;
+	};
 	/** Provider ID (e.g., "claude", "mcp-json") */
 	provider?: string;
 	/** Provider display name (e.g., "Claude Code", "MCP Config") */
