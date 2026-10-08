@@ -84,6 +84,8 @@ interface ManagedDaemon {
 	spec: DaemonSpec;
 	snapshot: DaemonSnapshot;
 	dir: string;
+	/** Launch transport, independent of later retention-mode changes. */
+	fileOutput: boolean;
 	log?: DaemonLog;
 	process?: ManagedProcess;
 	input?: Bun.FileSink;
@@ -481,7 +483,11 @@ class DaemonBroker {
 		clearTimeout(this.#idleTimer);
 		this.#idleTimer = undefined;
 		for (const record of this.#records.values()) {
-			const detached = record.spec.detached && !record.stopRequested && record.snapshot.pid !== undefined;
+			// Pipe/PTY retention keeps this broker alive after clients exit, but the
+			// handles cannot survive an explicit broker shutdown. Only file-backed
+			// detached launches are recoverable by another broker.
+			const detached =
+				record.fileOutput && record.spec.detached && !record.stopRequested && record.snapshot.pid !== undefined;
 			if (!detached && !terminalState(record.snapshot.state)) await this.#stopRecord(record, 2_000);
 			// The detached daemon outlives this broker and the next one recovers it from
 			// metadata. Retire this broker's generation so a late exit or readiness
@@ -732,6 +738,7 @@ class DaemonBroker {
 					detached: spec.detached,
 				},
 				dir,
+				fileOutput: spec.detached,
 				log: await DaemonLog.create(dir),
 				generation: 0,
 				stopRequested: false,
@@ -791,7 +798,7 @@ class DaemonBroker {
 		record.outputOffset = 0;
 		this.#persist(record);
 		try {
-			if (record.spec.detached) await this.#launchDetached(record, generation);
+			if (record.fileOutput) await this.#launchDetached(record, generation);
 			else if (record.spec.pty) await this.#launchPty(record, generation);
 			else this.#launchPipe(record, generation);
 			if (record.spec.ready?.port !== undefined) void this.#pollPort(record, generation, record.spec.ready);
@@ -904,7 +911,8 @@ class DaemonBroker {
 				cwd: record.spec.cwd,
 				env: workerEnvFromParent(record.spec.env),
 				stdio: ["ignore", output.fd, output.fd],
-				...DAEMON_SPAWN_OPTIONS,
+				detached: true,
+				windowsHide: true,
 			});
 			record.process = process;
 			record.snapshot.pid = process.pid;
@@ -946,7 +954,7 @@ class DaemonBroker {
 	}
 
 	async #readDetachedOutput(record: ManagedDaemon, generation: number): Promise<void> {
-		if (!record.spec.detached || generation !== record.generation) return;
+		if (!record.fileOutput || generation !== record.generation) return;
 		const logPath = path.join(record.dir, LOG_FILE);
 		let size: number;
 		try {
@@ -980,7 +988,7 @@ class DaemonBroker {
 	}
 
 	async #refreshDetached(record: ManagedDaemon): Promise<void> {
-		if (!record.spec.detached || settledState(record.snapshot.state)) return;
+		if (!record.fileOutput || settledState(record.snapshot.state)) return;
 		const generation = record.generation;
 		await this.#readDetachedOutput(record, generation);
 		if (generation !== record.generation || record.process) return;
@@ -1298,19 +1306,16 @@ class DaemonBroker {
 		if (terminalState(record.snapshot.state) || record.snapshot.state === "stopping") {
 			throw new Error(`Daemon ${operation.name} is ${record.snapshot.state}`);
 		}
-		if (operation.mode === "detached") {
-			if (!record.spec.detached) {
-				record.spec = { ...record.spec, detached: true, pty: false, persist: true };
-				await this.#restart(operation.name);
-			}
-		} else {
-			if (record.spec.detached && operation.mode === "session") {
-				throw new Error(`Detached daemon ${operation.name} must remain persistent`);
-			}
-			record.spec = { ...record.spec, persist: operation.mode === "persist" };
-			record.snapshot.persist = record.spec.persist;
-			this.#persist(record);
+		if (record.fileOutput && operation.mode === "session") {
+			throw new Error(`Detached daemon ${operation.name} must remain persistent`);
 		}
+		// Retention belongs to the independent broker, not the child's launch
+		// transport. Preserve its process, readiness generation and live handles.
+		const detached = record.fileOutput || operation.mode === "detached";
+		record.spec = { ...record.spec, detached, persist: detached || operation.mode === "persist" };
+		record.snapshot.detached = record.spec.detached;
+		record.snapshot.persist = record.spec.persist;
+		this.#persist(record);
 		await record.persistQueue;
 		return { op: "mode", daemon: record.snapshot };
 	}
@@ -1338,6 +1343,7 @@ class DaemonBroker {
 		return JSON.stringify({
 			daemon: { ...record.snapshot },
 			spec: record.spec,
+			fileOutput: record.fileOutput,
 			completionEvents: record.completionCapable,
 			completionSubscriptionId: record.completionSubscriptionId,
 			completionPending: record.pendingCompletions.length > 0,
@@ -1407,9 +1413,12 @@ class DaemonBroker {
 				}
 				const snapshot = parseDaemonSnapshot(decoded.daemon);
 				const spec = parseDaemonSpec(decoded.spec);
+				// Older brokers only detached by relaunching with file-backed output.
+				const fileOutput =
+					"fileOutput" in decoded && typeof decoded.fileOutput === "boolean" ? decoded.fileOutput : spec.detached;
 				const processRef = snapshot.pid === undefined ? null : Process.fromPid(snapshot.pid);
 				const recoverableExit = !terminalState(snapshot.state) && snapshot.state !== "stopping";
-				const detached = spec.detached && recoverableExit && processRef?.status() === "running";
+				const detached = fileOutput && spec.detached && recoverableExit && processRef?.status() === "running";
 				const recoveredDead = recoverableExit && !detached;
 				if (!detached) {
 					// Reap only records that were still alive when the previous broker
@@ -1428,6 +1437,7 @@ class DaemonBroker {
 					spec,
 					snapshot,
 					dir,
+					fileOutput,
 					generation: 0,
 					stopRequested: !detached || snapshot.state === "stopping",
 					logReady: detached && (!spec.ready?.log || snapshot.state === "ready"),

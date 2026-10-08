@@ -1,4 +1,5 @@
-import { isReadableUrlPath, readSelectorRangeStart } from "./read";
+import { isReadableUrlPath } from "./read";
+import { parseLineRangeSelection } from "./line-ranges";
 import { t } from "../i18n";
 import type { Component } from "../tui";
 import { Text } from "../components/text";
@@ -48,8 +49,11 @@ export function repairCollapsedScheme(value: string): string {
 /** Recognize a valid raw, tail, or line-range URL selector token. */
 function isUrlSelectorToken(token: string): boolean {
 	if (token.toLowerCase() === "raw") return true;
-	if (/^-\d+$/.test(token)) return Number.parseInt(token.slice(1), 10) > 0;
-	return readSelectorRangeStart(token) !== undefined;
+	try {
+		return parseLineRangeSelection(token) !== null;
+	} catch {
+		return false;
+	}
 }
 
 /**

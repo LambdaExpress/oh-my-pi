@@ -1491,7 +1491,7 @@ def _magic_cell_timeit(args: str, body: str) -> None:
 def _magic_cell_writefile(args: str, body: str) -> str:
     path = Path(os.path.expanduser(args.strip()))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(body, encoding="utf-8")
+    path.write_text(body, encoding="utf-8", newline="")
     _emit_status("writefile", path=str(path), bytes=len(body))
     return str(path)
 

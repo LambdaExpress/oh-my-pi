@@ -4,18 +4,30 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { cfgIdaAvailable, cfgIdaInstall } from "@oh-my-pi/pi-coding-agent/ida/install";
-import { isExecutableHeader, parseFatSlices, selectSlice, splitSliceRef } from "@oh-my-pi/pi-coding-agent/ida/store";
-import { type BinaryView, parseBinaryView } from "@oh-my-pi/pi-coding-agent/tools/read-binary";
+import { IdaUnavailableError } from "@oh-my-pi/pi-coding-agent/ida/runtime";
+import {
+	isExecutableFile,
+	isExecutableHeader,
+	parseFatSlices,
+	selectSlice,
+	splitSliceRef,
+} from "@oh-my-pi/pi-coding-agent/ida/store";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
+import { type BinaryView, parseBinaryView, resolveBinaryViewPath } from "@oh-my-pi/pi-coding-agent/tools/read-binary";
 import { $which } from "@oh-my-pi/pi-utils";
+
+function peHeader(offset = 0x80): Uint8Array {
+	const bytes = new Uint8Array(offset + 4);
+	bytes.set([0x4d, 0x5a]);
+	new DataView(bytes.buffer).setUint32(0x3c, offset, true);
+	bytes.set([0x50, 0x45, 0, 0], offset);
+	return bytes;
+}
 
 describe("isExecutableHeader", () => {
 	const cases: Array<[string, number[], boolean]> = [
 		["ELF", [0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00], true],
-		[
-			"PE (DOS header, e_lfanew=0x80)",
-			[0x4d, 0x5a, ...Array.from({ length: 58 }, () => 0), 0x80, 0x00, 0x00, 0x00],
-			true,
-		],
 		["8-byte MZ blob", [0x4d, 0x5a, 0xff, 0xfe, 0xc0, 0xc0, 0x90, 0x91], false],
 		["Mach-O 32 BE", [0xfe, 0xed, 0xfa, 0xce, 0, 0, 0, 0], true],
 		["Mach-O 32 LE", [0xce, 0xfa, 0xed, 0xfe, 0, 0, 0, 0], true],
@@ -31,6 +43,103 @@ describe("isExecutableHeader", () => {
 			expect(isExecutableHeader(new Uint8Array(bytes))).toBe(expected);
 		});
 	}
+
+	it.each([64, 65, 0x80, 0x1000, 0x10000])("识别 e_lfanew=%i 的 PE DOS 头", offset => {
+		const bytes = peHeader(offset);
+		expect(isExecutableHeader(bytes)).toBe(true);
+		expect(isExecutableHeader(bytes.subarray(0, 64))).toBe(true);
+		expect(isExecutableHeader(bytes.subarray(0, 63))).toBe(false);
+	});
+
+	it("拒绝指向 DOS 头内部的 PE 偏移", () => {
+		const bytes = peHeader();
+		const view = new DataView(bytes.buffer);
+		for (const offset of [0, 63]) {
+			view.setUint32(0x3c, offset, true);
+			expect(isExecutableHeader(bytes)).toBe(false);
+		}
+	});
+});
+
+describe("二进制文件与视图选择器", () => {
+	let testDir: string;
+	let session: ToolSession;
+	let nativePath: string;
+
+	beforeAll(async () => {
+		testDir = await fs.mkdtemp(path.join(os.tmpdir(), "ida-binary-"));
+		session = {
+			cwd: testDir,
+			hasUI: false,
+			getSessionFile: () => path.join(testDir, "session.jsonl"),
+			getSessionSpawns: () => "*",
+			getArtifactsDir: () => path.join(testDir, "session"),
+			settings: Settings.isolated({ "ida.enabled": false }),
+		};
+		nativePath = path.join(testDir, "native.dll");
+		await Bun.write(nativePath, peHeader(0x5000));
+	});
+
+	afterAll(async () => {
+		await fs.rm(testDir, { recursive: true, force: true });
+	});
+
+	it("完整 DOS 头即可识别 PE，不会因较长 DOS stub 漏掉视图路由", async () => {
+		expect(await isExecutableFile(nativePath)).toBe(true);
+	});
+
+	it("拒绝磁盘上不存在、DOS 头截断或偏移无效的文件", async () => {
+		const truncatedPath = path.join(testDir, "truncated.dll");
+		await Bun.write(truncatedPath, peHeader(0x1000).subarray(0, 63));
+		const invalidPath = path.join(testDir, "invalid.dll");
+		const bytes = peHeader(0x4000);
+		new DataView(bytes.buffer).setUint32(0x3c, 63, true);
+		await Bun.write(invalidPath, bytes);
+		expect(await isExecutableFile(truncatedPath)).toBe(false);
+		expect(await isExecutableFile(invalidPath)).toBe(false);
+		expect(await isExecutableFile(path.join(testDir, "missing.dll"))).toBe(false);
+	});
+
+	it("IDA 关闭时也识别有效 PE 的 imports 选择器，并如实报告不可用", async () => {
+		const target = await resolveBinaryViewPath(session, `${nativePath}:imports`);
+		expect(target).toEqual({ absolutePath: nativePath, view: "imports" });
+		await expect(
+			new ReadTool(session).execute("binary-imports-disabled", { path: `${nativePath}:imports:1-25` }),
+		).rejects.toBeInstanceOf(IdaUnavailableError);
+	});
+
+	it("保留托管方法名称中的双冒号和末尾 asm 视图", async () => {
+		const managedPath = path.join(testDir, "managed.dll");
+		await Bun.write(managedPath, peHeader());
+		const view = "VRC.Core.ConfigManager::Initialize:asm";
+		expect(await resolveBinaryViewPath(session, `${managedPath}:${view}`)).toEqual({
+			absolutePath: managedPath,
+			view,
+		});
+	});
+
+	it("无扩展名的可执行文件也支持视图选择器", async () => {
+		const extensionlessPath = path.join(testDir, "native");
+		await Bun.write(extensionlessPath, peHeader());
+		expect(await resolveBinaryViewPath(session, `${extensionlessPath}:exports`)).toEqual({
+			absolutePath: extensionlessPath,
+			view: "exports",
+		});
+	});
+
+	it("完整字面文件或现存 NTFS 流优先于已存在二进制的选择器", async () => {
+		const binaryPath = path.join(testDir, "literal.dll");
+		await Bun.write(binaryPath, peHeader());
+		const literalPath = `${binaryPath}:imports`;
+		await Bun.write(literalPath, "literal filename");
+		expect(await resolveBinaryViewPath(session, literalPath)).toBeNull();
+		const result = await new ReadTool(session).execute("binary-literal", { path: literalPath });
+		const text = result.content
+			.filter(block => block.type === "text")
+			.map(block => block.text)
+			.join("\n");
+		expect(text).toContain("literal filename");
+	});
 });
 
 /** Big-endian fat header; each entry is `[cputype, cpusubtype, offset, size]`. */
@@ -193,6 +302,49 @@ describe.skipIf(!pythonPath)("IDA worker response protocol", () => {
 			{ id: 3, ok: true, result: { output: "", value: "43", error: null }, dirty: false },
 			{ id: 4, ok: true, result: { closed: true, saved: false } },
 		]);
+	});
+
+	it.each(["pseudocode-native", "pseudocode-managed-supported"])(
+		"以正确 SDK 绑定生成伪代码并清除颜色标签：%s",
+		async mode => {
+			const name = mode === "pseudocode-native" ? "read_value" : "Example::Read";
+			expect(await runWorker(mode)).toEqual([
+				{
+					text: `// ${name} @ 0x1000-0x1003\nint read_value(void)\n{\n    return 1;\n}`,
+					sigint_restored: true,
+				},
+			]);
+		},
+	);
+
+	it.each(["pseudocode-managed", "pseudocode-badarch"])("托管处理器不受支持时保留 IL 与可操作说明：%s", async mode => {
+		const [result] = (await runWorker(mode)) as Array<{ text: string; sigint_restored: boolean }>;
+		expect(result?.sigint_restored).toBe(true);
+		expect(result?.text).toContain("cli");
+		expect(result?.text).toContain("ILSpy");
+		expect(result?.text.endsWith("0x1000  ldc.i4.1\n0x1001  stloc.0\n0x1002  ret")).toBe(true);
+		expect(result?.text).not.toContain("TypeError");
+		expect(result?.text).not.toContain("hexrays_failure_t");
+	});
+
+	it("原生反编译失败时保留 SDK 原因、错误地址及反汇编", async () => {
+		const [result] = (await runWorker("pseudocode-failure")) as Array<{ text: string; sigint_restored: boolean }>;
+		expect(result?.sigint_restored).toBe(true);
+		const failureLine = result?.text.split("\n").find(line => line.includes("cannot convert to microcode"));
+		expect(failureLine).toContain("0x1001");
+		expect(result?.text.endsWith("0x1000  mov eax, 1\n0x1001  nop\n0x1002  ret")).toBe(true);
+	});
+
+	it("原生处理器缺少反编译器时显示反汇编而非绑定错误", async () => {
+		const [result] = (await runWorker("pseudocode-unavailable")) as Array<{ text: string; sigint_restored: boolean }>;
+		expect(result?.sigint_restored).toBe(true);
+		expect(result?.text).toContain("metapc");
+		expect(result?.text.endsWith("0x1000  mov eax, 1\n0x1001  nop\n0x1002  ret")).toBe(true);
+		expect(result?.text).not.toContain("hexrays_failure_t");
+	});
+
+	it.each(["pseudocode-interrupt", "pseudocode-canceled"])("中断不能降级为成功的反汇编：%s", async mode => {
+		expect(await runWorker(mode)).toEqual([{ interrupted: true, sigint_restored: true }]);
 	});
 
 	it("restores the previous SIGINT handler after successful output and a broken protocol pipe", async () => {

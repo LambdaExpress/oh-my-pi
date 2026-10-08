@@ -100,8 +100,7 @@ function isEditLikeToolName(toolName: string): boolean {
 
 /**
  * Argument keys the folded row falls back to when a tool brings no renderer
- * summary: the first one that names the call's subject. Ordered most-specific
- * first so a `grep` folds to its pattern rather than its search root.
+ * summary and no path target: the first one that names the call's subject.
  */
 const ACTIVITY_DETAIL_ARG_KEYS = [
 	"command",
@@ -119,7 +118,7 @@ const ACTIVITY_DETAIL_ARG_KEYS = [
 
 /**
  * Filesystem or URL targets: the generic folded row paints these in the accent
- * color every card header uses for a path, so a folded read/write/glob still
+ * color every card header uses for a path, so a folded read/write still
  * reads as one, instead of the muted prose color.
  */
 const ACTIVITY_PATH_ARG_KEYS = ["path", "file_path", "url"] as const;

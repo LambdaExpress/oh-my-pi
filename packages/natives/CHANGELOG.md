@@ -14,6 +14,8 @@
 
 ### Fixed
 
+- Fixed move-only patch rejection and unintended rewriting of original bytes, including BOMs, mixed line endings, and notebook formatting.
+- Fixed complete unique patch matches being confused with weaker similar-code matches while retaining existing contextual and transactional behavior.
 - Fixed fuzzy patch application rewriting unchanged context, including punctuation, indentation, and original line endings.
 - Fixed Git `diffText` rejecting patches that fit `maxBytes` because input sizes or invalid UTF-8 estimates exceeded the rendered output limit.
 - Fixed embedded `rg` recursively reading its own redirected output and growing files without bound, including hard-link and symlink aliases.

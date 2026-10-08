@@ -1,5 +1,13 @@
 import * as path from "node:path";
-import { isEnoent, logger, postmortem, ptree, stableStringifyJson, untilAborted } from "@oh-my-pi/pi-utils";
+import {
+	isEnoent,
+	logger,
+	normalizePathForComparison,
+	postmortem,
+	ptree,
+	stableStringifyJson,
+	untilAborted,
+} from "@oh-my-pi/pi-utils";
 import { MessageFramer } from "../jsonrpc/message-framing";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { getConfig } from "./config";
@@ -37,8 +45,6 @@ const clientLocks = new Map<string, PendingClient>();
 const invalidatedClientKeys = new Set<string>();
 const clientReloadBarriers = new Map<string, Promise<unknown>>();
 const fileOperationLocks = new Map<string, Promise<void>>();
-/** Last text successfully announced for an open document; entries expire with the OpenFile record. */
-const openFileContents = new WeakMap<OpenFile, string>();
 
 /**
  * URIs whose server overlay OMP has intentionally advanced ahead of the on-disk
@@ -94,17 +100,11 @@ function processExitError(
 }
 
 export function getLspClientKey(config: ServerConfig, cwd: string): string {
-	return stableStringifyJson([
-		config.resolvedCommand ?? config.command,
-		cwd,
-		config.args ?? [],
-		config.initOptions ?? null,
-		config.settings ?? null,
-		config.languageId ?? null,
-	]);
+	return clientKey(config, normalizePathForComparison(cwd));
 }
 
-// Idle timeout configuration (disabled by default)
+// Keep unused language-server indexes from accumulating across long-lived workspaces.
+const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 let idleTimeoutMs: number | null = null;
 let idleCheckInterval: NodeJS.Timeout | null = null;
 const IDLE_CHECK_INTERVAL_MS = 60 * 1000;
@@ -123,7 +123,7 @@ export function setSharedLspEnabled(enabled: boolean): void {
 
 /**
  * Configure the global fallback idle timeout for LSP clients (used in tests/overrides).
- * When unset, each client evaluates against its workspace config (`getConfig(client.cwd).idleTimeoutMs`).
+ * When unset, each client uses its workspace config or the five-minute default.
  * @param ms - Timeout in milliseconds, or null/undefined to disable global override
  */
 export function setIdleTimeout(ms: number | null | undefined): void {
@@ -146,20 +146,20 @@ export function setIdleTimeout(ms: number | null | undefined): void {
  * Exported for tests; the idle checker is the only production caller.
  */
 export function isIdleClient(client: LspClient, now: number, timeoutMs: number): boolean {
-	if (client.pendingRequests.size > 0) return false;
+	if (client.pendingRequests.size > 0 || client.activeProgressTokens.size > 0) return false;
 	return now - client.lastActivity > timeoutMs;
+}
+
+function getClientIdleTimeout(client: LspClient): number {
+	return idleTimeoutMs ?? getConfig(client.cwd).idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
 }
 
 function hasConfiguredIdleTimeout(client?: LspClient): boolean {
 	if (clients.size === 0) return false;
 	if (idleTimeoutMs !== null) return idleTimeoutMs > 0;
-	if (client) {
-		const timeoutMs = getConfig(client.cwd).idleTimeoutMs;
-		if (timeoutMs && timeoutMs > 0) return true;
-	}
+	if (client && getClientIdleTimeout(client) > 0) return true;
 	for (const c of clients.values()) {
-		const timeoutMs = getConfig(c.cwd).idleTimeoutMs;
-		if (timeoutMs && timeoutMs > 0) return true;
+		if (getClientIdleTimeout(c) > 0) return true;
 	}
 	return false;
 }
@@ -205,8 +205,8 @@ export async function checkIdleClients(): Promise<void> {
 	const now = Date.now();
 	for (const client of Array.from(clients.values())) {
 		if (clients.get(client.name) !== client) continue;
-		const timeoutMs = idleTimeoutMs ?? getConfig(client.cwd).idleTimeoutMs;
-		if (timeoutMs && timeoutMs > 0 && isIdleClient(client, now, timeoutMs)) {
+		const timeoutMs = getClientIdleTimeout(client);
+		if (timeoutMs > 0 && isIdleClient(client, now, timeoutMs)) {
 			await shutdownClientInstance(client);
 		}
 	}
@@ -522,6 +522,7 @@ async function startMessageReader(client: LspClient): Promise<void> {
 								client.diagnosticsVersion += 1;
 							} else if (message.method === "$/progress" && message.params) {
 								const params = message.params as { token: string | number; value?: { kind?: string } };
+								client.lastActivity = Date.now();
 								if (params.value?.kind === "begin") {
 									client.activeProgressTokens.add(params.token);
 									rustAnalyzerReadyClients.delete(client);
@@ -702,9 +703,9 @@ async function reconcileExecutedChanges(
 ): Promise<void> {
 	if (executed.length === 0) return;
 	const { finalUris, deletedRoots, watchedFiles } = workspaceEditChanges(executed);
-	const workspace = path.resolve(cwd);
+	const workspace = normalizePathForComparison(cwd);
 	const activeClients = Array.from(clients.values()).filter(
-		client => client.status === "ready" && path.resolve(client.cwd) === workspace,
+		client => client.status === "ready" && normalizePathForComparison(client.cwd) === workspace,
 	);
 
 	for (const activeClient of activeClients) {
@@ -996,8 +997,15 @@ const EXIT_TIMEOUT_MS = 1_000;
  * differently still share, while the same name resolving to different binaries
  * does not. JSON-encoded so no value can forge the separator.
  */
-function clientKey(config: ServerConfig, cwd: string): string {
-	return getLspClientKey(config, cwd);
+function clientKey(config: ServerConfig, normalizedCwd: string): string {
+	return stableStringifyJson([
+		config.resolvedCommand ?? config.command,
+		normalizedCwd,
+		config.args ?? [],
+		config.initOptions ?? null,
+		config.settings ?? null,
+		config.languageId ?? null,
+	]);
 }
 
 /**
@@ -1014,8 +1022,8 @@ export function shutdownStaleClients(
 	configs: readonly ServerConfig[],
 	signal?: AbortSignal,
 ): Promise<string[]> {
-	const fresh = new Set(configs.map(config => clientKey(config, cwd)));
-	const resolvedCwd = path.resolve(cwd);
+	const resolvedCwd = normalizePathForComparison(cwd);
+	const fresh = new Set(configs.map(config => clientKey(config, resolvedCwd)));
 	const previousBarrier = clientReloadBarriers.get(resolvedCwd);
 	const cleanup = (async (): Promise<string[]> => {
 		if (previousBarrier) {
@@ -1032,11 +1040,11 @@ export function shutdownStaleClients(
 		// callers keep sharing their in-flight promise; later callers cannot spawn
 		// another stale process while reload is blocked on teardown.
 		const stalePending = Array.from(clientLocks.entries()).filter(
-			([key, pending]) => path.resolve(pending.cwd) === resolvedCwd && !fresh.has(key),
+			([key, pending]) => normalizePathForComparison(pending.cwd) === resolvedCwd && !fresh.has(key),
 		);
 		for (const [key] of stalePending) invalidatedClientKeys.add(key);
 		for (const client of clients.values()) {
-			if (path.resolve(client.cwd) === resolvedCwd && !fresh.has(client.name)) {
+			if (normalizePathForComparison(client.cwd) === resolvedCwd && !fresh.has(client.name)) {
 				invalidatedClientKeys.add(client.name);
 			}
 		}
@@ -1051,7 +1059,7 @@ export function shutdownStaleClients(
 		);
 
 		const stale = Array.from(clients.values()).filter(
-			client => path.resolve(client.cwd) === resolvedCwd && !fresh.has(client.name),
+			client => normalizePathForComparison(client.cwd) === resolvedCwd && !fresh.has(client.name),
 		);
 		const results = await Promise.all(stale.map(client => shutdownClientInstance(client)));
 		const failed = stale.filter((_client, index) => results[index] !== true);
@@ -1075,7 +1083,7 @@ export function shutdownStaleClients(
 
 /** Allow an explicit user reload to retry a matching initialization failure immediately. */
 export function clearInitializationFailure(config: ServerConfig, cwd: string): void {
-	initFailures.delete(clientKey(config, cwd));
+	initFailures.delete(getLspClientKey(config, cwd));
 }
 
 /**
@@ -1094,7 +1102,8 @@ export async function getOrCreateClient(
 	initTimeoutMs?: number,
 	signal?: AbortSignal,
 ): Promise<LspClient> {
-	const key = clientKey(config, cwd);
+	const normalizedCwd = normalizePathForComparison(cwd);
+	const key = clientKey(config, normalizedCwd);
 	// Check if client already exists
 	const existingClient = clients.get(key);
 	if (existingClient && !invalidatedClientKeys.has(key)) {
@@ -1118,7 +1127,7 @@ export async function getOrCreateClient(
 	}
 
 	// Do not start a fresh identity until superseded processes are confirmed stopped.
-	const reloadBarrier = clientReloadBarriers.get(path.resolve(cwd));
+	const reloadBarrier = clientReloadBarriers.get(normalizedCwd);
 	if (reloadBarrier) {
 		try {
 			await untilAborted(signal, reloadBarrier);
@@ -1182,7 +1191,17 @@ export async function getOrCreateClient(
 				cwd,
 				stdin: "pipe",
 				env: env ? { ...Bun.env, ...env } : undefined,
+				detached: process.platform !== "win32",
 			});
+			if (proc instanceof ptree.ChildProcess) {
+				const localProcess = proc;
+				// A launcher can exit while descendants still own its pipes and memory.
+				// Observe the raw exit before the stderr-draining wrapper can block.
+				void localProcess.proc.exited.then(
+					() => localProcess.kill(),
+					() => localProcess.kill(),
+				);
+			}
 
 			let projectLoadedSettled = true;
 			let projectLoadTimeout: Timer | undefined;
@@ -1371,7 +1390,7 @@ export async function getActiveOrPendingClient(
 	signal?: AbortSignal,
 ): Promise<LspClient | undefined> {
 	throwIfAborted(signal);
-	const key = clientKey(config, cwd);
+	const key = getLspClientKey(config, cwd);
 	const client = clients.get(key);
 	if (client && !invalidatedClientKeys.has(key)) {
 		if (client.proc.exitCode !== null) {
@@ -1432,6 +1451,7 @@ export function endPendingDiskWrite(filePath: string): void {
 export async function ensureFileOpen(client: LspClient, filePath: string, signal?: AbortSignal): Promise<void> {
 	throwIfAborted(signal);
 	const uri = fileToUri(filePath);
+	if (pendingDiskWrites.has(uri)) return;
 	const lockKey = `${client.name}:${uri}`;
 
 	// Check if file is already open
@@ -1440,10 +1460,10 @@ export async function ensureFileOpen(client: LspClient, filePath: string, signal
 	}
 
 	// Check if another operation is already opening this file
-	const existingLock = fileOperationLocks.get(lockKey);
-	if (existingLock) {
+	while (true) {
+		const existingLock = fileOperationLocks.get(lockKey);
+		if (!existingLock) break;
 		await untilAborted(signal, () => existingLock);
-		return;
 	}
 
 	// Lock and open file
@@ -1462,6 +1482,7 @@ export async function ensureFileOpen(client: LspClient, filePath: string, signal
 			if (isEnoent(err)) return;
 			throw err;
 		}
+		if (pendingDiskWrites.has(uri)) return;
 		const languageId = client.config.languageId ?? detectLanguageId(filePath);
 		throwIfAborted(signal);
 
@@ -1481,7 +1502,6 @@ export async function ensureFileOpen(client: LspClient, filePath: string, signal
 
 		const info: OpenFile = { version: 1, languageId, syncedHash: documentSignature(content) };
 		client.openFiles.set(uri, info);
-		openFileContents.set(info, content);
 		client.lastActivity = Date.now();
 	})();
 
@@ -1530,8 +1550,9 @@ export async function reconcileFileFromDisk(
 	}
 
 	const lockKey = `${client.name}:${uri}`;
-	const existingLock = fileOperationLocks.get(lockKey);
-	if (existingLock) {
+	while (true) {
+		const existingLock = fileOperationLocks.get(lockKey);
+		if (!existingLock) break;
 		await untilAborted(signal, () => existingLock);
 	}
 
@@ -1588,6 +1609,44 @@ export async function reconcileFileFromDisk(
 }
 
 /**
+ * Prepare a semantic request against the current client-wide document snapshots.
+ *
+ * Refreshing only the requested file leaves imported open documents pinned to
+ * pre-edit overlays after another process edits them on disk. Reconcile those
+ * dependencies first, then invalidate/recompute the target diagnostics when
+ * their declarations changed. Pending writethrough overlays remain authoritative.
+ * Writethrough callers preserve their already-synced target overlay instead of
+ * reading it back from disk; dependency changes only request fresh analysis.
+ */
+export async function prepareFileForRequest(
+	client: LspClient,
+	filePath: string,
+	options: { signal?: AbortSignal; refreshDiagnostics?: boolean; preserveTargetOverlay?: boolean } = {},
+): Promise<boolean> {
+	const { signal, refreshDiagnostics = false, preserveTargetOverlay = false } = options;
+	throwIfAborted(signal);
+	const targetUri = fileToUri(filePath);
+	let dependenciesChanged = false;
+	for (const uri of Array.from(client.openFiles.keys())) {
+		if (uri === targetUri) continue;
+		if (await reconcileFileFromDisk(client, uriToFile(uri), signal)) dependenciesChanged = true;
+	}
+	if (preserveTargetOverlay) {
+		if (dependenciesChanged) {
+			client.diagnostics.delete(targetUri);
+			await notifySaved(client, filePath, signal);
+		}
+		return dependenciesChanged;
+	}
+	if (refreshDiagnostics || dependenciesChanged) {
+		const previousVersion = client.openFiles.get(targetUri)?.version;
+		await refreshFile(client, filePath, signal);
+		return dependenciesChanged || client.openFiles.get(targetUri)?.version !== previousVersion;
+	}
+	return reconcileFileFromDisk(client, filePath, signal);
+}
+
+/**
  * Wait for the server's initial project loading to complete.
  * Races the server's $/progress tracking against the abort signal.
  * Returns immediately if loading already completed or timed out.
@@ -1619,8 +1678,9 @@ export async function syncContent(
 	const lockKey = `${client.name}:${uri}`;
 	throwIfAborted(signal);
 
-	const existingLock = fileOperationLocks.get(lockKey);
-	if (existingLock) {
+	while (true) {
+		const existingLock = fileOperationLocks.get(lockKey);
+		if (!existingLock) break;
 		await untilAborted(signal, () => existingLock);
 	}
 
@@ -1649,7 +1709,6 @@ export async function syncContent(
 			);
 			const openedInfo: OpenFile = { version: 1, languageId, syncedHash: documentSignature(content) };
 			client.openFiles.set(uri, openedInfo);
-			openFileContents.set(openedInfo, content);
 			client.lastActivity = Date.now();
 			return;
 		}
@@ -1665,7 +1724,6 @@ export async function syncContent(
 			},
 			signal,
 		);
-		openFileContents.set(info, content);
 		info.syncedHash = documentSignature(content);
 		client.lastActivity = Date.now();
 	})();
@@ -1735,13 +1793,19 @@ export async function notifyClientWatchedFiles(
 
 	const timeoutSignal = AbortSignal.timeout(WATCHED_FILES_NOTIFY_TIMEOUT_MS);
 	const sendSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+	// A watcher notification alone does not replace an open document overlay.
+	for (const change of clientChanges) {
+		if (change.type === FileChangeType.Changed && client.openFiles.has(change.uri)) {
+			await refreshFile(client, uriToFile(change.uri), sendSignal);
+		}
+	}
 	await sendNotification(client, "workspace/didChangeWatchedFiles", { changes: clientChanges }, sendSignal);
 	if (clientChanges.every(change => change.type === FileChangeType.Changed)) return;
 	await Promise.all(Array.from(client.openFiles.keys(), uri => refreshFile(client, uriToFile(uri), sendSignal)));
 }
 
 /**
- * Announce harness-authored filesystem changes to active LSP clients for `cwd`.
+ * Announce harness-authored filesystem changes to every active owning workspace.
  *
  * Created or deleted files can change module resolution for otherwise untouched
  * open documents, so those overlays are refreshed after the watcher notification.
@@ -1760,10 +1824,9 @@ export async function notifyWorkspaceWatchedFiles(
 	throwIfAborted(signal);
 	if (changes.length === 0) return;
 
-	const workspace = path.resolve(cwd);
-	const activeClients = Array.from(clients.values()).filter(
-		client => client.status === "ready" && path.resolve(client.cwd) === workspace,
-	);
+	// File queries can use a nested project root rather than the session cwd.
+	// notifyClientWatchedFiles filters changes against each client's own workspace.
+	const activeClients = Array.from(clients.values()).filter(client => client.status === "ready");
 	if (activeClients.length === 0) return;
 
 	const results = await Promise.allSettled(
@@ -1784,10 +1847,12 @@ export async function notifyWorkspaceWatchedFiles(
 export async function refreshFile(client: LspClient, filePath: string, signal?: AbortSignal): Promise<void> {
 	throwIfAborted(signal);
 	const uri = fileToUri(filePath);
+	if (pendingDiskWrites.has(uri)) return;
 	const lockKey = `${client.name}:${uri}`;
 
-	const existingLock = fileOperationLocks.get(lockKey);
-	if (existingLock) {
+	while (true) {
+		const existingLock = fileOperationLocks.get(lockKey);
+		if (!existingLock) break;
 		await untilAborted(signal, () => existingLock);
 	}
 
@@ -1800,10 +1865,7 @@ export async function refreshFile(client: LspClient, filePath: string, signal?: 
 
 	const refreshPromise = (async () => {
 		throwIfAborted(signal);
-		// Drop cached diagnostics for this URI before asking the server to recompute.
-		// Otherwise an unrelated publishDiagnostics notification can advance the global
-		// diagnostics version and cause waiters to accept stale unversioned diagnostics.
-		client.diagnostics.delete(uri);
+		if (pendingDiskWrites.has(uri)) return;
 		const info = client.openFiles.get(uri);
 		if (!info) return;
 
@@ -1815,7 +1877,12 @@ export async function refreshFile(client: LspClient, filePath: string, signal?: 
 			if (isEnoent(err)) return;
 			throw err;
 		}
-		if (openFileContents.get(info) !== content) {
+		// A writethrough can advance the overlay while the disk read is pending.
+		if (pendingDiskWrites.has(uri)) return;
+		// Drop cached diagnostics before requesting analysis of this snapshot.
+		client.diagnostics.delete(uri);
+		const signature = documentSignature(content);
+		if (info.syncedHash !== signature) {
 			const version = ++info.version;
 			throwIfAborted(signal);
 
@@ -1828,7 +1895,7 @@ export async function refreshFile(client: LspClient, filePath: string, signal?: 
 				},
 				signal,
 			);
-			openFileContents.set(info, content);
+			info.syncedHash = signature;
 			throwIfAborted(signal);
 		}
 
@@ -1842,7 +1909,7 @@ export async function refreshFile(client: LspClient, filePath: string, signal?: 
 			signal,
 		);
 
-		info.syncedHash = documentSignature(content);
+		info.syncedHash = signature;
 		client.lastActivity = Date.now();
 	})();
 
@@ -1885,14 +1952,13 @@ export async function shutdownClientInstance(client: LspClient): Promise<boolean
 	}
 	client.pendingRequests.clear();
 
-	const shutdownCompleted = await sendRequest(client, "shutdown", null, undefined, SHUTDOWN_TIMEOUT_MS).then(
-		() => true,
-		() => false,
-	);
-	if (shutdownCompleted) {
-		await sendNotification(client, "exit", undefined).catch(() => {});
-		if (await waitForExit(client, EXIT_TIMEOUT_MS)) return true;
-	}
+	const signal = AbortSignal.timeout(SHUTDOWN_TIMEOUT_MS);
+	const exitedGracefully = await untilAborted(signal, async () => {
+		await sendRequest(client, "shutdown", null, signal);
+		await sendNotification(client, "exit", undefined, signal);
+		return await waitForExit(client, EXIT_TIMEOUT_MS);
+	}).catch(() => false);
+	if (exitedGracefully) return true;
 
 	client.proc.kill();
 	const exited = await waitForExit(client, EXIT_TIMEOUT_MS);
@@ -2094,7 +2160,7 @@ export function getActiveClients(): LspServerStatus[] {
 	return Array.from(clients.values()).map(client => ({
 		name: client.config.command,
 		status: client.status,
-		clientKey: getLspClientKey(client.config, client.cwd),
+		clientKey: client.name,
 		fileTypes: client.config.fileTypes,
 	}));
 }

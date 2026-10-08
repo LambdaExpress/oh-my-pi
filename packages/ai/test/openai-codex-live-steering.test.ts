@@ -12,8 +12,10 @@ import type {
 	ToolResultMessage,
 	UserMessage,
 } from "@oh-my-pi/pi-ai/types";
+import { __resetProxyCache } from "@oh-my-pi/pi-ai/utils/proxy";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import * as piUtils from "@oh-my-pi/pi-utils";
+import { withEnv } from "./helpers";
 
 const { getAgentDir, setAgentDir, TempDir } = piUtils;
 const originalAgentDir = getAgentDir();
@@ -160,6 +162,44 @@ function options(providerSessionState: Map<string, ProviderSessionState>, liveSt
 const SYSTEM = ["You are a helpful assistant."];
 const creates = () => ScriptedWebSocket.sent.filter(frame => frame.type === "response.create");
 const steers = () => ScriptedWebSocket.sent.filter(frame => frame.type === "response.steer");
+
+/** Exercise the production WebSocket against a real loopback protocol peer. */
+async function withProtocolSocket(
+	onFrame: (frame: Frame, send: (...frames: Frame[]) => void) => void,
+	run: (baseUrl: string, sent: Frame[], connections: () => number) => Promise<void>,
+): Promise<void> {
+	await withEnv({ NO_PROXY: "127.0.0.1", no_proxy: "127.0.0.1" }, async () => {
+		__resetProxyCache();
+		const sent: Frame[] = [];
+		let connections = 0;
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch(request, server) {
+				if (server.upgrade(request)) return;
+				return new Response("Expected WebSocket upgrade", { status: 400 });
+			},
+			websocket: {
+				open() {
+					connections++;
+				},
+				message(socket, data) {
+					const frame = JSON.parse(String(data)) as Frame;
+					sent.push(frame);
+					onFrame(frame, (...frames) => {
+						for (const event of frames) socket.send(JSON.stringify(event));
+					});
+				},
+			},
+		});
+		try {
+			await run(`${server.url.origin}/backend-api`, sent, () => connections);
+		} finally {
+			await server.stop(true);
+			__resetProxyCache();
+		}
+	});
+}
 
 describe("codex live steering", () => {
 	it("steers the streaming response and reads the server's automatic continuation without sending a request", async () => {
@@ -331,6 +371,233 @@ describe("codex live steering", () => {
 			{ role: "user", content: [{ type: "input_text", text: "one more thing" }] },
 		]);
 	});
+});
+
+describe("codex native steering protocol", () => {
+	it("rejects only the native steer and delivers its input once at an independent boundary", async () => {
+		let createCount = 0;
+		await withProtocolSocket(
+			(frame, send) => {
+				if (frame.type === "response.steer") {
+					send(
+						{
+							type: "error",
+							error: { code: "unsupported_native_inflight_message", message: "native rejection" },
+						},
+						...messageFrames("msg_final", "Original answer"),
+						{ type: "response.completed", response: { id: "resp_1", status: "completed", usage: USAGE } },
+					);
+					return;
+				}
+				createCount++;
+				if (createCount === 1) {
+					send(
+						{ type: "response.created", response: { id: "resp_1" } },
+						...messageFrames("msg_partial", "Working"),
+					);
+					return;
+				}
+				const responseId = `resp_${createCount}`;
+				send(
+					{ type: "response.created", response: { id: responseId } },
+					...messageFrames(`msg_${createCount}`, createCount === 2 ? "Correction applied" : "Next answer"),
+					{ type: "response.completed", response: { id: responseId, status: "completed", usage: USAGE } },
+				);
+			},
+			async (baseUrl, sent, connections) => {
+				const model = { ...createGpt6Model(), baseUrl };
+				const state = new Map<string, ProviderSessionState>();
+				const steering = oneShotSteering("correct course");
+				const user: UserMessage = { role: "user", content: "Start work", timestamp: 1000 };
+				const firstStream = streamOpenAICodexResponses(
+					model,
+					{ systemPrompt: SYSTEM, messages: [user] },
+					options(state, steering.source),
+				);
+				const deltas: string[] = [];
+				for await (const event of firstStream) {
+					if (event.type === "text_delta") deltas.push(event.delta);
+				}
+				const first = await firstStream.result();
+				expect(first.stopReason).toBe("stop");
+				expect(first.responseId).toBe("resp_1");
+				expect(deltas).toEqual(["Working", "Original answer"]);
+				expect(steering.settled()).toBe("rejected");
+
+				const correction: UserMessage = { role: "user", content: "correct course", timestamp: 1001 };
+				const messages = [user, first, correction];
+				const second = await streamOpenAICodexResponses(
+					model,
+					{ systemPrompt: SYSTEM, messages },
+					options(state),
+				).result();
+				expect(second.stopReason).toBe("stop");
+				expect(second.content).toEqual([expect.objectContaining({ type: "text", text: "Correction applied" })]);
+				await streamOpenAICodexResponses(
+					model,
+					{
+						systemPrompt: SYSTEM,
+						messages: [...messages, second, { role: "user", content: "Continue", timestamp: 1002 }],
+					},
+					options(state),
+				).result();
+
+				const requests = sent.filter(frame => frame.type === "response.create");
+				expect(requests.map(frame => frame.previous_response_id)).toEqual([undefined, undefined, "resp_2"]);
+				const independentInput = requests[1]?.input as Frame[];
+				expect(independentInput.filter(item => item.role === "user")).toEqual([
+					{ role: "user", content: [{ type: "input_text", text: "Start work" }] },
+					{ role: "user", content: [{ type: "input_text", text: "correct course" }] },
+				]);
+				expect(sent.filter(frame => frame.type === "response.steer")).toEqual([
+					{
+						type: "response.steer",
+						previous_response_id: "resp_1",
+						input: [{ role: "user", content: [{ type: "input_text", text: "correct course" }] }],
+					},
+				]);
+				expect(connections()).toBe(1);
+			},
+		);
+	});
+
+	it("reads an accepted successor before applying the rejected input independently", async () => {
+		let createCount = 0;
+		let steerCount = 0;
+		await withProtocolSocket(
+			(frame, send) => {
+				if (frame.type === "response.steer") {
+					steerCount++;
+					if (steerCount === 1) {
+						send({ type: "response.steer.accepted", steer: { id: "steer_1", previous_response_id: "resp_1" } });
+						return;
+					}
+					send(
+						{ type: "error", code: "unsupported_native_inflight_message" },
+						{ type: "response.completed", response: { id: "resp_1", status: "completed", usage: USAGE } },
+						{ type: "response.created", response: { id: "resp_2" } },
+						...messageFrames("msg_2", "Accepted continuation"),
+						{ type: "response.completed", response: { id: "resp_2", status: "completed", usage: USAGE } },
+					);
+					return;
+				}
+				createCount++;
+				const responseId = createCount === 1 ? "resp_1" : "resp_3";
+				send(
+					{ type: "response.created", response: { id: responseId } },
+					...messageFrames(`msg_${responseId}`, createCount === 1 ? "Original answer" : "Rejected input applied"),
+				);
+				if (createCount > 1) {
+					send({ type: "response.completed", response: { id: responseId, status: "completed", usage: USAGE } });
+				}
+			},
+			async (baseUrl, sent, connections) => {
+				const model = { ...createGpt6Model(), baseUrl };
+				const state = new Map<string, ProviderSessionState>();
+				const settled: string[] = [];
+				const input = ["accepted correction", "rejected correction"];
+				let next = 0;
+				const source: LiveSteering = {
+					wait: async signal => {
+						if (next < input.length || signal.aborted) return;
+						const { promise, resolve } = Promise.withResolvers<void>();
+						signal.addEventListener("abort", () => resolve(), { once: true });
+						await promise;
+					},
+					claim: async () => {
+						const text = input[next++];
+						if (!text) return undefined;
+						return {
+							messages: [{ role: "user", content: text, timestamp: 1000 + next }],
+							accept: () => settled.push(`accepted:${text}`),
+							reject: () => settled.push(`rejected:${text}`),
+						};
+					},
+				};
+				const user: UserMessage = { role: "user", content: "Start", timestamp: 1000 };
+				const first = await streamOpenAICodexResponses(
+					model,
+					{ systemPrompt: SYSTEM, messages: [user] },
+					options(state, source),
+				).result();
+				const accepted: UserMessage = { role: "user", content: input[0]!, timestamp: 1001 };
+				const messages = [user, first, accepted];
+				const second = await streamOpenAICodexResponses(
+					model,
+					{ systemPrompt: SYSTEM, messages },
+					options(state),
+				).result();
+				const third = await streamOpenAICodexResponses(
+					model,
+					{
+						systemPrompt: SYSTEM,
+						messages: [...messages, second, { role: "user", content: input[1]!, timestamp: 1002 }],
+					},
+					options(state),
+				).result();
+				expect(settled).toEqual(["accepted:accepted correction", "rejected:rejected correction"]);
+				expect(first.stopReason).toBe("stop");
+				expect(second.content).toEqual([expect.objectContaining({ type: "text", text: "Accepted continuation" })]);
+				expect(second.responseId).toBe("resp_2");
+				expect(third.content).toEqual([expect.objectContaining({ type: "text", text: "Rejected input applied" })]);
+				expect(sent.map(frame => frame.type)).toEqual([
+					"response.create",
+					"response.steer",
+					"response.steer",
+					"response.create",
+				]);
+				expect(sent.at(-1)?.previous_response_id).toBeUndefined();
+				expect(connections()).toBe(1);
+			},
+		);
+	});
+
+	it.each(["no pending steer", "response scoped", "wrong target", "different code", "already accepted"] as const)(
+		"surfaces a native or unrelated response error with %s",
+		async kind => {
+			const code = kind === "different code" ? "invalid_request_error" : "unsupported_native_inflight_message";
+			await withProtocolSocket(
+				(frame, send) => {
+					const failure: Frame = { type: "error", error: { code, message: "Protocol failure" } };
+					if (kind === "response scoped") failure.response = { id: "resp_1" };
+					if (kind === "wrong target") failure.previous_response_id = "resp_other";
+					if (frame.type === "response.create") {
+						send({ type: "response.created", response: { id: "resp_1" } }, ...messageFrames("msg_1", "Partial"));
+						if (kind === "no pending steer") send(failure);
+						return;
+					}
+					if (kind === "already accepted") {
+						send({ type: "response.steer.accepted", steer: { id: "steer_1", previous_response_id: "resp_1" } });
+					}
+					send(failure);
+					if (kind !== "already accepted") {
+						// Settle the actual command separately; this error is not its acknowledgement.
+						send({
+							type: "response.steer.failed",
+							steer: { previous_response_id: "resp_1" },
+							error: { code: "response_already_completed", message: "response ended" },
+						});
+					}
+				},
+				async (baseUrl, sent) => {
+					const state = new Map<string, ProviderSessionState>();
+					const steering = oneShotSteering("correction");
+					const result = await streamOpenAICodexResponses(
+						{ ...createGpt6Model(), baseUrl },
+						{ systemPrompt: SYSTEM, messages: [{ role: "user", content: "Start", timestamp: 1000 }] },
+						options(state, kind === "no pending steer" ? undefined : steering.source),
+					).result();
+					expect(result.stopReason).toBe("error");
+					expect(result.errorMessage).toContain(code);
+					expect(result.content).toEqual([expect.objectContaining({ type: "text", text: "Partial" })]);
+					expect(sent.filter(frame => frame.type === "response.create")).toHaveLength(1);
+					if (kind !== "no pending steer") {
+						expect(steering.settled()).toBe(kind === "already accepted" ? "accepted" : "rejected");
+					}
+				},
+			);
+		},
+	);
 });
 
 describe("planSteeredRequest", () => {

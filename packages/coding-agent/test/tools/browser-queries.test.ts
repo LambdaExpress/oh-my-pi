@@ -136,6 +136,74 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("browser semantic selectors and queries", (
 		});
 	});
 
+	it("隐藏的首个表单返回空作用域观察，保留页面信息和选择器错误", async () => {
+		const scopedName = `hidden-form-${crypto.randomUUID()}`;
+		const html = `<!doctype html>
+<meta charset="utf-8">
+<title>隐藏表单观察</title>
+<form hidden><button>隐藏操作</button></form>
+<form><button>可见操作</button></form>`;
+		const url = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+		try {
+			await invoke({ action: "open", name: scopedName, url });
+			const result = (await invoke({
+				action: "run",
+				name: scopedName,
+				code: `const scoped = [];
+for (const options of [
+	{selector:"form"},
+	{selector:"form",includeAll:true},
+	{selector:"form",viewportOnly:true},
+	{selector:"form",includeAll:true,viewportOnly:true,compact:true},
+]) scoped.push(await tab.observe(options));
+const full = await tab.observe();
+const geometry = await page.evaluate(() => ({
+	viewport: {width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},
+	scroll: {
+		x:scrollX,y:scrollY,width:innerWidth,height:innerHeight,
+		scrollWidth:document.documentElement.scrollWidth,scrollHeight:document.documentElement.scrollHeight,
+	},
+}));
+let missing;
+try { await tab.observe({selector:"#missing-form"}); }
+catch (error) { missing = {name:error.name,message:error.message}; }
+return {scoped,full,geometry,missing};`,
+			})) as {
+				details?: {
+					value?: {
+						scoped: Array<{
+							url: string;
+							title: string;
+							elements: unknown[];
+							viewport: unknown;
+							scroll: unknown;
+						}>;
+						full: { elements: Array<{ role: string; name: string }> };
+						geometry: { viewport: unknown; scroll: unknown };
+						missing?: { name: string; message: string };
+					};
+				};
+			};
+			const value = result.details?.value;
+			expect(value).toBeDefined();
+			for (const observation of value!.scoped) {
+				expect(observation.elements).toEqual([]);
+				expect(observation.url).toBe(url);
+				expect(observation.title).toBe("隐藏表单观察");
+				expect(observation.viewport).toEqual(value!.geometry.viewport);
+				expect(observation.scroll).toEqual(value!.geometry.scroll);
+			}
+			expect(value!.full.elements.filter(element => element.role === "button").map(element => element.name)).toEqual(
+				["可见操作"],
+			);
+			expect(value!.missing?.name).toBe("ToolError");
+			expect(value!.missing?.message).toContain("#missing-form");
+			expect(value!.missing?.message).toContain("matched no element");
+		} finally {
+			await invoke({ action: "close", name: scopedName, kill: true }).catch(() => undefined);
+		}
+	}, 30_000);
+
 	it("observes and clicks rendered modal controls despite AX omissions, split text, and paused rendering", async () => {
 		const modalName = `modal-${crypto.randomUUID()}`;
 		const modalHtml = `<!doctype html>

@@ -1,6 +1,4 @@
-import type { LineRange } from "@oh-my-pi/pi-tui/tools/line-ranges";
-import { parseTailCount } from "./path-utils";
-import { parseLineRanges } from "@oh-my-pi/pi-tui/tools/line-ranges";
+import { type LineRange, mergeLineRanges, parseLineRangeSelection } from "@oh-my-pi/pi-tui/tools/line-ranges";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 /** Parsed representation of a path-embedded selector. */
 export type ParsedSelector =
@@ -9,8 +7,8 @@ export type ParsedSelector =
 	| { kind: "conflicts" }
 	| { kind: "image" }
 	| { kind: "lines"; ranges: [LineRange, ...LineRange[]]; raw?: boolean }
-	/** `:-N` — the last N lines. Needs the source's line count before it can be sliced. */
-	| { kind: "tail"; count: number; raw?: boolean };
+	/** Tail-containing selection; absolute ranges are resolved together with the tail once EOF is known. */
+	| { kind: "tail"; count: number; ranges?: [LineRange, ...LineRange[]]; raw?: boolean };
 
 /**
  * A selector whose bounds are absolute — every kind except `tail`. Slicing
@@ -26,20 +24,24 @@ export function isRawSelector(parsed: ParsedSelector): boolean {
 
 /** Returns true when the selector requested multiple line ranges. */
 export function isMultiRange(parsed: ParsedSelector): boolean {
-	return parsed.kind === "lines" && parsed.ranges.length > 1;
+	return (
+		(parsed.kind === "lines" && parsed.ranges.length > 1) || (parsed.kind === "tail" && parsed.ranges !== undefined)
+	);
 }
 
 /**
- * Pin a `:-N` tail selector to absolute lines against a source of `totalLines`
- * lines; every other selector passes through unchanged. The last N lines become
- * one inclusive range clamped to the source (`totalLines - N + 1` .. `totalLines`),
- * so downstream slicing and out-of-bounds reporting behave exactly as for an
- * explicit `:N-M`.
+ * Pin every tail to the source's line count, then merge it with any absolute
+ * ranges. Pure tails keep their inclusive clamped bounds; mixed lists retain
+ * ascending order and never emit an overlapping line twice.
  */
 export function resolveTailSelector(parsed: ParsedSelector, totalLines: number): ResolvedSelector {
 	if (parsed.kind !== "tail") return parsed;
 	const startLine = Math.max(1, totalLines - parsed.count + 1);
-	return { kind: "lines", ranges: [{ startLine, endLine: Math.max(startLine, totalLines) }], raw: parsed.raw };
+	return {
+		kind: "lines",
+		ranges: mergeLineRanges([{ startLine, endLine: Math.max(startLine, totalLines) }, ...(parsed.ranges ?? [])]),
+		raw: parsed.raw,
+	};
 }
 
 function selectorChunkLooksReadLike(chunk: string): boolean {
@@ -49,7 +51,7 @@ function selectorChunkLooksReadLike(chunk: string): boolean {
 		lower === "conflicts" ||
 		lower === "img" ||
 		/^-\d+(?:[-+]\d+)?$/.test(chunk) ||
-		parseLineRanges(chunk) !== null
+		parseLineRangeSelection(chunk) !== null
 	);
 }
 
@@ -61,11 +63,19 @@ function invalidSelector(sel: string): ToolError {
 
 /** Parse a bare (non-compound) chunk as a line-range list or a tail count. */
 function parseRangeOrTail(chunk: string, raw: boolean): ParsedSelector | null {
-	const ranges = parseLineRanges(chunk);
-	if (ranges) return raw ? { kind: "lines", ranges, raw } : { kind: "lines", ranges };
-	const count = parseTailCount(chunk);
-	if (count !== null) return raw ? { kind: "tail", count, raw } : { kind: "tail", count };
-	return null;
+	const selection = parseLineRangeSelection(chunk);
+	if (!selection) return null;
+	const ranges = selection.ranges.length > 0 ? (selection.ranges as [LineRange, ...LineRange[]]) : undefined;
+	if (selection.tailCount !== undefined) {
+		return {
+			kind: "tail",
+			count: selection.tailCount,
+			...(ranges ? { ranges } : {}),
+			...(raw ? { raw } : {}),
+		};
+	}
+	if (!ranges) return null;
+	return raw ? { kind: "lines", ranges, raw } : { kind: "lines", ranges };
 }
 
 export function parseSel(sel: string | undefined): ParsedSelector {

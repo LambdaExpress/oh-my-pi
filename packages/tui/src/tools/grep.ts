@@ -1,6 +1,13 @@
 import type { Component } from "../tui";
 import { Text } from "../components/text";
-import type { NativeToolHead, NativeToolView, RenderResultOptions, ToolRenderer } from "./renderer";
+import type {
+	NativeToolHead,
+	NativeToolView,
+	RenderResultOptions,
+	ToolActivityContext,
+	ToolActivitySummary,
+	ToolRenderer,
+} from "./renderer";
 import { getLanguageFromPath } from "../lang-from-path";
 import { compact } from "../native/describe";
 import type { NativeChild } from "../native/node";
@@ -29,6 +36,7 @@ import {
 	formatMoreItems,
 	PREVIEW_LIMITS,
 	replaceTabs,
+	sanitizeDisplayWarning,
 } from "../render/render-utils";
 import { classifyGroupedLines, describeGroupedOutput, groupLineIndicesByBlank } from "./grouped-file-output";
 
@@ -249,6 +257,15 @@ function grepStatusIcon(uiTheme: Theme): string {
 /** Render grep calls and results in the transcript. */
 export const grepToolRenderer = {
 	inline: true,
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const input = (args ?? {}) as GrepRenderArgs;
+		const pattern = typeof input.pattern === "string" ? sanitizeDisplayWarning(input.pattern) : "";
+		const scope = sanitizeDisplayWarning(toPathList(input.path ?? input.paths).join(", "));
+		let detail = scope ? context.theme.fg("accent", scope) : "";
+		if (pattern) detail += `${detail ? " " : ""}${context.theme.fg("muted", pattern)}`;
+		return { label: t("Grep"), detail: detail || undefined };
+	},
+
 	renderCall(args: GrepRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const paths = toPathList(args.path ?? args.paths);
 		const meta: string[] = [];

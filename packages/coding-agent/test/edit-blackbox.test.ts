@@ -205,3 +205,100 @@ describe("edit parse-regression blackbox", () => {
 		expect(await Bun.file(logPath).exists()).toBe(false);
 	});
 });
+
+describe("apply_patch 回归", () => {
+	test("只移动的补丁通过工具完整保留原始字节", async () => {
+		const source = path.join(tempDir, "validation.cs");
+		const destination = path.join(tempDir, "staged", "validation.cs.pending");
+		const original = new TextEncoder().encode("\ufeffusing System;\r\n// 保留字节 \t\nclass Validation {}");
+		await Bun.write(source, original);
+		const result = await new EditTool(session, "apply_patch").execute("move-only", {
+			input: [
+				"*** Begin Patch",
+				"*** Update File: validation.cs",
+				"*** Move to: staged/validation.cs.pending",
+				"*** End Patch",
+			].join("\n"),
+		});
+		expect(result.isError).not.toBe(true);
+		expect(await Bun.file(source).exists()).toBe(false);
+		expect(await Bun.file(destination).bytes()).toEqual(original);
+		expect(await Bun.file(logPath).exists()).toBe(false);
+	});
+
+	test("多段补丁用完整两行选中唯一 GoGo 场景", async () => {
+		const declaration =
+			'                    var gogo = AssetDatabase.LoadAssetAtPath<VRCExpressionsMenu>("Assets/GoGoLocoMenu/Menu.asset");';
+		const removed = "                    var goControl = WalkMenus(gogo).SelectMany(m => m.controls)";
+		const replacement = "                    var goControl = WalkMenus(mergedGoMenu).SelectMany(m => m.controls)";
+		const original = [
+			"const int Version = 1;",
+			declaration,
+			removed,
+			"// 保留相似场景 \t",
+			declaration,
+			"                    var control = WalkMenus(gogo).SelectMany(m => m.controls)",
+			"",
+		].join("\r\n");
+		const source = path.join(tempDir, "scenarios.cs");
+		await Bun.write(source, original);
+		const result = await new EditTool(session, "apply_patch").execute("unique-hunk", {
+			input: [
+				"*** Begin Patch",
+				"*** Update File: scenarios.cs",
+				"@@",
+				"-const int Version = 1;",
+				"+const int Version = 2;",
+				"@@",
+				`-${declaration}`,
+				`-${removed}`,
+				`+${replacement}`,
+				"*** End Patch",
+			].join("\n"),
+		});
+		expect(result.isError).not.toBe(true);
+		expect(await Bun.file(source).text()).toBe(
+			original
+				.replace("const int Version = 1;", "const int Version = 2;")
+				.replace(`${declaration}\r\n${removed}`, replacement),
+		);
+	});
+
+	test("真正重复的完整补丁阻止组合补丁的所有文件变更", async () => {
+		const source = path.join(tempDir, "source.txt");
+		const stable = path.join(tempDir, "stable.txt");
+		const ambiguous = path.join(tempDir, "ambiguous.cs");
+		const originalSource = "\ufeffkeep\r\nthese bytes\n";
+		const duplicate = "var gogo = LoadMenu();\nvar goControl = WalkMenus(gogo);";
+		const originalAmbiguous = `version = 1;\n${duplicate}\nseparator();\n${duplicate}\n`;
+		await Bun.write(source, originalSource);
+		await Bun.write(stable, "old\n");
+		await Bun.write(ambiguous, originalAmbiguous);
+		const result = await new EditTool(session, "apply_patch").execute("ambiguous-hunk", {
+			input: [
+				"*** Begin Patch",
+				"*** Update File: source.txt",
+				"*** Move to: destination.txt",
+				"*** Update File: stable.txt",
+				"@@",
+				"-old",
+				"+new",
+				"*** Update File: ambiguous.cs",
+				"@@",
+				"-version = 1;",
+				"+version = 2;",
+				"@@",
+				"-var gogo = LoadMenu();",
+				"-var goControl = WalkMenus(gogo);",
+				"+var goControl = WalkMenus(mergedGoMenu);",
+				"*** End Patch",
+			].join("\n"),
+		});
+		expect(result.isError).toBe(true);
+		expect(await Bun.file(path.join(tempDir, "destination.txt")).exists()).toBe(false);
+		expect(Buffer.from(await Bun.file(source).arrayBuffer())).toEqual(Buffer.from(originalSource));
+		expect(await Bun.file(stable).text()).toBe("old\n");
+		expect(await Bun.file(ambiguous).text()).toBe(originalAmbiguous);
+		expect(await Bun.file(logPath).exists()).toBe(false);
+	});
+});

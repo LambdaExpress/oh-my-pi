@@ -681,6 +681,71 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("reclaims unused indexes by default while honoring a workspace idle opt-out", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-default-idle-");
+		const config: ServerConfig = {
+			command: "fake-lsp-default-idle",
+			fileTypes: [".ts"],
+			rootMarkers: [],
+		};
+		try {
+			lspClient.setIdleTimeout(null);
+			configCache.set(tempDir.path(), { servers: {} });
+			const server = installHandshakeLsp();
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			client.lastActivity = Date.now() - 30 * 60_000;
+
+			configCache.set(tempDir.path(), { servers: {}, idleTimeoutMs: 0 });
+			await lspClient.checkIdleClients();
+			expect(client.proc.exitCode).toBeNull();
+			expect(lspClient.getActiveClients().some(active => active.name === config.command)).toBe(true);
+
+			configCache.set(tempDir.path(), { servers: {} });
+			await lspClient.checkIdleClients();
+			expect(client.proc.exitCode).toBe(0);
+			expect(lspClient.getActiveClients().some(active => active.name === config.command)).toBe(false);
+			expect(server.killed).toBe(false);
+
+			installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			expect(replacement).not.toBe(client);
+			expect(replacement.status).toBe("ready");
+			expect(replacement.proc.exitCode).toBeNull();
+		} finally {
+			await lspClient.shutdownAll();
+			configCache.delete(tempDir.path());
+			tempDir.removeSync();
+		}
+	});
+
+	it("starts a fresh idle window after a long background indexing cycle", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-index-idle-");
+		try {
+			const server = installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					srv.send({ jsonrpc: "2.0", method: "$/progress", params: { token: "index", value: { kind: "begin" } } });
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+			const config: ServerConfig = { command: "fake-index-idle", fileTypes: [".ts"], rootMarkers: [] };
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			client.lastActivity = Date.now() - 30 * 60_000;
+			server.send({ jsonrpc: "2.0", method: "$/progress", params: { token: "index", value: { kind: "end" } } });
+			await client.projectLoaded;
+
+			expect(client.activeProgressTokens.size).toBe(0);
+			expect(lspClient.isIdleClient(client, Date.now(), 60_000)).toBe(false);
+		} finally {
+			await lspClient.shutdownAll();
+			configCache.delete(tempDir.path());
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload applies timeout-only config changes without restarting the client (#8389)", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-rearm-config-");
 		const config: ServerConfig = {
@@ -703,7 +768,6 @@ describe("lsp regressions", () => {
 				1_000,
 			);
 			const tool = new LspTool(makeLspSession(tempDir.path()));
-			expect(lspClient.isIdleCheckerRunning()).toBe(false);
 
 			await Bun.write(configPath, JSON.stringify({ ...workspaceConfig, idleTimeoutMs: 5_000 }));
 			await tool.execute("reload-add-timeout", { action: "reload" });
@@ -711,7 +775,6 @@ describe("lsp regressions", () => {
 
 			await Bun.write(configPath, JSON.stringify(workspaceConfig));
 			await tool.execute("reload-remove-timeout", { action: "reload", file: "*" });
-			expect(lspClient.isIdleCheckerRunning()).toBe(false);
 			client.lastActivity = Date.now() - 6_000;
 			await lspClient.checkIdleClients();
 			expect(lspClient.getActiveClients().map(active => active.name)).toContain(config.command);
@@ -728,6 +791,35 @@ describe("lsp regressions", () => {
 			lspClient.setIdleTimeout(null);
 			configCache.delete(tempDir.path());
 			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("reuses a client and tears down stale configuration across equivalent workspace paths", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-path-identity-");
+		try {
+			const config: ServerConfig = { command: "fake-path-identity", fileTypes: [".ts"], rootMarkers: [] };
+			installHandshakeLsp();
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			const aliases = [`${tempDir.path()}${path.sep}.`];
+			if (process.platform === "win32") {
+				aliases.push(tempDir.path().replaceAll("\\", "/"), tempDir.path().toUpperCase());
+			}
+			for (const cwd of aliases) {
+				expect(await lspClient.getOrCreateClient(config, cwd, 1_000)).toBe(client);
+			}
+			expect(lspClient.getActiveClients().filter(active => active.name === config.command)).toHaveLength(1);
+
+			const replacementConfig: ServerConfig = { ...config, args: ["--fresh-config"] };
+			expect(await lspClient.shutdownStaleClients(aliases.at(-1)!, [replacementConfig])).toEqual([config.command]);
+			expect(client.proc.exitCode).toBe(0);
+			installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(replacementConfig, tempDir.path(), 1_000);
+			expect(replacement).not.toBe(client);
+			expect(lspClient.getActiveClients().filter(active => active.name === config.command)).toHaveLength(1);
+		} finally {
+			await lspClient.shutdownAll();
+			configCache.delete(tempDir.path());
 			tempDir.removeSync();
 		}
 	});
@@ -754,7 +846,7 @@ describe("lsp regressions", () => {
 
 			const startingClient = lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
 			await server.waitFor(message => message.method === "initialize");
-			const existingClient = lspClient.getActiveOrPendingClient(config, tempDir.path());
+			const existingClient = lspClient.getActiveOrPendingClient(config, `${tempDir.path()}${path.sep}.`);
 			let settled = false;
 			void existingClient.then(() => {
 				settled = true;
@@ -1497,6 +1589,63 @@ describe("lsp regressions", () => {
 			const result = await collectGlobMatches("*.ts", tempDir.path(), 2);
 			expect(result.matches).toHaveLength(2);
 			expect(result.truncated).toBe(true);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("目录分支和嵌套花括号选择真实文件，并准确处理文件限制边界", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-directory-braces-");
+		try {
+			const expected = [
+				"src/chat/read-tool-group.ts",
+				"src/tools/fetch.ts",
+				"src/tools/line-ranges.ts",
+				"src/tools/read.ts",
+			];
+			await Promise.all(expected.map(file => Bun.write(path.join(tempDir.path(), file), "export {};\n")));
+			await Bun.write(path.join(tempDir.path(), ".gitignore"), "src/tools/read.ts\n");
+			await fsp.mkdir(path.join(tempDir.path(), "src/tools/placeholder.ts"), { recursive: true });
+			await Bun.write(path.join(tempDir.path(), "src/tools/placeholder.ts/nested.ts"), "export {};\n");
+			const pattern = "src/{tools/{line-ranges,read,fetch,placeholder},chat/read-tool-group}.ts";
+
+			const exact = await resolveDiagnosticTargets(pattern, tempDir.path(), 4);
+			expect(exact.matches.map(file => file.replaceAll("\\", "/")).sort()).toEqual(expected);
+			expect(exact.truncated).toBe(false);
+
+			const limited = await resolveDiagnosticTargets(pattern, tempDir.path(), 3);
+			expect(limited.matches).toHaveLength(3);
+			expect(limited.matches.every(file => expected.includes(file.replaceAll("\\", "/")))).toBe(true);
+			expect(limited.truncated).toBe(true);
+
+			const alternatives = await resolveDiagnosticTargets(
+				"src/{tools/read,chat/read-tool-group}.ts",
+				tempDir.path(),
+				4,
+			);
+			expect(alternatives.matches.map(file => file.replaceAll("\\", "/")).sort()).toEqual([
+				"src/chat/read-tool-group.ts",
+				"src/tools/read.ts",
+			]);
+			expect(alternatives.truncated).toBe(false);
+
+			const absolute = await resolveDiagnosticTargets(path.join(tempDir.path(), pattern), tempDir.path(), 4);
+			expect(absolute.matches.every(file => path.isAbsolute(file))).toBe(true);
+			expect(absolute.matches.map(file => path.relative(tempDir.path(), file).replaceAll("\\", "/")).sort()).toEqual(
+				expected,
+			);
+			expect(absolute.truncated).toBe(false);
+
+			const directChildren = await collectGlobMatches("src/tools/*.ts", tempDir.path(), 4);
+			expect(directChildren.matches.map(file => file.replaceAll("\\", "/")).sort()).toEqual(expected.slice(1));
+			expect(directChildren.truncated).toBe(false);
+
+			const missing = await resolveDiagnosticTargets("missing/**/*.ts", tempDir.path(), 4);
+			expect(missing).toEqual({ matches: [], truncated: false });
+			await expect(collectGlobMatches("*.ts", path.join(tempDir.path(), expected[0]), 4)).rejects.toHaveProperty(
+				"code",
+				"ENOTDIR",
+			);
 		} finally {
 			tempDir.removeSync();
 		}
@@ -6121,6 +6270,40 @@ describe("lsp regressions", () => {
 				const exited = await lspClient.shutdownClientInstance(client);
 				expect(exited).toBe(true);
 				expect(lspClient.getActiveClients().some(s => s.name === config.command)).toBe(false);
+			} finally {
+				vi.restoreAllMocks();
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
+		it("forces teardown when the exit notification cannot drain", async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-exit-drain-");
+			try {
+				const server = installFakeLsp((message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				});
+				const config: ServerConfig = { command: "fake-exit-drain", fileTypes: [".ts"], rootMarkers: [] };
+				const client = await lspClient.getOrCreateClient(config, tempDir.path());
+				const deadline = new AbortController();
+				vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+				const blocked = Promise.withResolvers<void>();
+				vi.spyOn(server.proc.stdin, "flush").mockImplementation(() =>
+					server.received.at(-1)?.method === "exit" ? blocked.promise : 0,
+				);
+
+				const shutdown = lspClient.shutdownClientInstance(client);
+				await server.waitFor(message => message.method === "exit");
+				deadline.abort(new Error("shutdown deadline"));
+
+				expect(await shutdown).toBe(true);
+				expect(server.killed).toBe(true);
+				expect(lspClient.getActiveClients().some(active => active.name === config.command)).toBe(false);
+				blocked.resolve();
 			} finally {
 				vi.restoreAllMocks();
 				await lspClient.shutdownAll();

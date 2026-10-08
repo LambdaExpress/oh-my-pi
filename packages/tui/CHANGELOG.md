@@ -9,6 +9,8 @@
 
 ### Changed
 
+- Folded outgoing agent messages now use IRC labels with direction, recipient, and streaming body previews, matching incoming IRC cards instead of hiding message text behind recipient-only summaries.
+- Folded Grep rows now show the scope before the search pattern so long expressions do not hide the target path; Grep and Glob patterns use muted text while Grep scopes retain their accent color.
 - Folded tool rows show a pen while arguments stream and a clock while waiting for results, including grouped reads and native terminal surfaces.
 - `Loader.setMessage()` now accepts a live message callback, so updated status labels can continue refreshing timers and countdowns.
 - Changed the default editor undo shortcut to include `Ctrl+Z` while preserving the existing `Ctrl+-` and `Ctrl+_` bindings.
@@ -16,6 +18,7 @@
 
 ### Fixed
 
+- Fixed combined forward and tail read selectors being misidentified as separate paths, including raw-selector ordering and grouped read displays.
 - Fixed debug-server mouse click actions delivering concatenated SGR press and release reports that standard mouse handlers could not parse.
 - Fixed debug input requests losing their acknowledgement when an input handler stops the TUI.
 - Fixed terminal resize feedback loops in Herdr and Warp-class hosts after the explicit-history renderer rewrite dropped their in-place resize path. Resize notifications now stay on the normal screen, coalesce through one quiet window, and produce one settled repaint instead of repeatedly toggling the alternate screen and flashing long transcripts.

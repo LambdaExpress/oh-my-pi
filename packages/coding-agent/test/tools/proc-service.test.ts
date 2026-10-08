@@ -289,6 +289,8 @@ describe("bash services via proc://", () => {
 			`process.stdin.setEncoding("utf8");
 process.stdin.resume();
 let input = "";
+const token = crypto.randomUUID();
+let counter = 0;
 process.stdin.on("data", chunk => {
 	input += chunk;
 	for (;;) {
@@ -296,13 +298,18 @@ process.stdin.on("data", chunk => {
 		if (newline < 0) break;
 		const line = input.slice(0, newline).replace(/\\r$/, "");
 		input = input.slice(newline + 1);
+		counter++;
 		process.stdout.write("ACK:[" + line + "]\\n");
 	}
 });
 const server = Bun.serve({
 	hostname: "127.0.0.1",
 	port: 0,
-	fetch() { return new Response(process.argv[2]); }
+	fetch(request) {
+		return new URL(request.url).pathname === "/state"
+			? Response.json({ pid: process.pid, token, counter })
+			: new Response(process.argv[2]);
+	}
 });
 process.stdout.write(process.argv[2] + ":" + server.port + "\\n");
 `,
@@ -424,11 +431,54 @@ process.stdout.write(process.argv[2] + ":" + server.port + "\\n");
 				pty: false,
 			});
 			expect(background.details?.service?.ready).toBeTrue();
+			const beforeDetach = await client.request({ op: "describe", name: "detach-candidate" });
+			if (beforeDetach.op !== "describe") throw new Error("Expected service description");
+			const originalPort = beforeDetach.daemon.readyMatch?.match(/RUNNING:(\d+)/)?.[1];
+			if (!originalPort) throw new Error("Service did not publish its HTTP port");
+			const originalState = (await (await fetch(`http://127.0.0.1:${originalPort}/state`)).json()) as {
+				pid: number;
+				token: string;
+				counter: number;
+			};
+			await proc.write(parseInternalUrl("proc://detach-candidate"), "before-detach", { session });
+			await client.request({
+				op: "wait",
+				name: "detach-candidate",
+				for: "exit",
+				pattern: "ACK:\\[before-detach\\]",
+				timeoutMs: 2_000,
+			});
 			const detached = await proc.write(parseInternalUrl("proc://detach-candidate/mode"), "detached", { session });
 			expect(detached.details?.proc).toMatchObject({
 				action: "mode",
 				mode: "detached",
-				daemon: { detached: true, persist: true },
+				daemon: {
+					detached: true,
+					persist: true,
+					id: beforeDetach.daemon.id,
+					pid: beforeDetach.daemon.pid,
+					startedAt: beforeDetach.daemon.startedAt,
+					readyAt: beforeDetach.daemon.readyAt,
+					readyMatch: beforeDetach.daemon.readyMatch,
+					restartCount: beforeDetach.daemon.restartCount,
+				},
+			});
+			expect(await (await fetch(`http://127.0.0.1:${originalPort}/state`)).json()).toEqual({
+				...originalState,
+				counter: 1,
+			});
+			await proc.write(parseInternalUrl("proc://detach-candidate"), "after-detach", { session });
+			const afterDetach = await client.request({
+				op: "wait",
+				name: "detach-candidate",
+				for: "exit",
+				pattern: "ACK:\\[after-detach\\]",
+				timeoutMs: 2_000,
+			});
+			expect(afterDetach.op === "wait" && afterDetach.matched).toBe("ACK:[after-detach]");
+			expect(await (await fetch(`http://127.0.0.1:${originalPort}/state`)).json()).toEqual({
+				...originalState,
+				counter: 2,
 			});
 			const detachedReady = await client.request({
 				op: "wait",
@@ -440,6 +490,8 @@ process.stdout.write(process.argv[2] + ":" + server.port + "\\n");
 			expect(detachedReady.timedOut).toBeFalse();
 			const detachedRead = await proc.resolve(parseInternalUrl("proc://detach-candidate"), { session });
 			expect(detachedRead.details?.proc?.daemon).toMatchObject({ detached: true, persist: true });
+			expect(detachedRead.details?.proc?.log).toContain("ACK:[before-detach]");
+			expect(detachedRead.details?.proc?.log).toContain("ACK:[after-detach]");
 			const detachedPort = detachedReady.daemon.readyMatch?.match(/RUNNING:(\d+)/)?.[1];
 			if (!detachedPort) throw new Error("Detached service did not publish its HTTP port");
 			expect(await (await fetch(`http://127.0.0.1:${detachedPort}/`)).text()).toBe("RUNNING");
@@ -447,10 +499,26 @@ process.stdout.write(process.argv[2] + ":" + server.port + "\\n");
 				path.join(runtimeDir, "daemons", "detach-candidate", "meta.json"),
 			).json();
 			expect(detachedMetadata.spec).toMatchObject({ detached: true, persist: true });
-			await expectProcError(
-				proc.write(parseInternalUrl("proc://detach-candidate/mode"), "session", { session }),
-				"must remain persistent",
-			);
+			await proc.write(parseInternalUrl("proc://detach-candidate/mode"), "persist", {
+				session,
+			});
+			const attachedPersist = await client.request({ op: "describe", name: "detach-candidate" });
+			if (attachedPersist.op !== "describe") throw new Error("Expected persistent service description");
+			expect(attachedPersist.daemon).toMatchObject({
+				pid: beforeDetach.daemon.pid,
+				detached: false,
+				persist: true,
+			});
+			await proc.write(parseInternalUrl("proc://detach-candidate/mode"), "session", {
+				session,
+			});
+			const attachedSession = await client.request({ op: "describe", name: "detach-candidate" });
+			if (attachedSession.op !== "describe") throw new Error("Expected session service description");
+			expect(attachedSession.daemon).toMatchObject({
+				pid: beforeDetach.daemon.pid,
+				detached: false,
+				persist: false,
+			});
 			await proc.write(parseInternalUrl("proc://detach-candidate/kill"), "", { session });
 			await expectProcError(
 				bash.execute("invalid", { command: "true", name: "bad", async: true }),

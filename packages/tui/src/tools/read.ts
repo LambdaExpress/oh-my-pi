@@ -1,6 +1,6 @@
 import type { SummaryResult } from "@oh-my-pi/pi-natives";
 import { formatNumberedLine } from "./hashline-format";
-import { LINE_RANGE_CHUNK_SOURCE, parseLineRanges } from "./line-ranges";
+import { LINE_RANGE_SELECTION_SOURCE, parseLineRanges } from "./line-ranges";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parseArchivePathCandidates } from "@oh-my-pi/pi-utils/ar";
@@ -94,20 +94,14 @@ export interface ReadToolDetails {
 	displayReadTargetLinks?: Array<string | null>;
 }
 
-// Parsing also recognizes incomplete counts to explain their errors; path splitting
-// only peels complete selectors (not a trailing `+` or `L`).
-const RANGE_SELECTOR_CHUNK = `${LINE_RANGE_CHUNK_SOURCE}(?<=[\\d.-])`;
-const RANGE_LIST_SRC = `${RANGE_SELECTOR_CHUNK}(?:,${RANGE_SELECTOR_CHUNK})*`;
-// A tail selector: `-N` reads the last N lines. Keep in sync with TAIL_SELECTOR_RE.
-const TAIL_CHUNK_SRC = String.raw`-\d+`;
-const FILE_LINE_RANGE_RE = new RegExp(`^(?:${RANGE_LIST_SRC}|${TAIL_CHUNK_SRC}|raw|conflicts|img)$`, "i");
-const FILE_LINE_RANGE_ONLY_RE = new RegExp(`^(?:${RANGE_LIST_SRC}|${TAIL_CHUNK_SRC})$`, "i");
+const FILE_LINE_RANGE_RE = new RegExp(`^(?:${LINE_RANGE_SELECTION_SOURCE}|raw|conflicts|img)$`, "i");
+const FILE_LINE_RANGE_ONLY_RE = new RegExp(`^${LINE_RANGE_SELECTION_SOURCE}$`, "i");
 const FILE_RAW_ONLY_RE = /^raw$/i;
 // Permissive selector chunk for internal URLs — accepts well-formed selectors
 // plus common malformed shapes (e.g. `:-N-M`) so the read tool peels the entire
 // selector chain off before dispatching to a protocol handler.
 const INTERNAL_URL_SELECTOR_PART_RE = new RegExp(
-	String.raw`^(?:raw|conflicts|img|${RANGE_LIST_SRC}|-\d+(?:[-+]\d+)?)$`,
+	String.raw`^(?:raw|conflicts|img|${LINE_RANGE_SELECTION_SOURCE}|-\d+(?:[-+]\d+)?)$`,
 	"i",
 );
 /** Split a filesystem path from its trailing read selector. */

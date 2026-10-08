@@ -95,6 +95,17 @@ describe("idle checker (#8390)", () => {
 		expect(isIdleClient(client, now, IDLE_TIMEOUT_MS)).toBe(true);
 	});
 
+	it("preserves background indexing until its progress finishes", () => {
+		const client = makeClient();
+		const now = Date.now();
+		client.lastActivity = now - 10 * IDLE_TIMEOUT_MS;
+		client.activeProgressTokens.add("workspace-index");
+
+		expect(isIdleClient(client, now, IDLE_TIMEOUT_MS)).toBe(false);
+		client.activeProgressTokens.delete("workspace-index");
+		expect(isIdleClient(client, now, IDLE_TIMEOUT_MS)).toBe(true);
+	});
+
 	it("keeps a client below the idle window alive", () => {
 		const client = makeClient();
 		// Both the stamp and the sweep come from one clock read: the boundary

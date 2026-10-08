@@ -4,7 +4,13 @@ import path from "node:path";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import { formatPathRelativeToCwd } from "../tools/path-utils";
 import { throwIfAborted } from "../tools/tool-errors";
-import { getOrCreateClient, sendRequest, supportsDocumentDiagnostics, waitForProjectLoaded } from "./client";
+import {
+	getOrCreateClient,
+	prepareFileForRequest,
+	sendRequest,
+	supportsDocumentDiagnostics,
+	waitForProjectLoaded,
+} from "./client";
 import { getLinterClient } from "./clients";
 import { hasRootMarkerAncestor } from "./config";
 import { applyTextEditsToString } from "./edits";
@@ -40,7 +46,6 @@ export const SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS = 3000;
  * (still capped by the tool-level timeout).
  */
 export const PROJECT_DIAGNOSTICS_WAIT_TIMEOUT_MS = 10_000;
-export const BATCH_DIAGNOSTICS_WAIT_TIMEOUT_MS = 400;
 const DIAGNOSTICS_POLL_MS = 100;
 const DIAGNOSTICS_SETTLE_MS = 250;
 /**
@@ -462,13 +467,22 @@ export async function getDiagnosticsForFile(
 				// Default: use LSP
 				const client = await getOrCreateClient(serverConfig, cwd, undefined, boundSignal);
 				throwIfAborted(boundSignal);
+				// Writethrough already announced the target text/version. Reopening or
+				// reconciling that target discards its pending diagnostic stream and
+				// can overwrite an intentional in-memory overlay with older disk text.
+				const reconciled = await prepareFileForRequest(client, absolutePath, {
+					signal: boundSignal,
+					preserveTargetOverlay: true,
+				});
 				if (isProjectAwareLspServer(serverConfig)) {
 					await waitForProjectLoaded(client, boundSignal);
 					throwIfAborted(boundSignal);
 				}
 				// Content already synced + didSave sent, wait for fresh diagnostics
 				const minVersion = minVersions?.get(serverName);
-				const expectedDocumentVersion = expectedDocumentVersions?.get(serverName);
+				const expectedDocumentVersion = reconciled
+					? client.openFiles.get(uri)?.version
+					: expectedDocumentVersions?.get(serverName);
 				const diagnostics = await waitForDiagnostics(client, uri, {
 					timeoutMs: waitBudgetMs,
 					signal: boundSignal,

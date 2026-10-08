@@ -6,7 +6,7 @@ import { Container } from "../tui";
 import { Text } from "../components/text";
 import { t } from "../i18n";
 import { getLanguageFromPath, theme } from "../theme";
-import { parseLineRanges, selectorLineRanges } from "../tools/line-ranges";
+import { parseLineRangeSelection, selectorLineRanges } from "../tools/line-ranges";
 import {
 	type ReadRenderArgs,
 	type ReadToolDetails,
@@ -247,7 +247,7 @@ function selectorChunkIsLineRangeList(chunk: string): boolean {
 	const trimmed = chunk.trim();
 	if (!trimmed) return false;
 	try {
-		return parseLineRanges(trimmed) !== null;
+		return parseLineRangeSelection(trimmed) !== null;
 	} catch {
 		return false;
 	}
@@ -279,7 +279,10 @@ function nextTopLevelToken(input: string, start: number): string {
 function commaContinuesLineRangeSelector(input: string, partStart: number, commaIndex: number): boolean {
 	const currentPart = input.slice(partStart, commaIndex).trim();
 	if (!splitPathAndSel(currentPart).sel) return false;
-	return selectorChunkIsLineRangeList(nextTopLevelToken(input, commaIndex + 1));
+	const continuation = nextTopLevelToken(input, commaIndex + 1)
+		.trim()
+		.replace(/:raw$/i, "");
+	return selectorChunkIsLineRangeList(continuation);
 }
 
 function splitReadDisplayPathSpecs(rawPath: string): string[] {

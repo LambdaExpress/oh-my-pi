@@ -1,5 +1,5 @@
 import { extractUriScheme } from "../internal-urls/parse";
-import { type LineRange } from "@oh-my-pi/pi-tui/tools/line-ranges";
+import { type LineRange, parseLineRangeSelection } from "@oh-my-pi/pi-tui/tools/line-ranges";
 import { splitPathAndSel, splitInternalUrlSel, isReadableUrlPath } from "@oh-my-pi/pi-tui/tools/read";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -177,18 +177,16 @@ export function normalizeWindowsDriveAliasPath(
 	return filePath;
 }
 
-const TAIL_SELECTOR_RE = /^-(\d+)$/;
+const TAIL_SELECTOR_RE = /^-\d+$/;
 
 /**
  * Parse a `-N` tail selector into its line count (`:-60` → 60 last lines).
  * Returns `null` when `sel` is not tail-shaped; throws {@link ToolError} for `-0`.
  */
 export function parseTailCount(sel: string): number | null {
-	const match = TAIL_SELECTOR_RE.exec(sel);
-	if (!match) return null;
-	const count = Number.parseInt(match[1]!, 10);
-	if (count < 1) throw new ToolError("Tail selector -0 is invalid; use :-N with N >= 1 to read the last N lines.");
-	return count;
+	if (!TAIL_SELECTOR_RE.test(sel)) return null;
+	const selection = parseLineRangeSelection(sel);
+	return selection?.ranges.length === 0 ? (selection.tailCount ?? null) : null;
 }
 
 /** Return `true` when `lineNumber` (1-indexed) falls in any of the supplied ranges. */
@@ -621,6 +619,16 @@ function hasTopLevelPathDelimiter(entry: string): boolean {
 	return false;
 }
 
+function isSelectorContinuationComma(entry: string, start: number, comma: number): boolean {
+	const currentText = entry.slice(start, comma).trim();
+	const current = splitPathAndSel(currentText);
+	if (current.sel === undefined) return false;
+	let nextEnd = comma + 1;
+	while (nextEnd < entry.length && !isDelimitedPathSeparator(entry[nextEnd], "mixed")) nextEnd++;
+	const extended = splitPathAndSel(`${currentText},${entry.slice(comma + 1, nextEnd)}`);
+	return extended.sel !== undefined && extended.path === current.path;
+}
+
 function splitTopLevelDelimitedPath(entry: string, mode: DelimitedPathSplitMode): string[] {
 	const parts: string[] = [];
 	let braceDepth = 0;
@@ -640,6 +648,7 @@ function splitTopLevelDelimitedPath(entry: string, mode: DelimitedPathSplitMode)
 			continue;
 		}
 		if (braceDepth !== 0 || !isDelimitedPathSeparator(ch, mode)) continue;
+		if (ch === "," && isSelectorContinuationComma(entry, start, i)) continue;
 		parts.push(entry.slice(start, i));
 		start = i + 1;
 	}
@@ -695,47 +704,83 @@ async function tryDelimitedPathSplit(
 	return parts;
 }
 
-/**
- * Split a semicolon-joined list of internal URLs (`ssh://h/a;ssh://h/b`) into
- * its entries, or return `null` when the entry is not such a list.
- *
- * A `;` is a split point only when the next non-space text starts another
- * `scheme://` prefix or an absolute Windows path. A literal `;` inside an
- * ssh:// path (a legal POSIX filename) is therefore never a split point —
- * `ssh://h/a;b` stays a single remote path — while both
- * `ssh://h/a;ssh://h/b` and `skill://docs;C:\\repo\\README.md` fan out.
- */
-function splitInternalUrlDelimitedList(entry: string): string[] | null {
-	const parts: string[] = [];
-	let braceDepth = 0;
-	let start = 0;
-	for (let i = 0; i < entry.length; i++) {
-		const ch = entry[i];
-		if (ch === "\\" && i + 1 < entry.length) {
-			i++;
+/** Longest literal entry starting at `start`, before interpreting its semicolons as a list. */
+async function literalDelimitedPathEnd(
+	parts: readonly string[],
+	start: number,
+	cwd: string,
+	filesystem: InternalUrlFilesystem,
+): Promise<number> {
+	const router = InternalUrlRouter.instance();
+	for (let end = parts.length; end > start + 1; end--) {
+		const entry = normalizePathLikeInput(parts.slice(start, end).join(";"));
+		if (!isInternalUrlPath(entry)) {
+			if ((await probeLiteralPathExists(entry, cwd)) !== "missing") return end;
 			continue;
 		}
-		if (ch === "{") {
-			braceDepth++;
-			continue;
+		const url = router.normalize(expandPath(entry));
+		// Only file-backed URLs name literal filenames. Do not materialize
+		// virtual/remote resources merely to disambiguate a delimiter.
+		if (router.spec(extractUriScheme(url) ?? "")?.backing !== "file") break;
+		try {
+			await filesystem.stat(url);
+			return end;
+		} catch (err) {
+			if (
+				err instanceof UrlFsError &&
+				(err.code === "ENOENT" || err.code === "ENOTDIR" || err.code === "ENAMETOOLONG")
+			) {
+				continue;
+			}
+			throw err;
 		}
-		if (ch === "}") {
-			if (braceDepth > 0) braceDepth--;
-			continue;
-		}
-		if (braceDepth !== 0 || ch !== ";") continue;
-		const remainder = entry.slice(i + 1).trimStart();
-		if (!INTERNAL_URL_SCHEME_RE.test(remainder) && !path.win32.isAbsolute(remainder)) continue;
-		parts.push(entry.slice(start, i));
-		start = i + 1;
 	}
-	parts.push(entry.slice(start));
-	if (parts.length < 2) return null;
-	const segments = parts.map(normalizePathLikeInput).filter(part => part.length > 0);
+	return start + 1;
+}
+
+/**
+ * Internal URLs keep embedded semicolons unless the next entry is another URL
+ * or an absolute path. With the calling filesystem, URL/workspace globs or
+ * existing workspace entries also establish boundaries, so missing targets
+ * in a glob union still fan out. Literal file-backed URL/host prefixes win
+ * first, including filenames containing semicolons.
+ */
+async function splitInternalUrlDelimitedList(
+	entry: string,
+	cwd: string,
+	splitter: PathEntrySplitter,
+	filesystem?: InternalUrlFilesystem,
+): Promise<string[] | null> {
+	const rawParts = splitTopLevelDelimitedPath(entry, "semicolon");
+	if (rawParts.length < 2) return null;
+	const router = InternalUrlRouter.instance();
+	const segments: string[] = [];
+	let start = 0;
+	while (start < rawParts.length) {
+		let end = filesystem ? await literalDelimitedPathEnd(rawParts, start, cwd, filesystem) : start + 1;
+		while (end < rawParts.length) {
+			const current = normalizePathLikeInput(rawParts.slice(start, end).join(";"));
+			const next = normalizePathLikeInput(rawParts[end]);
+			const explicitTarget = INTERNAL_URL_SCHEME_RE.test(next) || path.win32.isAbsolute(next);
+			const workspaceTarget =
+				filesystem &&
+				next.length > 0 &&
+				(!isInternalUrlPath(current) ||
+					router.isGlob(current) ||
+					hasGlobPathChars(next) ||
+					(await delimitedPathPartResolves(next, cwd, splitter)) ||
+					(await literalDelimitedPathEnd(rawParts, end, cwd, filesystem)) > end + 1);
+			if (explicitTarget || workspaceTarget) break;
+			end++;
+		}
+		const segment = normalizePathLikeInput(rawParts.slice(start, end).join(";"));
+		if (segment.length > 0) segments.push(segment);
+		start = end;
+	}
 	if (
 		segments.length < 2 ||
 		!isInternalUrlPath(segments[0]) ||
-		!segments.slice(1).every(segment => isInternalUrlPath(segment) || path.win32.isAbsolute(segment))
+		(!filesystem && !segments.slice(1).every(segment => isInternalUrlPath(segment) || path.win32.isAbsolute(segment)))
 	) {
 		return null;
 	}
@@ -745,10 +790,9 @@ function splitInternalUrlDelimitedList(entry: string): string[] | null {
 /**
  * Split one path-like entry whose multiple targets were flattened into one
  * string. Existing paths are kept intact, so real filenames containing spaces,
- * commas, or semicolons win over delimiter recovery. Internal-URL entries get
- * their own conservative list handling: a semicolon only splits when the text
- * after it starts a `scheme://` prefix and every segment is itself an internal
- * URL (see {@link splitInternalUrlDelimitedList}).
+ * commas, or semicolons win over delimiter recovery. Internal URLs use
+ * conservative boundaries unless the caller supplies its filesystem for
+ * literal URL probes and mixed workspace targets.
  */
 export async function splitDelimitedPathEntry(
 	entry: string,
@@ -756,6 +800,7 @@ export async function splitDelimitedPathEntry(
 	options: {
 		splitter?: PathEntrySplitter;
 		routedUrlPredicate?: (entry: string) => boolean;
+		filesystem?: InternalUrlFilesystem;
 	} = {},
 ): Promise<string[] | null> {
 	const normalizedEntry = normalizePathLikeInput(entry);
@@ -766,13 +811,7 @@ export async function splitDelimitedPathEntry(
 		return parts?.every(options.routedUrlPredicate) ? parts : null;
 	}
 	if (isInternalUrlPath(normalizedEntry)) {
-		// The joined string itself looks like one internal URL, so the blanket
-		// guard below would hand `ssh://h/a;ssh://h/b` to the router as a single
-		// remote path (grep's documented semicolon-delimited `path` list — the
-		// remote side fails with `head: cannot open '/root/…/a;ssh://…/b'`).
-		// Split only conservative internal-URL lists here; anything else keeps
-		// the previous no-split behavior (single URL, or a `;` inside a path).
-		return splitInternalUrlDelimitedList(normalizedEntry);
+		return splitInternalUrlDelimitedList(normalizedEntry, cwd, splitter, options.filesystem);
 	}
 	// A real POSIX file may contain the delimiter and a selector-shaped tail
 	// (`a;b:1-2`, `a b:1-2`). Preserve the raw entry whenever the full literal
@@ -801,7 +840,7 @@ export async function splitDelimitedPathEntry(
 export async function expandDelimitedPathEntries(
 	entries: readonly string[],
 	cwd: string,
-	options: { splitter?: PathEntrySplitter } = {},
+	options: { splitter?: PathEntrySplitter; filesystem?: InternalUrlFilesystem } = {},
 ): Promise<string[]> {
 	const expanded: string[] = [];
 	for (const entry of entries) {

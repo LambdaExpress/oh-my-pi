@@ -9,6 +9,26 @@
 
 ### Fixed
 
+- Fixed Windows workspaces starting duplicate language servers when the same directory is addressed with different separators, casing, or equivalent paths.
+- Fixed idle language-server indexes and local embedding models being retained indefinitely in long-running sessions; unused resources now retire automatically while active work remains protected.
+- Fixed shared language-server teardown hanging on blocked writes or leaving wrapper descendants alive after their launcher exits.
+- Fixed session disposal terminating the process-wide embedding worker used by other sessions, interrupting memory recall and causing repeated model reloads.
+- Fixed revived Codex subagents failing after a parent sends a correction during an active answer; corrections are retained and delivered safely without duplicating prior work.
+- Fixed move-only `apply_patch` operations being rejected or rewriting original file bytes, including notebook JSON.
+- Fixed unique complete patch hunks being rejected as ambiguous because of weaker matches in similar code.
+- Fixed finite `bash` commands with explicit `async: false` being automatically backgrounded.
+- Fixed Python Eval text writes translating LF and CRLF on Windows instead of preserving supplied UTF-8 bytes.
+- Fixed JavaScript and Python Eval rejecting the advertised `apply_patch` tool name while retaining normal argument validation and permissions.
+- Fixed line selectors on extracted agent text fields, including nested fields and both raw-selector orders.
+- Fixed comma-separated forward and tail read ranges being split into paths; file, editor, internal-URL, and HTTP reads now resolve them against the actual content.
+- Fixed semicolon-separated globs mixing internal URLs and workspace patterns returning an empty result instead of their union.
+- Fixed service mode changes restarting live processes; detached services preserve state and input/output across session exit.
+- Fixed scoped browser observations rejecting hidden forms instead of returning an empty accessible scope.
+- Fixed IDA pseudocode views passing an invalid Hex-Rays argument; unsupported managed processors now report the limitation and show IL.
+- Fixed Windows PE view selectors being mistaken for nonexistent alternate data streams, and unavailable IDA views reporting a misleading missing-file error.
+- Fixed batched LSP diagnostics using a different project and wait budget from equivalent single-file requests; server failures now include their cause.
+- Fixed LSP diagnostics omitting existing files matched by directory brace alternatives, including nested patterns.
+- Fixed LSP diagnostics and navigation using stale imported declarations or caller positions after external edits while preserving pending editor overlays.
 - Fixed explicit browser viewports being ignored in visible managed and attached tabs, and observations reporting fallback dimensions instead of the page's actual viewport.
 - Fixed read-only browser operations unnecessarily restoring request interception and failing on reconnected relay tabs.
 - Fixed attached browser actions using a detached cached main frame while the page target remains alive; recovery now happens before input without replaying completed actions.

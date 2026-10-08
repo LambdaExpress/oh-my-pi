@@ -124,6 +124,9 @@ export interface MnemopiSubprocessEmbeddingModel {
  */
 const EMBED_REQUEST_TIMEOUT_MS = 120_000;
 
+/** Retain a warm model only briefly after its last request, rather than for the lifetime of an idle session. */
+const EMBED_WORKER_IDLE_TIMEOUT_MS = 5 * 60 * 1_000;
+
 /** Race marker for {@link MnemopiEmbedClient.#awaitRequest}. */
 const REQUEST_TIMED_OUT = Symbol("mnemopi.embed.timedOut");
 
@@ -136,13 +139,17 @@ export class MnemopiEmbedClient {
 	#refed = false;
 	#spawnWorker: () => MnemopiEmbedWorkerHandle;
 	#requestTimeoutMs: number;
+	#idleTimeoutMs: number;
+	#idleTimer: NodeJS.Timeout | undefined;
 
 	constructor(
 		spawnWorker: () => MnemopiEmbedWorkerHandle = spawnMnemopiEmbedWorker,
 		requestTimeoutMs: number = EMBED_REQUEST_TIMEOUT_MS,
+		idleTimeoutMs: number = EMBED_WORKER_IDLE_TIMEOUT_MS,
 	) {
 		this.#spawnWorker = spawnWorker;
 		this.#requestTimeoutMs = requestTimeoutMs;
+		this.#idleTimeoutMs = idleTimeoutMs;
 	}
 
 	/**
@@ -192,6 +199,7 @@ export class MnemopiEmbedClient {
 	}
 
 	async terminate(): Promise<void> {
+		this.#clearIdleTimer();
 		const worker = this.#worker;
 		this.#worker = null;
 		this.#unsubscribeMessage?.();
@@ -296,16 +304,37 @@ export class MnemopiEmbedClient {
 		if (this.#pending.delete(id)) this.#syncWorkerRef();
 	}
 
+	#clearIdleTimer(): void {
+		const timer = this.#idleTimer;
+		this.#idleTimer = undefined;
+		if (timer) clearTimeout(timer);
+	}
+
 	/**
 	 * The embeddings subprocess is spawned unref'd so an idle interactive or
 	 * daemon session never blocks exit. Keep it referenced only while a request
 	 * is pending so short-lived print-mode commands cannot exit before recall
-	 * receives the worker response (issue #12067).
+	 * receives the worker response (issue #12067). Once all requests settle,
+	 * release the idle subprocess after a warm reuse window; the cached model
+	 * wrapper can transparently reload it on its next embed.
 	 */
 	#syncWorkerRef(): void {
 		const worker = this.#worker;
 		if (!worker) return;
 		const shouldRef = this.#pending.size > 0;
+		if (shouldRef) {
+			this.#clearIdleTimer();
+		} else if (!this.#idleTimer) {
+			const timer = setTimeout(() => {
+				// A cleared callback may already be queued. Never let an old
+				// worker's timer clear a newer timer or terminate a replacement.
+				if (this.#idleTimer !== timer) return;
+				this.#idleTimer = undefined;
+				if (this.#worker === worker && this.#pending.size === 0) void this.terminate();
+			}, this.#idleTimeoutMs);
+			this.#idleTimer = timer;
+			timer.unref();
+		}
 		if (shouldRef === this.#refed) return;
 		this.#refed = shouldRef;
 		if (shouldRef) worker.ref();
@@ -347,10 +376,6 @@ export class MnemopiEmbedClient {
 }
 
 export const mnemopiEmbedClient = new MnemopiEmbedClient();
-
-export async function shutdownMnemopiEmbedClient(): Promise<void> {
-	await mnemopiEmbedClient.terminate();
-}
 
 export async function smokeTestMnemopiEmbedWorker({
 	timeoutMs = SMOKE_TEST_TIMEOUT_MS,

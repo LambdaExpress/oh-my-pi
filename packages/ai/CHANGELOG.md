@@ -12,6 +12,7 @@
 
 ### Fixed
 
+- Fixed native Codex WebSocket lanes aborting active answers when they reject in-flight steering; deferred input now resumes once through an independent request while preserving streamed output and tool progress.
 - Fixed Codex streams stopping with an unexplained abort after an internal timeout; timeouts now retry correctly, and unexpected transport aborts remain recoverable without overriding caller cancellation.
 - Fixed credential databases retaining file locks after explicit close on Windows.
 - Fixed OpenAI Responses providers rejecting replayed encrypted reasoning with `400 invalid_encrypted_content`: the request retries once without encrypted reasoning and stops requesting it for the rest of the session, instead of failing the turn.

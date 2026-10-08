@@ -818,8 +818,8 @@ export class MnemopiSessionState {
 				// Defer close until the in-flight consolidate settles so SQLite
 				// writes don't race a closed handle. The process is on the way
 				// to `postmortem.quit(0)`; if it exits first, the OS reclaims
-				// the handles (and a still-pending embed() goes down with the
-				// embed worker the caller is about to SIGKILL).
+				// the handles and the process-owned embedding worker. Otherwise,
+				// its idle lifecycle releases the model after consolidation settles.
 				void consolidatePromise.finally(closeOwned);
 				return;
 			}

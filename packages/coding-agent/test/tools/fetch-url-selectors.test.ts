@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { type ParsedReadUrlTarget, parseReadUrlTarget } from "@oh-my-pi/pi-coding-agent/tools/fetch";
+import { resolveTailSelector } from "@oh-my-pi/pi-coding-agent/tools/read-selector";
 
 describe("parseReadUrlTarget", () => {
 	it("returns null for non-URL paths", () => {
@@ -45,6 +46,36 @@ describe("parseReadUrlTarget", () => {
 			path: "https://example.com/foo",
 			sel: { kind: "tail", count: 60, raw: true },
 		});
+	});
+
+	it("将 HTTP 混合尾范围留到实际输出行数已知后解析", () => {
+		const expected: ParsedReadUrlTarget = {
+			path: "https://example.com/foo",
+			sel: {
+				kind: "tail",
+				count: 38,
+				ranges: [{ startLine: 1, endLine: 105 }],
+				raw: true,
+			},
+		};
+		for (const selector of ["raw:1-105,-38,-20", "1-105,-38,-20:raw"]) {
+			const target = parseReadUrlTarget(`https://example.com/foo:${selector}`);
+			expect(target).toEqual(expected);
+			expect(resolveTailSelector(target!.sel, 180)).toEqual({
+				kind: "lines",
+				ranges: [
+					{ startLine: 1, endLine: 105 },
+					{ startLine: 143, endLine: 180 },
+				],
+				raw: true,
+			});
+			expect(resolveTailSelector(target!.sel, 140)).toEqual({
+				kind: "lines",
+				ranges: [{ startLine: 1, endLine: 140 }],
+				raw: true,
+			});
+			expect(target).toEqual(expected);
+		}
 	});
 
 	it("peels multi-range selectors into ranges (regression: was stuck on URL → 404)", () => {

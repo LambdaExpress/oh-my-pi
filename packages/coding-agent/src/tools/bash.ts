@@ -1128,9 +1128,11 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		);
 
 		const autoBgManager = this.session.asyncJobManager;
+		// Only explicit async:false opts out; null/omitted keep configured auto-backgrounding.
 		// At the running-job cap, fall through to direct foreground execution
 		// instead of failing every bash call until a slot frees up.
 		if (
+			rawAsync !== false &&
 			cfgBashAutoBackgroundEnabled.get(this.session.settings) &&
 			!pty &&
 			!bridgeTerminalAvailable &&

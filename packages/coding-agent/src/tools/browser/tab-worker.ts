@@ -2644,7 +2644,9 @@ export class WorkerCore {
 				this.cacheElement(id, handle);
 				entries.push({ id, ...entry });
 			}
-			if (!snapshot && entries.length === 0) throw new ToolError("Accessibility snapshot unavailable");
+			// A matched scoped root can be excluded from AX, with no rendered DOM candidates.
+			// Keep the shared visibility filters and normal metadata collection for that empty scope.
+			if (!snapshot && entries.length === 0 && !root) throw new ToolError("Accessibility snapshot unavailable");
 		} finally {
 			await root?.dispose().catch(() => undefined);
 		}

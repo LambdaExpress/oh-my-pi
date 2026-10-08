@@ -28,9 +28,9 @@ import {
 	isRustAnalyzerClient,
 	type LspServerStatus,
 	notifyClientWatchedFiles,
+	prepareFileForRequest,
 	reconcileFileFromDisk,
 	reconcileIdleChecker,
-	refreshFile,
 	sendNotification,
 	sendRequest,
 	shutdownStaleClients,
@@ -39,7 +39,6 @@ import {
 import { getLinterClient } from "./clients";
 import { configCache, getConfig, getServersForFile } from "./config";
 import {
-	BATCH_DIAGNOSTICS_WAIT_TIMEOUT_MS,
 	formatLocationWithContext,
 	hasRustWorkspaceAncestor,
 	MAX_GLOB_DIAGNOSTIC_TARGETS,
@@ -102,7 +101,6 @@ import {
 	formatLocation,
 	formatSymbolInformation,
 	formatWorkspaceEdit,
-	hasGlobPattern,
 	resolveDiagnosticTargets,
 	resolveSymbolPosition,
 	sortDiagnostics,
@@ -116,16 +114,12 @@ import { cfgToolsMaxTimeout } from "../tools/settings";
 
 const MAX_RENAME_PAIRS = 1000;
 const DIAGNOSTICS_UNAVAILABLE_SUMMARY = "Diagnostics unavailable";
-/** File actions whose position must be resolved against the text announced to the server. */
-const POSITIONAL_ACTIONS: ReadonlySet<string> = new Set([
-	"definition",
-	"type_definition",
-	"implementation",
-	"references",
-	"hover",
-	"code_actions",
-	"rename",
-]);
+const LOCATION_REQUEST_METHODS: Readonly<Record<string, true>> = {
+	"textDocument/definition": true,
+	"textDocument/typeDefinition": true,
+	"textDocument/implementation": true,
+	"textDocument/references": true,
+};
 
 function formatDiagnosticsUnavailableMessage(relPath: string, serverNames: string[]): string {
 	const servers = serverNames.length === 1 ? serverNames[0] : serverNames.join(", ");
@@ -138,18 +132,11 @@ interface FileRenamePair {
 }
 
 /**
- * Keep glob queries in the session workspace, but let a concrete file select
- * the nearest project recognized by this server. Relative paths are concrete
- * files too: pinning them to the session root can route a monorepo child file
- * through an unrelated sibling project's language-server installation.
+ * Route each resolved concrete target through its nearest server project.
+ * A glob only chooses targets; it must not change their workspace or select
+ * an unrelated sibling project's language-server installation.
  */
-function getFileClientCwd(
-	fileArgument: string,
-	resolvedFile: string,
-	serverConfig: ServerConfig,
-	sessionCwd: string,
-): string {
-	if (hasGlobPattern(fileArgument)) return sessionCwd;
+function getFileClientCwd(resolvedFile: string, serverConfig: ServerConfig, sessionCwd: string): string {
 	return findLspProjectRoot(resolvedFile, serverConfig.rootMarkers) ?? sessionCwd;
 }
 
@@ -251,6 +238,41 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 	static createIf(session: ToolSession): LspTool | null {
 		return session.enableLsp === false ? null : new LspTool(session);
+	}
+
+	/**
+	 * A server can discover callers without opening them through this client.
+	 * Track returned source snapshots too; otherwise a later external caller edit
+	 * leaves references at old offsets while context rendering reads new disk text.
+	 * Re-query only when announcing those source snapshots changed the server view.
+	 */
+	async #requestLocations(
+		client: LspClient,
+		method: string,
+		params: unknown,
+		signal?: AbortSignal,
+	): Promise<Location | Location[] | LocationLink | LocationLink[] | null> {
+		while (true) {
+			const result = (await sendRequest(client, method, params, signal)) as
+				| Location
+				| Location[]
+				| LocationLink
+				| LocationLink[]
+				| null;
+			let sourcesChanged = false;
+			const seen = new Set<string>();
+			for (const location of normalizeLocationResult(result)) {
+				if (!location.uri.startsWith("file:")) continue;
+				const filePath = uriToFile(location.uri);
+				const sourceUri = fileToUri(filePath);
+				if (seen.has(sourceUri)) continue;
+				seen.add(sourceUri);
+				const previousVersion = client.openFiles.get(sourceUri)?.version;
+				await reconcileFileFromDisk(client, filePath, signal);
+				if (client.openFiles.get(sourceUri)?.version !== previousVersion) sourcesChanged = true;
+			}
+			if (!sourcesChanged) return result;
+		}
 	}
 
 	async execute(
@@ -392,7 +414,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					totalServerAttempts++;
 					try {
 						throwIfAborted(signal);
-						const serverCwd = getFileClientCwd(file, resolved, serverConfig, this.session.cwd);
+						const serverCwd = getFileClientCwd(resolved, serverConfig, this.session.cwd);
 						if (serverConfig.createClient) {
 							const linterClient = getLinterClient(serverName, serverConfig, this.session.cwd);
 							const diagnostics = await linterClient.lint(resolved, signal);
@@ -402,22 +424,22 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							continue;
 						}
 						const client = await getOrCreateClient(serverConfig, serverCwd, undefined, signal);
+						const minVersion = client.diagnosticsVersion;
+						await prepareFileForRequest(client, resolved, { signal, refreshDiagnostics: true });
 						if (isProjectAwareLspServer(serverConfig)) {
 							await waitForProjectLoaded(client, signal);
 							throwIfAborted(signal);
 						}
-						const minVersion = client.diagnosticsVersion;
-						await refreshFile(client, resolved, signal);
 						const expectedDocumentVersion = client.openFiles.get(uri)?.version;
 						// Project-aware servers (Roslyn, tsserver, …) compute pull diagnostics
 						// on demand; their first response routinely overruns the 3s single-file
 						// budget, which would otherwise surface as a false "OK". An explicit
 						// diagnostics request can afford to wait, bounded by the tool timeout.
-						const waitCapMs = detailed
-							? BATCH_DIAGNOSTICS_WAIT_TIMEOUT_MS
-							: isProjectAwareLspServer(serverConfig)
-								? PROJECT_DIAGNOSTICS_WAIT_TIMEOUT_MS
-								: SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS;
+						// Batch and individual queries analyze the same files with the same
+						// per-server budget; the shared tool signal bounds the whole batch.
+						const waitCapMs = isProjectAwareLspServer(serverConfig)
+							? PROJECT_DIAGNOSTICS_WAIT_TIMEOUT_MS
+							: SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS;
 						const diagnostics = await waitForDiagnostics(client, uri, {
 							timeoutMs: Math.min(waitCapMs, timeoutSec * 1000),
 							signal,
@@ -441,11 +463,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							throw err;
 						}
 						// Server failed; record it so a total failure is not reported as clean.
-						failedServers.push(serverName);
+						const errorMessage = err instanceof Error ? err.message : String(err);
+						failedServers.push(`${serverName}: ${errorMessage}`);
 						logger.debug("LSP diagnostics server failed", {
 							server: serverName,
 							file: relPath,
-							error: err instanceof Error ? err.message : String(err),
+							error: errorMessage,
 						});
 					}
 				}
@@ -1044,12 +1067,13 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			}
 
 			try {
-				const client = await getOrCreateClient(chosenConfig, this.session.cwd, undefined, signal);
+				const requestCwd = resolvedTarget
+					? getFileClientCwd(resolvedTarget, chosenConfig, this.session.cwd)
+					: this.session.cwd;
+				const client = await getOrCreateClient(chosenConfig, requestCwd, undefined, signal);
 				if (resolvedTarget) {
-					if (hasExplicitPayload) {
-						await ensureFileOpen(client, resolvedTarget, signal);
-					} else {
-						await reconcileFileFromDisk(client, resolvedTarget, signal);
+					await prepareFileForRequest(client, resolvedTarget, { signal });
+					if (!hasExplicitPayload) {
 						if (line !== undefined) {
 							const resolvedPosition = await resolveSymbolPosition(resolvedTarget, line, symbol);
 							requestParams = {
@@ -1059,7 +1083,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						}
 					}
 				}
-				const result = await sendRequest(client, method, requestParams, signal);
+				const result = LOCATION_REQUEST_METHODS[method]
+					? await this.#requestLocations(client, method, requestParams, signal)
+					: await sendRequest(client, method, requestParams, signal);
 				const formatted =
 					result === null || result === undefined
 						? "null"
@@ -1276,8 +1302,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		const [serverName, serverConfig] = serverInfo;
 		const serverCommand = path.basename(serverConfig.resolvedCommand ?? serverConfig.command).replace(/\.exe$/i, "");
 		const isCsharpLs = serverName === "csharp-ls" || serverCommand === "csharp-ls";
-		const clientCwd =
-			resolvedFile && file ? getFileClientCwd(file, resolvedFile, serverConfig, this.session.cwd) : this.session.cwd;
+		const clientCwd = resolvedFile
+			? getFileClientCwd(resolvedFile, serverConfig, this.session.cwd)
+			: this.session.cwd;
 
 		if (action === "reload") clearInitializationFailure(serverConfig, clientCwd);
 
@@ -1292,10 +1319,10 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 			let reconciledFromDisk = false;
 			if (targetFile) {
-				if (POSITIONAL_ACTIONS.has(action)) {
-					reconciledFromDisk = await reconcileFileFromDisk(client, targetFile, signal);
-				} else {
+				if (action === "reload") {
 					await ensureFileOpen(client, targetFile, signal);
+				} else {
+					reconciledFromDisk = await prepareFileForRequest(client, targetFile, { signal });
 				}
 			}
 			if (rustWorkspaceWait) {
@@ -1342,7 +1369,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				// =====================================================================
 
 				case "definition": {
-					let result = (await sendRequest(
+					let result = (await this.#requestLocations(
 						client,
 						"textDocument/definition",
 						{
@@ -1357,7 +1384,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						await waitForProjectLoaded(client, signal);
 						throwIfAborted(signal);
 						await untilAborted(signal, () => Bun.sleep(REFERENCES_RETRY_DELAY_MS));
-						result = (await sendRequest(
+						result = (await this.#requestLocations(
 							client,
 							"textDocument/definition",
 							{
@@ -1382,7 +1409,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				}
 
 				case "type_definition": {
-					const result = (await sendRequest(
+					const result = (await this.#requestLocations(
 						client,
 						"textDocument/typeDefinition",
 						{
@@ -1407,7 +1434,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				}
 
 				case "implementation": {
-					const result = (await sendRequest(
+					const result = (await this.#requestLocations(
 						client,
 						"textDocument/implementation",
 						{
@@ -1435,7 +1462,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					let previousResultSignature: string | undefined;
 					for (let attempt = 0; attempt <= REFERENCES_RETRY_COUNT; attempt++) {
 						try {
-							result = (await sendRequest(
+							result = (await this.#requestLocations(
 								client,
 								"textDocument/references",
 								{

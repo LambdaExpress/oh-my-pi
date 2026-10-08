@@ -19,6 +19,7 @@ import {
 	PREVIEW_LIMITS,
 	type RenderedStringCache,
 	replaceTabs,
+	sanitizeDisplayWarning,
 	shortenPath,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
@@ -406,7 +407,7 @@ interface WriteUrlCard {
 	/** Result details field whose presence identifies this card. */
 	readonly detailsKey: "message" | "proc" | "cfg";
 	/** Compact activity line for the text after `scheme://`. */
-	activity(target: string): ToolActivitySummary;
+	activity(target: string, content: unknown, uiTheme: Theme): ToolActivitySummary;
 	/** Pending call card when `result` is undefined, else the finished result card. */
 	render(
 		url: string,
@@ -423,7 +424,14 @@ interface WriteUrlCard {
 const WRITE_URL_CARDS: Record<string, WriteUrlCard> = {
 	agent: {
 		detailsKey: "message",
-		activity: target => ({ label: "Message", detail: target === "all" ? "broadcast" : target }),
+		activity: (target, content, uiTheme) => {
+			const recipient = sanitizeDisplayWarning(target || "…");
+			const body = typeof content === "string" ? sanitizeDisplayWarning(content).replace(/\s+/g, " ") : "";
+			return {
+				label: `IRC ${uiTheme.nav.selected} ${recipient}`,
+				detail: body ? uiTheme.fg("muted", body) : undefined,
+			};
+		},
 		render: (_url, target, content, result, details, options, uiTheme) =>
 			renderAgentWrite(
 				target,
@@ -538,18 +546,24 @@ export const writeToolRenderer = {
 	 * device URL would say nothing about what ran.
 	 * The written line count rides the row in the diff-added color, matching how
 	 * a folded edit shows `+N`.
+	 * An `agent://` write keeps the IRC direction, recipient, and message preview.
 	 */
 	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
 		const writeArgs = (args ?? {}) as WriteRenderArgs;
 		const rawPath =
-			typeof writeArgs.file_path === "string"
+			extractPartialJsonString(writeArgs.__partialJson, "file_path") ??
+			extractPartialJsonString(writeArgs.__partialJson, "path") ??
+			(typeof writeArgs.file_path === "string"
 				? writeArgs.file_path
 				: typeof writeArgs.path === "string"
 					? writeArgs.path
-					: "";
+					: "");
 		if (rawPath.length === 0) return { label: "Write" };
 		const routed = writeUrlCard(rawPath);
-		if (routed) return routed.card.activity(routed.target);
+		if (routed) {
+			const content = extractPartialJsonString(writeArgs.__partialJson, "content") ?? writeArgs.content;
+			return routed.card.activity(routed.target, content, context.theme);
+		}
 		const device = parseXdUrl(rawPath);
 		if (device?.name) {
 			const resolveMounted = (context.renderContext as WriteRenderContext | undefined)?.resolveXdevMounted;

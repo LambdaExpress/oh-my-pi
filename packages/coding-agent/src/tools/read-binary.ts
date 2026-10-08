@@ -2,9 +2,16 @@ import * as fs from "node:fs/promises";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { ReadToolDetails } from "@oh-my-pi/pi-tui/tools/read";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-import { acquireIdaDatabase, cfgIdaAvailable, isExecutableFile, isIdaDatabasePath, SLICE_SEPARATOR } from "../ida";
+import {
+	acquireIdaDatabase,
+	cfgIdaAvailable,
+	IdaUnavailableError,
+	isExecutableFile,
+	isIdaDatabasePath,
+	SLICE_SEPARATOR,
+} from "../ida";
 import type { ToolSession } from "../sdk";
-import { formatPathRelativeToCwd, resolveReadPath } from "./path-utils";
+import { formatPathRelativeToCwd, probeLiteralPathExists, resolveReadPath } from "./path-utils";
 import { buildInMemorySelectorResult } from "./read-format";
 import type { ParsedSelector } from "./read-selector";
 
@@ -55,13 +62,16 @@ async function isFile(absolutePath: string): Promise<boolean> {
 
 /**
  * Split `readPath` into an executable/IDB file and an IDA view suffix. Returns
- * null when IDA is disabled, the path has no `:`, the whole path is an existing
- * file, or no `:`-delimited prefix names an executable or IDB.
+ * null when the path has no `:`, the whole path is an existing filesystem entry, or no
+ * `:`-delimited prefix names an executable or IDB. Availability is checked by
+ * `readBinary` so recognized views never turn into misleading missing-file errors.
  */
 export async function resolveBinaryViewPath(session: ToolSession, readPath: string): Promise<BinaryViewTarget | null> {
-	if (!cfgIdaAvailable.get(session.settings)) return null;
 	if (!readPath.includes(":")) return null;
-	if (await isFile(resolveReadPath(readPath, session.cwd))) return null;
+	// A Windows stat can return the base file's metadata for a nonexistent ADS.
+	// Reuse the same stream-aware literal probe as the read selector dispatcher.
+	const literal = await probeLiteralPathExists(readPath, session.cwd);
+	if (literal === "exists" || (literal === "unknown" && process.platform !== "win32")) return null;
 	for (let i = readPath.lastIndexOf(":"); i > 0; i = readPath.lastIndexOf(":", i - 1)) {
 		const absolutePath = resolveReadPath(readPath.slice(0, i), session.cwd);
 		if (!(await isFile(absolutePath))) continue;
@@ -88,6 +98,9 @@ export async function readBinary(
 	parsed: ParsedSelector,
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<ReadToolDetails>> {
+	if (!cfgIdaAvailable.get(session.settings)) {
+		throw new IdaUnavailableError("IDA 不可用：ida.enabled 已关闭，或未找到包含 idalib 的 IDA 安装。");
+	}
 	const view = parseBinaryView(target.view);
 	const db = await acquireIdaDatabase(session, target.absolutePath, { arch: target.arch, signal });
 	const { text } = await db.request<{ text: string }>("view", view, { signal, timeoutMs: VIEW_TIMEOUT_MS });

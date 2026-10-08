@@ -150,16 +150,15 @@ fn collect_indexed_matches(
 }
 
 fn sequence_result(
-	matches: &IndexedMatches,
+	matches: IndexedMatches,
 	confidence: f64,
 	strategy: SequenceMatchStrategy,
-	ambiguous: bool,
 ) -> Option<SequenceSearchResult> {
 	Some(SequenceSearchResult {
 		index: Some(matches.first_match?),
 		confidence,
-		match_count: ambiguous.then_some(matches.match_count),
-		match_indices: ambiguous.then(|| matches.match_indices.clone()),
+		match_count: Some(matches.match_count),
+		match_indices: Some(matches.match_indices),
 		strategy: Some(strategy),
 	})
 }
@@ -661,35 +660,31 @@ fn run_sequence_passes(
 ) -> Option<SequenceSearchResult> {
 	let exact =
 		collect_indexed_matches(from, to, |index| matches_at(lines, pattern, index, |a, b| a == b));
-	if let Some(result) = sequence_result(&exact, 1.0, SequenceMatchStrategy::Exact, false) {
+	if let Some(result) = sequence_result(exact, 1.0, SequenceMatchStrategy::Exact) {
 		return Some(result);
 	}
 	let trailing = collect_indexed_matches(from, to, |index| {
 		matches_at(lines, pattern, index, |a, b| js_trim_end(a) == js_trim_end(b))
 	});
-	if let Some(result) =
-		sequence_result(&trailing, 0.99, SequenceMatchStrategy::TrimTrailing, false)
-	{
+	if let Some(result) = sequence_result(trailing, 0.99, SequenceMatchStrategy::TrimTrailing) {
 		return Some(result);
 	}
 	let trimmed = collect_indexed_matches(from, to, |index| {
 		matches_at(lines, pattern, index, |a, b| js_trim(a) == js_trim(b))
 	});
-	if let Some(result) = sequence_result(&trimmed, 0.98, SequenceMatchStrategy::Trim, false) {
+	if let Some(result) = sequence_result(trimmed, 0.98, SequenceMatchStrategy::Trim) {
 		return Some(result);
 	}
 	let comments = collect_indexed_matches(from, to, |index| {
 		matches_at(lines, pattern, index, |a, b| strip_comment_prefix(a) == strip_comment_prefix(b))
 	});
-	if let Some(result) =
-		sequence_result(&comments, 0.975, SequenceMatchStrategy::CommentPrefix, false)
-	{
+	if let Some(result) = sequence_result(comments, 0.975, SequenceMatchStrategy::CommentPrefix) {
 		return Some(result);
 	}
 	let unicode = collect_indexed_matches(from, to, |index| {
 		matches_at(lines, pattern, index, |a, b| normalize_unicode(a) == normalize_unicode(b))
 	});
-	if let Some(result) = sequence_result(&unicode, 0.97, SequenceMatchStrategy::Unicode, false) {
+	if let Some(result) = sequence_result(unicode, 0.97, SequenceMatchStrategy::Unicode) {
 		return Some(result);
 	}
 	if !allow_fuzzy {
@@ -698,13 +693,13 @@ fn run_sequence_passes(
 	let prefix = collect_indexed_matches(from, to, |index| {
 		matches_at(lines_normalized, pattern_normalized, index, |a, b| norm_starts_with(a, b))
 	});
-	if let Some(result) = sequence_result(&prefix, 0.965, SequenceMatchStrategy::Prefix, true) {
+	if let Some(result) = sequence_result(prefix, 0.965, SequenceMatchStrategy::Prefix) {
 		return Some(result);
 	}
 	let substring = collect_indexed_matches(from, to, |index| {
 		matches_at(lines_normalized, pattern_normalized, index, |a, b| norm_includes(a, b))
 	});
-	sequence_result(&substring, 0.94, SequenceMatchStrategy::Substring, true)
+	sequence_result(substring, 0.94, SequenceMatchStrategy::Substring)
 }
 
 /// Locate `pattern` lines through the exact-to-character fallback ladder.

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { $which, TempDir } from "@oh-my-pi/pi-utils";
+import { PythonKernel } from "../../../src/eval/py/kernel";
 import { PYTHON_PRELUDE } from "../../../src/eval/py/prelude";
 const pythonPath =
 	Bun.env.PYTHON ??
@@ -17,11 +18,12 @@ async function runPrelude(
 	const script = `${prelude}\n${code}`;
 	// The full prelude exceeds Windows' ~32k `python -c` command-line limit
 	// (ENAMETOOLONG); a script file behaves identically on every platform.
-	const dir = await TempDir.create("omp-py-prelude-");
+	const dir = await TempDir.create("@omp-py-prelude-");
 	try {
 		const scriptPath = dir.join("script.py");
 		await Bun.write(scriptPath, script);
 		const proc = Bun.spawn([pythonPath, scriptPath], {
+			cwd: dir.absolute(),
 			stdout: "pipe",
 			stderr: "pipe",
 			env: { ...process.env, ...env },
@@ -39,6 +41,38 @@ async function runPrelude(
 }
 
 describe("python prelude", () => {
+	it.each([
+		{ name: "LF", content: "alpha\n中文\n", local: false },
+		{ name: "CRLF", content: "alpha\r\n中文\r\n", local: true },
+		{ name: "混合换行", content: "alpha\n中文\r\nbeta\rgamma\n", local: true },
+	])("逐字节保留 $name 文本并创建父目录", async ({ content, local }) => {
+		using dir = TempDir.createSync("@omp-py-write-");
+		const root = dir.join("local");
+		const expectedPath = local ? dir.join("local", "nested", "contents.txt") : dir.join("nested", "contents.txt");
+		const helperPath = local ? "local://nested/contents.txt" : expectedPath;
+		const result = await runPrelude(`write(${JSON.stringify(helperPath)}, ${JSON.stringify(content)})`, {
+			PI_EVAL_LOCAL_ROOTS: JSON.stringify({ local: root }),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stderr).toBe("");
+		expect(Buffer.from(await Bun.file(expectedPath).arrayBuffer())).toEqual(Buffer.from(content, "utf8"));
+	});
+
+	it("writefile 将解析后的 LF 正文按 UTF-8 原样写入", async () => {
+		using dir = TempDir.createSync("@omp-py-writefile-");
+		const kernel = await PythonKernel.start({ cwd: dir.absolute(), interpreter: pythonPath });
+		try {
+			const result = await kernel.execute("%%writefile nested/contents.txt\nalpha\n中文", { timeoutMs: 10_000 });
+			expect(result.status).toBe("ok");
+			expect(Buffer.from(await Bun.file(dir.join("nested", "contents.txt")).arrayBuffer())).toEqual(
+				Buffer.from("alpha\n中文", "utf8"),
+			);
+		} finally {
+			await kernel.shutdown();
+		}
+	});
+
 	it("infers eval tool schemas and replaces definitions by name", async () => {
 		const result = await runPrelude(
 			[

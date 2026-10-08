@@ -265,3 +265,255 @@ async fn strict_matching_rejects_inexact_internal_context_without_writes() {
 	assert!(writer.requests.lock().is_empty());
 	assert_eq!(workspace.read("strict.js").as_deref(), Some(original));
 }
+
+#[tokio::test]
+async fn move_only_envelopes_preserve_exact_source_bytes() {
+	let cases = [
+		(
+			"MeowFT/Assets/Editor/RecoveredAvatarProject/ExtraSittingPoseValidation.cs",
+			"MeowFT/Assets/Editor/RecoveredAvatarProject/ExtraSittingPoseValidation.cs.pending",
+			"\u{feff}using System;\r\n// 保留原文 \t\nclass Validation {}",
+			false,
+		),
+		(
+			"MeowFT/Assets/Editor/RecoveredAvatarProject/ExtraSittingPoseAuthoring.cs",
+			"MeowFT/Assets/Editor/RecoveredAvatarProject/ExtraSittingPoseAuthoring.cs.pending",
+			"using System;\r\nclass Authoring {}\r\n",
+			false,
+		),
+		(
+			"tools/photon-dotnet-5.1.20/photon-dotnet-sdk_v5-1-20.zip",
+			"tools/photon-dotnet-5.1.20/download-response.html",
+			"<!doctype html>\r\n<title>403 - No Access!</title>\r\n",
+			true,
+		),
+		(
+			"UnityProject/Assets/Editor/TextureImportRecovery.cs",
+			"tools/unity-project-validation/TextureImportRecovery.cs",
+			"",
+			true,
+		),
+		(
+			"analysis.ipynb",
+			"archive/analysis.ipynb.pending",
+			"{ \"cells\": [{ \"cell_type\": \"code\", \"metadata\": {}, \"source\": \
+			 [\"print(1)\\n\"], \"outputs\": [], \"execution_count\": null }], \"metadata\": {}, \
+			 \"nbformat\": 4, \"nbformat_minor\": 5 }\r\n",
+			false,
+		),
+	];
+	for (source, destination, original, absolute) in cases {
+		let workspace = common::Workspace::new(EditMode::ApplyPatch);
+		workspace.write(source, original);
+		let source_path = workspace.cwd().join(source);
+		let destination_path = workspace.cwd().join(destination);
+		let authored_source = if absolute {
+			source_path.to_string_lossy().into_owned()
+		} else {
+			source.to_owned()
+		};
+		let authored_destination = if absolute {
+			destination_path.to_string_lossy().into_owned()
+		} else {
+			destination.to_owned()
+		};
+		let patch = format!(
+			"*** Begin Patch\n*** Update File: {authored_source}\n*** Move to: \
+			 {authored_destination}\n*** End Patch"
+		);
+		workspace
+			.apply_raw(&patch, &common::DiskWriter::default())
+			.await
+			.unwrap_or_else(|error| panic!("{source}: {error}"));
+		assert!(!source_path.exists(), "{source}");
+		assert_eq!(
+			std::fs::read(destination_path).expect("read moved bytes"),
+			original.as_bytes(),
+			"{source}"
+		);
+	}
+}
+
+#[tokio::test]
+async fn streamed_move_only_envelope_commits_without_a_content_hunk() {
+	let mut workspace = common::Workspace::new(EditMode::ApplyPatch);
+	workspace.config.raw_input = true;
+	let original = "\u{feff}// 保留字节\r\nclass Example {}\n";
+	workspace.write("source.cs", original);
+	let mut session = workspace.session();
+	session.push("*** Begin Patch\n*** Update File: source.cs\n");
+	session.push("*** Move to: staged/source.cs.pending\n");
+	session.push("*** End Patch\n");
+	session.finish();
+	session
+		.apply(pi_edit::ApplyRequest::default(), &common::DiskWriter::default())
+		.await
+		.expect("commit a streamed move-only envelope");
+	assert!(!workspace.cwd().join("source.cs").exists());
+	assert_eq!(
+		std::fs::read(workspace.cwd().join("staged/source.cs.pending")).unwrap(),
+		original.as_bytes()
+	);
+}
+
+#[tokio::test]
+async fn move_only_sections_share_the_sequential_patch_stage() {
+	for move_first in [false, true] {
+		let workspace = common::Workspace::new(EditMode::ApplyPatch);
+		workspace.write("source.cs", "\u{feff}class Original {}\r\n// unchanged\n");
+		let movement = "*** Update File: source.cs\n*** Move to: staged/source.cs.pending";
+		let update = "*** Update File: source.cs\n@@\n-class Original {}\n+class Updated {}";
+		let sections = if move_first {
+			format!("{movement}\n{update}")
+		} else {
+			format!("{update}\n{movement}")
+		};
+		workspace
+			.apply_raw(
+				&format!("*** Begin Patch\n{sections}\n*** End Patch"),
+				&common::DiskWriter::default(),
+			)
+			.await
+			.expect("stage move-only and content updates to the same source");
+		assert!(!workspace.cwd().join("source.cs").exists());
+		assert_eq!(
+			std::fs::read(workspace.cwd().join("staged/source.cs.pending")).unwrap(),
+			"\u{feff}class Updated {}\r\n// unchanged\n".as_bytes()
+		);
+	}
+}
+
+#[tokio::test]
+async fn unique_full_hunks_win_over_weaker_similar_blocks() {
+	let declaration = "                    var gogo = \
+	                   AssetDatabase.LoadAssetAtPath<VRCExpressionsMenu>(\"Assets/GoGoLocoMenu/\
+	                   Menu.asset\");";
+	let removed = "                    var goControl = WalkMenus(gogo).SelectMany(m => m.controls)";
+	let replacement =
+		"                    var goControl = WalkMenus(mergedGoMenu).SelectMany(m => m.controls)";
+	let siblings = [
+		"                    var control = WalkMenus(gogo).SelectMany(m => m.controls)",
+		"                  var goControl = WalkMenus(gogo).SelectMany(m => m.controls)",
+		"                    var goControl = WalkMenus(gogo).SelectMany(m => m.controls);",
+	];
+	for sibling in siblings {
+		for target_first in [true, false] {
+			let workspace = common::Workspace::new(EditMode::ApplyPatch);
+			let target = format!("{declaration}\n{removed}");
+			let similar = format!("{declaration}\n{sibling}");
+			let blocks = if target_first {
+				format!("{target}\n// 保留其他场景 \t\n{similar}")
+			} else {
+				format!("{similar}\n// 保留其他场景 \t\n{target}")
+			};
+			let original = format!("const int Version = 1;\n{blocks}\n").replace('\n', "\r\n");
+			workspace.write("scenarios.cs", &original);
+			let patch = format!(
+				"*** Begin Patch\n*** Update File: scenarios.cs\n@@\n-const int Version = 1;\n+const \
+				 int Version = 2;\n@@\n-{declaration}\n-{removed}\n+{replacement}\n*** End Patch"
+			);
+			workspace
+				.apply_raw(&patch, &common::DiskWriter::default())
+				.await
+				.expect("match the entire unique two-line hunk");
+			let expected_blocks = if target_first {
+				format!("{replacement}\n// 保留其他场景 \t\n{similar}")
+			} else {
+				format!("{similar}\n// 保留其他场景 \t\n{replacement}")
+			};
+			let expected =
+				format!("const int Version = 2;\n{expected_blocks}\n").replace('\n', "\r\n");
+			assert_eq!(
+				std::fs::read(workspace.cwd().join("scenarios.cs")).unwrap(),
+				expected.as_bytes()
+			);
+		}
+	}
+}
+
+#[tokio::test]
+async fn ambiguous_anchor_falls_back_to_the_unique_complete_hunk() {
+	let workspace = common::Workspace::new(EditMode::ApplyPatch);
+	let original = "Scenario();\nvar gogo = LoadMenu();\nvar goControl = \
+	                WalkMenus(gogo);\nScenario();\nvar gogo = LoadMenu();\nvar control = \
+	                WalkMenus(gogo);\n";
+	workspace.write("scenarios.cs", original);
+	let patch = [
+		"*** Begin Patch",
+		"*** Update File: scenarios.cs",
+		"@@ Scenario();",
+		"-var gogo = LoadMenu();",
+		"-var goControl = WalkMenus(gogo);",
+		"+var goControl = WalkMenus(mergedGoMenu);",
+		"*** End Patch",
+	]
+	.join("\n");
+	workspace
+		.apply_raw(&patch, &common::DiskWriter::default())
+		.await
+		.expect("a unique full hunk disambiguates identical anchors");
+	assert_eq!(
+		workspace.read("scenarios.cs").as_deref(),
+		Some(
+			"Scenario();\nvar goControl = WalkMenus(mergedGoMenu);\nScenario();\nvar gogo = \
+			 LoadMenu();\nvar control = WalkMenus(gogo);\n"
+		)
+	);
+}
+
+#[tokio::test]
+async fn identical_full_hunks_reject_the_entire_combined_patch() {
+	let workspace = common::Workspace::new(EditMode::ApplyPatch);
+	let duplicate = "var gogo = LoadMenu();\nvar goControl = WalkMenus(gogo);";
+	let ambiguous = format!("version = 1;\n{duplicate}\nseparator();\n{duplicate}\n");
+	let original_move = "\u{feff}keep\r\nthese bytes\n";
+	workspace.write("source.txt", original_move);
+	workspace.write("stable.txt", "old\n");
+	workspace.write("ambiguous.cs", &ambiguous);
+	let writer = common::DiskWriter::default();
+	let patch = [
+		"*** Begin Patch",
+		"*** Update File: source.txt",
+		"*** Move to: destination.txt",
+		"*** Update File: stable.txt",
+		"@@",
+		"-old",
+		"+new",
+		"*** Update File: ambiguous.cs",
+		"@@",
+		"-version = 1;",
+		"+version = 2;",
+		"@@",
+		"-var gogo = LoadMenu();",
+		"-var goControl = WalkMenus(gogo);",
+		"+var goControl = WalkMenus(mergedGoMenu);",
+		"*** End Patch",
+	]
+	.join("\n");
+	assert!(workspace.apply_raw(&patch, &writer).await.is_err());
+	assert!(writer.requests.lock().is_empty());
+	assert!(!workspace.cwd().join("destination.txt").exists());
+	assert_eq!(workspace.read("source.txt").as_deref(), Some(original_move));
+	assert_eq!(workspace.read("stable.txt").as_deref(), Some("old\n"));
+	assert_eq!(workspace.read("ambiguous.cs").as_deref(), Some(ambiguous.as_str()));
+}
+
+#[tokio::test]
+async fn move_only_destination_collisions_abort_before_any_write() {
+	for destination in ["source.txt", "occupied.txt"] {
+		let workspace = common::Workspace::new(EditMode::ApplyPatch);
+		workspace.write("stable.txt", "old\n");
+		workspace.write("source.txt", "source\r\n");
+		workspace.write("occupied.txt", "occupied\n");
+		let writer = common::DiskWriter::default();
+		let patch = format!(
+			"*** Begin Patch\n*** Update File: stable.txt\n@@\n-old\n+new\n*** Update File: \
+			 source.txt\n*** Move to: {destination}\n*** End Patch"
+		);
+		assert!(workspace.apply_raw(&patch, &writer).await.is_err());
+		assert!(writer.requests.lock().is_empty());
+		assert_eq!(workspace.read("stable.txt").as_deref(), Some("old\n"));
+		assert_eq!(workspace.read("source.txt").as_deref(), Some("source\r\n"));
+		assert_eq!(workspace.read("occupied.txt").as_deref(), Some("occupied\n"));
+	}
+}

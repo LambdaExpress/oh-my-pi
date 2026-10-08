@@ -132,3 +132,45 @@ async fn missing_explicit_blank_deletion_is_not_trimmed_as_context() {
 	assert!(writer.requests.lock().is_empty());
 	assert_eq!(workspace.read("blank.txt").as_deref(), Some(original));
 }
+
+#[tokio::test]
+async fn rename_only_updates_preserve_bytes_in_single_and_sequential_entries() {
+	let cases = [
+		serde_json::json!([{ "op": "update", "rename": "moved.txt" }]),
+		serde_json::json!([
+			{ "op": "update", "diff": "@@\n old" },
+			{ "op": "update", "rename": "moved.txt", "diff": "" }
+		]),
+	];
+	for edits in cases {
+		let workspace = common::Workspace::new(EditMode::Patch);
+		let original = "\u{feff}old\r\n";
+		workspace.write("source.txt", original);
+		workspace
+			.apply_json(
+				&serde_json::json!({ "path": "source.txt", "edits": edits }),
+				&common::DiskWriter::default(),
+			)
+			.await
+			.expect("stage a rename without content changes");
+		assert!(!workspace.cwd().join("source.txt").exists());
+		assert_eq!(std::fs::read(workspace.cwd().join("moved.txt")).unwrap(), original.as_bytes());
+	}
+}
+
+#[tokio::test]
+async fn empty_update_without_rename_rejects_the_sequential_transaction() {
+	let workspace = common::Workspace::new(EditMode::Patch);
+	workspace.write("source.txt", "old\r\n");
+	let writer = common::DiskWriter::default();
+	let args = serde_json::json!({
+		"path": "source.txt",
+		"edits": [
+			{ "op": "update", "diff": "@@\n-old\n+new" },
+			{ "op": "update", "diff": "" }
+		]
+	});
+	assert!(workspace.apply_json(&args, &writer).await.is_err());
+	assert!(writer.requests.lock().is_empty());
+	assert_eq!(workspace.read("source.txt").as_deref(), Some("old\r\n"));
+}

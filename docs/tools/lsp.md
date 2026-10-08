@@ -260,7 +260,7 @@ Uses the same location normalization and output shape as `definition`, but sends
   - With `lsp.shared=true` (the default), SDK sessions try a local Unix socket or Windows named pipe to the broker-managed per-project LSP mux. If the mux cannot be reached or started, the client silently falls back to a private subprocess.
   - Private and externally multiplexed servers communicate over local stdio JSON-RPC; the tool itself does not make remote network requests.
 - Subprocesses / native bindings
-  - Private fallback spawns language servers with `ptree.spawn()`; shared mode asks the broker to maintain one server per project.
+  - Private fallback spawns language servers with `ptree.spawn()`; shared mode uses one mux daemon per project, with isolated servers for concurrent links and bounded warm reuse after disconnect.
   - Workspace diagnostics spawns `cargo`, `npx`, `go`, or `pyright`.
   - `BiomeClient` and `SwiftLintClient` spawn CLI tools.
   - Optional external `lspmux` detection spawns `lspmux status`; supported servers may be wrapped through `lspmux client`.
@@ -268,7 +268,7 @@ Uses the same location normalization and output shape as `definition`, but sends
   - Caches config per cwd in `configCache`; workspace `reload` invalidates the entry.
   - Caches LSP clients by spawn/initialization identity and cwd, with `pendingRequests`, `diagnostics`, `openFiles`, `serverCapabilities`, and project-load state. The transport may represent a shared mux link rather than an owned process.
   - Caches custom linter clients by `serverName:cwd`.
-  - Updates client `lastActivity`; optional idle-timeout cleanup is driven by workspace `idleTimeoutMs` or `setIdleTimeout()`.
+  - Updates client `lastActivity`, including indexing progress; idle cleanup defaults to five minutes and can be overridden by workspace `idleTimeoutMs` or `setIdleTimeout()`. Nonpositive overrides disable it; pending requests and active progress prevent retirement.
 - Background work / cancellation
   - Every request has an abortable timeout signal.
   - Aborting an in-flight LSP request sends `$/cancelRequest`.

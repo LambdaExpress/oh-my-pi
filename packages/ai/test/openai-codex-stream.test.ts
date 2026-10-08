@@ -6961,6 +6961,187 @@ describe("openai-codex streaming", () => {
 	});
 });
 
+describe("openai-codex native continuation protocol", () => {
+	type Frame = Record<string, unknown>;
+
+	function answerFrames(responseId: string, text: string): Frame[] {
+		const item = {
+			type: "message",
+			id: `msg_${responseId}`,
+			role: "assistant",
+			content: [{ type: "output_text", text }],
+		};
+		return [
+			{ type: "response.created", response: { id: responseId } },
+			{ type: "response.output_item.added", item: { ...item, status: "in_progress", content: [] } },
+			{ type: "response.output_text.delta", item_id: item.id, delta: text },
+			{ type: "response.output_item.done", item: { ...item, status: "completed" } },
+			{ type: "response.completed", response: { id: responseId, status: "completed", usage: DEFAULT_USAGE } },
+		];
+	}
+
+	async function withProtocolServer(
+		onCreate: (frame: Frame, send: (...frames: Frame[]) => void, index: number) => void,
+		run: (baseUrl: string, requests: Frame[]) => Promise<void>,
+	): Promise<void> {
+		const requests: Frame[] = [];
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch(request, server) {
+				if (server.upgrade(request)) return;
+				return new Response("Expected WebSocket upgrade", { status: 400 });
+			},
+			websocket: {
+				message(socket, data) {
+					const frame = JSON.parse(String(data)) as Frame;
+					requests.push(frame);
+					onCreate(
+						frame,
+						(...frames) => {
+							for (const event of frames) socket.send(JSON.stringify(event));
+						},
+						requests.length,
+					);
+				},
+			},
+		});
+		try {
+			await run(`${server.url.origin}/backend-api`, requests);
+		} finally {
+			await server.stop(true);
+		}
+	}
+
+	it("replaces a rejected stateful create with one independent create before output starts", async () => {
+		setAgentDir(TempDir.createSync("@pi-codex-native-create-").path());
+		await withProtocolServer(
+			(_frame, send, index) => {
+				if (index === 2) {
+					send({ type: "error", error: { code: "unsupported_native_inflight_message" } });
+					return;
+				}
+				send(...answerFrames(`resp_${index}`, index === 1 ? "First answer" : "Second answer"));
+			},
+			async (baseUrl, requests) => {
+				const model = createCodexTestModel(baseUrl);
+				const state = new Map<string, ProviderSessionState>();
+				const fetchMock = vi.fn(async () => {
+					throw new Error("Native create recovery must stay on WebSocket");
+				});
+				const options = {
+					apiKey: createCodexTestToken(),
+					providerSessionState: state,
+					sessionId: "native-continuation-session",
+					fetch: fetchMock as FetchImpl,
+				};
+				const context = createCodexTestContext();
+				const first = await streamOpenAICodexResponses(model, context, options).result();
+				const second = await streamOpenAICodexResponses(
+					model,
+					{
+						...context,
+						messages: [...context.messages, first, { role: "user", content: "Continue", timestamp: 1001 }],
+					},
+					options,
+				).result();
+
+				expect(first.stopReason).toBe("stop");
+				expect(second.stopReason).toBe("stop");
+				expect(second.responseId).toBe("resp_3");
+				expect(second.content).toEqual([expect.objectContaining({ type: "text", text: "Second answer" })]);
+				expect(requests.map(request => request.previous_response_id)).toEqual([undefined, "resp_1", undefined]);
+				expect((requests[2]!.input as Frame[]).filter(item => item.role === "user")).toEqual([
+					{ role: "user", content: [{ type: "input_text", text: "Say hello" }] },
+					{ role: "user", content: [{ type: "input_text", text: "Continue" }] },
+				]);
+				expect(fetchMock).not.toHaveBeenCalled();
+			},
+		);
+	});
+
+	it.each([
+		"independent rejection",
+		"hook restores stateful id",
+		"response started",
+		"text delivered",
+		"tool delivered",
+		"response scoped",
+		"unrelated code",
+	] as const)("does not replay %s", async kind => {
+		setAgentDir(TempDir.createSync("@pi-codex-native-create-").path());
+		const code = kind === "unrelated code" ? "invalid_request_error" : "unsupported_native_inflight_message";
+		await withProtocolServer(
+			(_frame, send, index) => {
+				if (index === 1) {
+					send(...answerFrames("resp_1", "First answer"));
+					return;
+				}
+				if (kind === "response started" || kind === "text delivered" || kind === "tool delivered") {
+					send({ type: "response.created", response: { id: "resp_active" } });
+				}
+				if (kind === "text delivered") send(...answerFrames("resp_active", "Visible answer").slice(1, -1));
+				if (kind === "tool delivered") {
+					const call = { type: "function_call", id: "fc_1", call_id: "call_1", name: "status", arguments: "{}" };
+					send(
+						{ type: "response.output_item.added", item: { ...call, arguments: "" } },
+						{ type: "response.output_item.done", item: { ...call, status: "completed" } },
+					);
+				}
+				const failure: Frame = { type: "error", error: { code, message: "Protocol failure" } };
+				if (kind === "response scoped") failure.response_id = "resp_active";
+				send(failure);
+			},
+			async (baseUrl, requests) => {
+				const model = createCodexTestModel(baseUrl);
+				const fetchMock = vi.fn(async () => {
+					throw new Error("SSE must not replay the native failure");
+				});
+				const options = {
+					apiKey: createCodexTestToken(),
+					providerSessionState: new Map<string, ProviderSessionState>(),
+					sessionId: "native-rejection-session",
+					fetch: fetchMock as FetchImpl,
+					...(kind === "hook restores stateful id"
+						? {
+								onPayload: (frame: unknown) => {
+									const request = frame as Frame;
+									if (requests.length > 0) request.previous_response_id = "resp_1";
+									return request;
+								},
+							}
+						: {}),
+				};
+				const context = createCodexTestContext();
+				const first = await streamOpenAICodexResponses(model, context, options).result();
+				const stream = streamOpenAICodexResponses(
+					model,
+					{
+						...context,
+						messages: [...context.messages, first, { role: "user", content: "Continue", timestamp: 1001 }],
+					},
+					options,
+				);
+				const delivered: string[] = [];
+				for await (const event of stream) {
+					if (event.type === "text_delta") delivered.push(event.delta);
+					if (event.type === "toolcall_end") delivered.push(event.toolCall.name);
+				}
+				const result = await stream.result();
+				expect(result.stopReason).toBe("error");
+				expect(result.errorMessage).toContain(code);
+				expect(delivered).toEqual(
+					kind === "text delivered" ? ["Visible answer"] : kind === "tool delivered" ? ["status"] : [],
+				);
+				expect(requests).toHaveLength(
+					kind === "independent rejection" || kind === "hook restores stateful id" ? 3 : 2,
+				);
+				expect(fetchMock).not.toHaveBeenCalled();
+			},
+		);
+	});
+});
+
 describe("openai-codex SSE statelessness", () => {
 	function createSseOptions(
 		fetchMock: FetchImpl,

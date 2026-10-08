@@ -219,6 +219,117 @@ describe("read tool multi-range selector", () => {
 		expect(text).not.toContain("line 19");
 	});
 
+	it("将正向范围和最后若干行保留在同一资源", async () => {
+		const filePath = path.join(tmpDir, "PackageProvenance.json");
+		const lines = makeNumberedContent(180).split("\n");
+		await fs.writeFile(filePath, lines.join("\n"));
+
+		const result = await new ReadTool(createSession(tmpDir)).execute("call-mixed-tail", {
+			path: `${filePath}:1-105,-38`,
+		});
+
+		expect(result.details?.displayContent).toEqual({
+			text: [...lines.slice(0, 105), "…", ...lines.slice(142)].join("\n"),
+			startLine: 1,
+			lineNumbers: [
+				...Array.from({ length: 105 }, (_, i) => i + 1),
+				null,
+				...Array.from({ length: 38 }, (_, i) => i + 143),
+			],
+		});
+	});
+
+	it.each([
+		{
+			selector: "-3,2+2,20-,21",
+			spans: [
+				[2, 3],
+				[20, 30],
+			],
+		},
+		{ selector: "-8,25-27,-3", spans: [[23, 30]] },
+		{ selector: "15-,-3", spans: [[15, 30]] },
+		{
+			selector: "-3,2",
+			spans: [
+				[2, 2],
+				[28, 30],
+			],
+		},
+	])("排序并合并混合选择器 $selector", async ({ selector, spans }) => {
+		const filePath = path.join(tmpDir, "numbered.txt");
+		const lines = makeNumberedContent(30).split("\n");
+		await fs.writeFile(filePath, lines.join("\n"));
+		const textParts: string[] = [];
+		const lineNumbers: Array<number | null> = [];
+		for (const [start, end] of spans) {
+			if (textParts.length > 0) {
+				textParts.push("…");
+				lineNumbers.push(null);
+			}
+			textParts.push(...lines.slice(start! - 1, end));
+			lineNumbers.push(...Array.from({ length: end! - start! + 1 }, (_, i) => start! + i));
+		}
+
+		const result = await new ReadTool(createSession(tmpDir)).execute("call-tail-union", {
+			path: `${filePath}:${selector}`,
+		});
+
+		expect(result.details?.displayContent).toEqual({
+			text: textParts.join("\n"),
+			startLine: spans[0]![0],
+			lineNumbers,
+		});
+	});
+
+	it("在两种 raw 顺序下按原始换行片段解析混合尾范围", async () => {
+		const filePath = path.join(tmpDir, "raw.txt");
+		await fs.writeFile(filePath, "one\r\ntwo\r\nthree\r\nfour\r\n");
+		const tool = new ReadTool(createSession(tmpDir));
+		const expected = "two\r\n\n…\n\nfour\r\n";
+
+		for (const selector of ["raw:2-2,-2", "2-2,-2:raw"]) {
+			expect(textOutput(await tool.execute(`call-${selector}`, { path: `${filePath}:${selector}` }))).toBe(expected);
+		}
+		expect(textOutput(await tool.execute("call-raw-tail", { path: `${filePath}:raw:-2` }))).toBe("four\r\n");
+		const tail = await tool.execute("call-tail", { path: `${filePath}:-2` });
+		expect(tail.details?.displayContent?.lineNumbers).toEqual([3, 4]);
+	});
+
+	it("对超过快照大小的文件按实际总行数解析尾范围", async () => {
+		const filePath = path.join(tmpDir, "large.txt");
+		const lines = Array.from({ length: 5000 }, (_, i) => `line ${i + 1} ${"x".repeat(1000)}`);
+		await fs.writeFile(filePath, lines.join("\n"));
+
+		const result = await new ReadTool(createSession(tmpDir)).execute("call-streamed-tail", {
+			path: `${filePath}:raw:1-2,-2`,
+		});
+
+		expect(textOutput(result)).toBe(`${lines.slice(0, 2).join("\n")}\n\n…\n\n${lines.slice(-2).join("\n")}`);
+	});
+
+	it("保留普通逗号路径列表和带标点的字面文件名", async () => {
+		await fs.writeFile(path.join(tmpDir, "first.txt"), "第一个文件");
+		await fs.writeFile(path.join(tmpDir, "second.txt"), "第二个文件");
+		await fs.writeFile(path.join(tmpDir, "first,second;-38.txt"), "字面文件首行\n字面文件中间行\n字面文件尾行");
+		const tool = new ReadTool(createSession(tmpDir));
+
+		const list = textOutput(await tool.execute("call-path-list", { path: "first.txt,second.txt" }));
+		expect(list).toContain("第一个文件");
+		expect(list).toContain("第二个文件");
+		await fs.writeFile(path.join(tmpDir, "first.txt"), "第一个文件首行\n第一个文件中间行\n第一个文件尾行");
+		const rangedList = textOutput(
+			await tool.execute("call-ranged-path-list", { path: "first.txt:raw:1-1,-1,second.txt:1-1" }),
+		);
+		expect(rangedList).toContain("第一个文件首行");
+		expect(rangedList).toContain("第一个文件尾行");
+		expect(rangedList).toContain("第二个文件");
+		expect(rangedList).not.toContain("第一个文件中间行");
+		const literal = await tool.execute("call-literal-punctuation", { path: "first,second;-38.txt:1-1,-1" });
+		expect(literal.details?.displayContent?.text).toBe("字面文件首行\n…\n字面文件尾行");
+		expect(literal.details?.displayContent?.lineNumbers).toEqual([1, null, 3]);
+	});
+
 	it("accepts `..` as a forgiving alias for `-`, producing identical output", async () => {
 		const filePath = path.join(tmpDir, "numbered.txt");
 		await fs.writeFile(filePath, makeNumberedContent(30));
@@ -275,6 +386,27 @@ describe("read tool multi-range selector", () => {
 		expect(text).toContain("bridge five");
 		expect(text).not.toContain("bridge three");
 		expect(text).not.toContain("disk one");
+	});
+
+	it("按 ACP 编辑器文本的总行数解析混合尾范围", async () => {
+		const filePath = path.join(tmpDir, "bridge-tail.txt");
+		await fs.writeFile(filePath, makeNumberedContent(5));
+		const bridgeLines = Array.from({ length: 30 }, (_, i) => `bridge ${i + 1}`);
+		const bridge: ClientBridge = {
+			capabilities: { readTextFile: true },
+			readTextFile: async () => bridgeLines.join("\n"),
+		};
+
+		const result = await new ReadTool(createSession(tmpDir, bridge)).execute("call-bridge-tail", {
+			path: `${filePath}:2-3,-2`,
+		});
+
+		expect(result.details?.totalLines).toBe(30);
+		expect(result.details?.displayContent).toEqual({
+			text: [...bridgeLines.slice(1, 3), "…", ...bridgeLines.slice(-2)].join("\n"),
+			startLine: 2,
+			lineNumbers: [2, 3, null, 29, 30],
+		});
 	});
 
 	it("keeps ACP multi-range blanks editable without exposing the EOF sentinel", async () => {

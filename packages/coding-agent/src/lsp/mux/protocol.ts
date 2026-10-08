@@ -10,6 +10,7 @@
  * entry (`server.ts`), the client connector (`daemon.ts`), and tests.
  */
 import * as path from "node:path";
+import { normalizePathForComparison } from "@oh-my-pi/pi-utils";
 export { LSP_MUX_WORKER_ARG } from "../../cli/worker-selectors";
 
 /** Environment key carrying the socket endpoint the mux must listen on. */
@@ -116,6 +117,6 @@ export interface MuxConnectResult {
  */
 export function muxServerKey(params: MuxConnectParams): string {
 	const envEntries = Object.entries(params.env ?? {}).sort((a, b) => (a[0] < b[0] ? -1 : 1));
-	const identity = JSON.stringify([params.command, params.args, params.cwd, envEntries]);
+	const identity = JSON.stringify([params.command, params.args, normalizePathForComparison(params.cwd), envEntries]);
 	return `sha256:${Bun.SHA256.hash(identity, "hex")}`;
 }

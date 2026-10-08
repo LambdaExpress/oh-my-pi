@@ -1,7 +1,14 @@
 import type { Component } from "../tui";
 import { t } from "../i18n";
 import { Text } from "../components/text";
-import type { NativeToolHead, NativeToolView, RenderResultOptions, ToolRenderer } from "./renderer";
+import type {
+	NativeToolHead,
+	NativeToolView,
+	RenderResultOptions,
+	ToolActivityContext,
+	ToolActivitySummary,
+	ToolRenderer,
+} from "./renderer";
 import { col, compact, keyed, node, row, span, text } from "../native/describe";
 import type { NativeChild, NativeNode } from "../native/node";
 import { fileHref, fileRow, footnoteText, inlineErrorView, resultText } from "./native-view";
@@ -18,6 +25,7 @@ import {
 	formatEmptyMessage,
 	formatErrorMessage,
 	PREVIEW_LIMITS,
+	sanitizeDisplayWarning,
 } from "../render/render-utils";
 import { formatFullOutputReference } from "./output-meta";
 
@@ -109,6 +117,11 @@ function globNativeHead(args: GlobRenderArgs | undefined, meta: readonly string[
 /** Render glob calls and results in the transcript. */
 export const globToolRenderer = {
 	inline: true,
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const pattern = sanitizeDisplayWarning(formatGlobRenderPaths((args ?? {}) as GlobRenderArgs) || "*");
+		return { label: t("Glob"), detail: context.theme.fg("muted", pattern) };
+	},
+
 	renderCall(args: GlobRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const meta: string[] = [];
 		if (args.limit !== undefined) meta.push(`limit:${args.limit}`);

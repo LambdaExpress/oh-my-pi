@@ -56,6 +56,70 @@ class InterruptedOutput:
 if mode == "requests":
     worker._proto = InterruptedOutput(protocol)
     worker.main()
+elif mode.startswith("pseudocode-"):
+    class Function:
+        start_ea = 0x1000
+        end_ea = 0x1003
+
+    class Failure:
+        code = 0
+        errea = 0xFFFFFFFFFFFFFFFF
+
+        def desc(self):
+            return "cannot convert to microcode"
+
+    function = Function()
+    managed = mode in ("pseudocode-managed", "pseudocode-managed-supported", "pseudocode-badarch")
+    worker.ida_funcs.func_t = Function
+    worker.ida_funcs.get_func_name = lambda _: "Example::Read" if managed else "read_value"
+    worker.ida_idaapi.BADADDR = 0xFFFFFFFFFFFFFFFF
+    worker.ida_hexrays.hexrays_failure_t = Failure
+    worker.ida_hexrays.MERR_BADARCH = -1
+    worker.ida_hexrays.MERR_CANCELED = -2
+    worker.idautils.FuncItems = lambda _: range(function.start_ea, function.end_ea)
+    disassembly = ("ldc.i4.1", "stloc.0", "ret") if managed else ("mov eax, 1", "nop", "ret")
+    worker.ida_lines.generate_disasm_line = lambda ea, _: disassembly[ea - function.start_ea]
+    worker.ida_lines.tag_remove = lambda text: text.replace("\x01", "").replace("\x02", "")
+
+    def init_decompiler():
+        # idalib can reset SIGINT when it initializes a decompiler, even on failure.
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        return mode not in ("pseudocode-managed", "pseudocode-unavailable")
+
+    def decompile_function(func, hf=None, decomp_flags=0):
+        # Model the actual SWIG typemap: failure object second, integer flags third.
+        if not isinstance(func, Function) or not isinstance(hf, Failure) or not isinstance(decomp_flags, int):
+            raise TypeError("in method 'decompile_func', argument 2 of type 'hexrays_failure_t *'")
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        if mode == "pseudocode-interrupt":
+            raise KeyboardInterrupt()
+        if mode in ("pseudocode-failure", "pseudocode-badarch", "pseudocode-canceled"):
+            hf.code = (
+                worker.ida_hexrays.MERR_BADARCH if mode == "pseudocode-badarch"
+                else worker.ida_hexrays.MERR_CANCELED if mode == "pseudocode-canceled"
+                else -3
+            )
+            hf.errea = function.start_ea + 1
+            return None
+        return types.SimpleNamespace(get_pseudocode=lambda: [
+            types.SimpleNamespace(line="\x01int read_value(void)\x02"),
+            types.SimpleNamespace(line="{"),
+            types.SimpleNamespace(line="    return 1;"),
+            types.SimpleNamespace(line="}"),
+        ])
+
+    worker.ida_hexrays.init_hexrays_plugin = init_decompiler
+    worker.ida_hexrays.decompile_func = decompile_function
+    worker.DB = types.SimpleNamespace(
+        architecture="cli" if managed else "metapc",
+        # Reproduce the legacy Domain wrapper's positional-argument mismatch.
+        pseudocode=types.SimpleNamespace(decompile=lambda func: decompile_function(func, 0)),
+    )
+    try:
+        result = worker._rpc_view({"kind": "pseudocode", "target": function})
+    except KeyboardInterrupt:
+        result = {"interrupted": True}
+    result["sigint_restored"] = signal.getsignal(signal.SIGINT) is signal.default_int_handler
 elif mode == "restore":
     received = []
     signal.signal(signal.SIGINT, lambda *_: received.append("SIGINT"))

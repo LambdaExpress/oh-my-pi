@@ -12,6 +12,11 @@ export interface LineRange {
 /** Shared line-range grammar for selector recognition and parsing. */
 export const LINE_RANGE_CHUNK_SOURCE = String.raw`L?(\d+)(?:(\.\.|[-+])L?(\d+)?)?`;
 const LINE_RANGE_CHUNK_RE = new RegExp(`^${LINE_RANGE_CHUNK_SOURCE}$`, "i");
+const TAIL_RANGE_CHUNK_RE = /^-(\d+)$/;
+// Path splitting only peels complete selectors; parsing can explain incomplete counts.
+const LINE_SELECTION_CHUNK_SOURCE = String.raw`(?:${LINE_RANGE_CHUNK_SOURCE}(?<=[\d.-])|-\d+)`;
+/** Composable positive/open/count/tail grammar for trailing read selectors. */
+export const LINE_RANGE_SELECTION_SOURCE = `${LINE_SELECTION_CHUNK_SOURCE}(?:,${LINE_SELECTION_CHUNK_SOURCE})*`;
 
 /** Parse a single `N`, `N-M`, `N-`, `N+K`, or `..`-aliased (`N..M`, `N..`) chunk. Throws via {@link ToolError} on invalid bounds. */
 export function parseLineRangeChunk(sel: string): LineRange | null {
@@ -50,27 +55,50 @@ function parseChunk(sel: string, pinBare: boolean): LineRange | null {
 }
 
 /**
- * Parse a comma-separated list of line ranges (e.g. `5-16,960-973` or `19,59`). Returns
- * the ranges in ascending order with overlapping/adjacent ranges merged so
- * downstream consumers can stream the file in a single forward pass per range.
+ * Parse a selection without guessing the source's line count. Absolute ranges
+ * are merged; tails retain their largest count because all tails end at EOF.
  */
-export function parseLineRanges(sel: string): [LineRange, ...LineRange[]] | null {
+export function parseLineRangeSelection(sel: string): { ranges: LineRange[]; tailCount?: number } | null {
 	const chunks = sel.split(",");
 	// A lone `:50` means "from line 50". Inside a comma list, a bare number is
 	// that one line; otherwise `:19,59` collapses to "from 19 through EOF".
 	const pinBare = chunks.length > 1;
 	const parsed: LineRange[] = [];
+	let tailCount: number | undefined;
 	for (const chunk of chunks) {
+		const tail = TAIL_RANGE_CHUNK_RE.exec(chunk);
+		if (tail) {
+			const count = Number.parseInt(tail[1]!, 10);
+			if (count < 1) {
+				throw new ToolError("Tail selector -0 is invalid; use :-N with N >= 1 to read the last N lines.");
+			}
+			tailCount = Math.max(tailCount ?? 0, count);
+			continue;
+		}
 		const range = parseChunk(chunk, pinBare);
 		if (!range) return null;
 		parsed.push(range);
 	}
-	if (parsed.length === 0) return null;
-	parsed.sort((a, b) => a.startLine - b.startLine);
+	const ranges = parsed.length > 0 ? mergeLineRanges(parsed as [LineRange, ...LineRange[]]) : [];
+	return tailCount === undefined ? { ranges } : { ranges, tailCount };
+}
 
-	const merged: LineRange[] = [parsed[0]];
-	for (let i = 1; i < parsed.length; i++) {
-		const current = parsed[i];
+/**
+ * Parse absolute ranges only. Callers without a source line count must not
+ * silently interpret a tail as an absolute match filter.
+ */
+export function parseLineRanges(sel: string): [LineRange, ...LineRange[]] | null {
+	const selection = parseLineRangeSelection(sel);
+	if (!selection || selection.tailCount !== undefined || selection.ranges.length === 0) return null;
+	return selection.ranges as [LineRange, ...LineRange[]];
+}
+
+/** Sort and merge absolute ranges without mutating a parsed selector or its ranges. */
+export function mergeLineRanges(ranges: readonly [LineRange, ...LineRange[]]): [LineRange, ...LineRange[]] {
+	const ordered = [...ranges].sort((a, b) => a.startLine - b.startLine);
+	const merged: LineRange[] = [ordered[0]!];
+	for (let i = 1; i < ordered.length; i++) {
+		const current = ordered[i]!;
 		const last = merged[merged.length - 1];
 		// Open-ended (endLine undefined) means "to EOF" — any later range is absorbed.
 		if (last.endLine === undefined) continue;

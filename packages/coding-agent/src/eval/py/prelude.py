@@ -139,10 +139,10 @@ if "__omp_prelude_loaded__" not in globals():
         return data
 
     def write(path: str | Path, content: str) -> Path:
-        """Write file contents (create parents)."""
+        """Write UTF-8 file contents without newline conversion (create parents)."""
         p = _resolve_omp_path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
+        p.write_text(content, encoding="utf-8", newline="")
         _emit_status("write", path=str(p), chars=len(content))
         return p
 

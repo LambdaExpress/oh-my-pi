@@ -66,7 +66,22 @@ function toolResultHasError(result: AgentToolResult): boolean {
 }
 
 function getTool(session: ToolSession, name: string): AgentTool {
-	const tool = session.getToolForEvalBridge ? session.getToolForEvalBridge(name) : session.getToolByName?.(name);
+	let tool = session.getToolForEvalBridge ? session.getToolForEvalBridge(name) : session.getToolByName?.(name);
+	if (!tool) {
+		// Match advertised custom-wire names after exact names, as direct
+		// dispatch does. Resolve candidates through the same permission gate;
+		// looking them up in the raw registry would bypass bridge restrictions.
+		const names = session.getEvalBridgeToolNames?.() ?? session.toolRegistry?.keys() ?? [];
+		for (const canonicalName of names) {
+			const candidate = session.getToolForEvalBridge
+				? session.getToolForEvalBridge(canonicalName)
+				: session.getToolByName?.(canonicalName);
+			if (candidate?.customWireName === name) {
+				tool = candidate;
+				break;
+			}
+		}
+	}
 	if (!tool) {
 		throw new ToolError(`Unknown tool from js runtime: ${name}`);
 	}

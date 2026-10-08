@@ -10,9 +10,9 @@
  *
  * The fix relocates the embeddings stack into a Bun.spawn child process. The
  * agent's main process hands `mnemopi.setLocalModelInitializer` a wrapper that
- * round-trips through `__omp_worker_mnemopi_embed`, and `SIGKILL`s the child
- * on dispose so the destructor never runs in either address space. These tests
- * pin the three pieces of that contract so a future refactor cannot quietly
+ * round-trips through `__omp_worker_mnemopi_embed`; the child is `SIGKILL`ed
+ * on idle retirement or parent exit so its native shutdown finalizer never
+ * runs. These tests pin that contract so a future refactor cannot quietly
  * re-introduce the crash.
  */
 import { describe, expect, it } from "bun:test";
@@ -96,8 +96,8 @@ describe("issue #3031 — mnemopi embeddings live in an isolated subprocess", ()
 	}, 10_000);
 
 	it("carries (model, cacheDir) on every embed so a respawned worker can self-init", async () => {
-		// Without this contract: after `shutdownMnemopiEmbedClient()` runs on
-		// session dispose, mnemopi still holds the cached `LocalEmbeddingModel`
+		// Without this contract: after the idle worker is terminated,
+		// mnemopi still holds the cached `LocalEmbeddingModel`
 		// wrapper. The next embed re-spawns a fresh subprocess that has never
 		// seen `init`, and a bare `embed` request would trip the "embed before
 		// init" guard and break local embeddings for the rest of the process.
@@ -146,7 +146,7 @@ describe("issue #3031 — mnemopi embeddings live in an isolated subprocess", ()
 		for await (const _ of wrapper!.embed(["hello"])) {
 			/* drain */
 		}
-		// Tear down the worker as the session-dispose path does, then drive
+		// Tear down the worker as the idle-release path does, then drive
 		// the SAME cached wrapper again — the client must re-spawn and the
 		// embed message must still carry (model, cacheDir).
 		await client.terminate();

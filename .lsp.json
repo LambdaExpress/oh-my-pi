@@ -3,6 +3,9 @@
 		"typescript-language-server": {
 			"disabled": true
 		},
+		"typescript-native": {
+			"disabled": true
+		},
 		"tsgo": {
 			"command": "tsgo",
 			"args": ["--lsp", "--stdio"],

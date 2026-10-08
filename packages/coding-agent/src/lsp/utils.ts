@@ -2,9 +2,10 @@ export { truncate } from "@oh-my-pi/pi-utils";
 
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import { FileType, glob as nativeGlob } from "@oh-my-pi/pi-natives";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
-import { formatPathRelativeToCwd, resolveToCwd } from "../tools/path-utils";
+import { formatPathRelativeToCwd, parseSearchPath, resolveToCwd } from "../tools/path-utils";
 import type {
 	CodeAction,
 	Command,
@@ -530,14 +531,49 @@ export async function collectGlobMatches(
 	maxMatches: number,
 ): Promise<{ matches: string[]; truncated: boolean }> {
 	const normalizedLimit = Number.isFinite(maxMatches) ? Math.max(1, Math.trunc(maxMatches)) : 1;
-	const matches: string[] = [];
-	for await (const match of new Bun.Glob(pattern).scan({ cwd })) {
-		if (matches.length >= normalizedLimit) {
-			return { matches, truncated: true };
-		}
-		matches.push(match);
+	const cwdStat = await fs.stat(cwd);
+	if (!cwdStat.isDirectory()) {
+		throw Object.assign(new Error(`Glob 工作目录不是目录：${cwd}`), { code: "ENOTDIR" });
 	}
-	return { matches, truncated: false };
+
+	// Bun's scanner misses directory-level brace alternatives on Windows.
+	// Reuse the native walker and the existing first-glob-segment path split.
+	const parsed = parseSearchPath(pattern);
+	const globPattern = parsed.glob ?? path.basename(parsed.basePath);
+	if (!globPattern) return { matches: [], truncated: false };
+	let basePath = parsed.glob === undefined ? path.dirname(parsed.basePath) : parsed.basePath;
+	const pathRoot = path.parse(pattern).root;
+	if (pathRoot && basePath.length < pathRoot.length) basePath = pathRoot;
+	const searchPath = resolveToCwd(basePath, cwd);
+	if (basePath !== ".") {
+		try {
+			if (!(await fs.stat(searchPath)).isDirectory()) return { matches: [], truncated: false };
+		} catch (error) {
+			if (!isEnoent(error)) throw error;
+			return { matches: [], truncated: false };
+		}
+	}
+
+	const result = await nativeGlob({
+		pattern: globPattern,
+		path: searchPath,
+		fileType: FileType.File,
+		recursive: false,
+		hidden: false,
+		gitignore: false,
+		includeNodeModules: true,
+		sortByMtime: false,
+		// The binding accepts u32 limits; omit the cap for larger caller limits.
+		// One extra file distinguishes a full result from a truncated one.
+		maxResults: normalizedLimit < 0xffff_ffff ? normalizedLimit + 1 : undefined,
+	});
+	const outputBase = path.isAbsolute(pattern) ? searchPath : basePath;
+	const matches: string[] = [];
+	for (const match of result.matches) {
+		if (matches.length === normalizedLimit) break;
+		matches.push(path.join(outputBase, match.path));
+	}
+	return { matches, truncated: result.matches.length > normalizedLimit };
 }
 
 export async function resolveDiagnosticTargets(

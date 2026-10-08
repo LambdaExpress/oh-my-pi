@@ -182,7 +182,6 @@ import { InternalUrlRouter, type LocalProtocolOptions } from "../internal-urls";
 import { hasNativeJudge, journalJudgmentUsage, resolveJudge, sharedJudgmentCache } from "../judgment";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import type { DaemonCompletionNotification } from "../launch/protocol";
-import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
 import { MAGIC_KEYWORDS, type MagicKeywordContext, type MagicKeywordId } from "../modes/magic-keywords";
 import { containsMagicKeyword } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
@@ -5804,18 +5803,6 @@ export class AgentSession implements SettingsScope {
 		}
 	}
 
-	async #disposeMnemopi(
-		state: MnemopiSessionState | undefined,
-		consolidateTimeoutMs: number | undefined,
-	): Promise<void> {
-		try {
-			await state?.dispose({ timeoutMs: consolidateTimeoutMs });
-		} finally {
-			// Consolidation may embed final memories, so terminate its worker only afterward.
-			await shutdownMnemopiEmbedClient();
-		}
-	}
-
 	async #doDispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
 		this.beginDispose();
 		// Stop cache warming before the drain windows below: an armed tick firing
@@ -5876,7 +5863,7 @@ export class AgentSession implements SettingsScope {
 			this.#disconnectOwnedMcp(),
 			advisorRecorderClosed,
 			hindsightState?.flushRetainQueue() ?? Promise.resolve(),
-			this.#disposeMnemopi(mnemopiState, options.mnemopiConsolidateTimeoutMs),
+			mnemopiState?.dispose({ timeoutMs: options.mnemopiConsolidateTimeoutMs }) ?? Promise.resolve(),
 			sharpshooterFlushed,
 		]);
 		for (const result of results) {

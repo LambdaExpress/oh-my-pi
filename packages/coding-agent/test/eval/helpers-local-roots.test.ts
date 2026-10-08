@@ -20,14 +20,28 @@ function makeCtx(cwd: string, roots: Record<string, string>): HelperContext {
 }
 
 describe("eval js helpers internal-url resolution", () => {
+	it.each([
+		{ name: "LF", content: "alpha\n中文\n" },
+		{ name: "CRLF", content: "alpha\r\n中文\r\n" },
+		{ name: "混合换行", content: "alpha\n中文\r\nbeta\rgamma\n" },
+	])("逐字节保留 local:// 文件的 $name 文本", async ({ content }) => {
+		using tmp = TempDir.createSync("@eval-helpers-newlines-");
+		const root = path.join(tmp.path(), "local");
+		const helpers = createHelpers(makeCtx(tmp.path(), { local: root }));
+		await helpers.writeFile("local://nested/contents.txt", content);
+
+		expect(Buffer.from(await Bun.file(path.join(root, "nested", "contents.txt")).arrayBuffer())).toEqual(
+			Buffer.from(content, "utf8"),
+		);
+	});
+
 	it("writes and reads local:// under the injected root", async () => {
 		using tmp = TempDir.createSync("@eval-helpers-local-");
 		const root = path.join(tmp.path(), "local");
 		const helpers = createHelpers(makeCtx(tmp.path(), { local: root }));
 
-		const written = await helpers.writeFile("local://notes/merge-map.md", "hello");
-		expect(written).toBe(path.join(root, "notes", "merge-map.md"));
-		expect(await Bun.file(written).text()).toBe("hello");
+		await helpers.writeFile("local://notes/merge-map.md", "hello");
+		expect(await Bun.file(path.join(root, "notes", "merge-map.md")).text()).toBe("hello");
 		expect(await helpers.read("local://notes/merge-map.md")).toBe("hello");
 
 		// Regression: no literal `local:` directory created under the cwd.
@@ -49,8 +63,7 @@ describe("eval js helpers internal-url resolution", () => {
 		using tmp = TempDir.createSync("@eval-helpers-plain-");
 		const helpers = createHelpers(makeCtx(tmp.path(), {}));
 
-		const rel = await helpers.writeFile("foo/bar.txt", "bar");
-		expect(rel).toBe(path.join(tmp.path(), "foo", "bar.txt"));
+		await helpers.writeFile("foo/bar.txt", "bar");
 		expect(await helpers.read("foo/bar.txt")).toBe("bar");
 	});
 });

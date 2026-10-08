@@ -33,6 +33,8 @@ Within each config-directory row, directories are listed highest to lowest prior
 
 Merging is shallow per server: a higher-precedence server object overrides only its top-level fields, but object-valued fields such as `settings`, `initOptions`, `capabilities`, and `workspaceReadyTimings` replace the lower value as a whole rather than deep-merging it. Servers absent from override files remain at built-in defaults.
 
+When replacing a built-in server with a differently named custom server, explicitly disable the built-in entry to avoid running both. For example, a custom `tsgo` configuration should disable both `typescript-native` and `typescript-language-server`; those built-ins cover different TypeScript installation versions.
+
 The native user config directory follows `PI_CONFIG_DIR` and active profiles; `~/.omp/agent/lsp.json` is the default-profile spelling. This shared config lookup does not use `PI_CODING_AGENT_DIR` as an arbitrary replacement base. Claude's user directory honors `CLAUDE_CONFIG_DIR`. Foreign user sources (Claude, Codex, Gemini) are opt-in through the enabled-provider configuration; setting `CLAUDE_CONFIG_DIR` also opts Claude in unless explicitly disabled. Project and cwd sources do not walk ancestors and are not subject to that user-source opt-in.
 
 **Recommended locations:**
@@ -69,9 +71,13 @@ or (flat, without the `servers` wrapper):
 Top-level keys:
 
 - `servers` — map of server name to `ServerConfig` (optional wrapper; flat form is equivalent)
-- `idleTimeoutMs` — shut down idle language servers after this many milliseconds; omitted, zero, and negative values leave idle shutdown disabled
+- `idleTimeoutMs` — shut down idle language-server clients after this many milliseconds; omitted uses five minutes, while zero and negative values disable idle shutdown
 
 Do not mix wrapped and flat server entries: when `servers` is an object, sibling keys other than `idleTimeoutMs` are not treated as servers.
+
+The idle checker runs once a minute and preserves clients with pending requests or background indexing progress. After a shared client disconnects, its server can remain warm for up to another five minutes for sequential reuse; blocked cleanup writes do not extend that lifetime. The next request reconnects or starts a fresh server. Private servers exit directly when their client is retired.
+
+Client reuse, in-flight initialization, reload cleanup, and mux reuse identify workspaces by their canonical directory. Equivalent separators, relative segments, and Windows path casing do not start another language server for the same configuration.
 
 ## ServerConfig fields
 

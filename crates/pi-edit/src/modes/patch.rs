@@ -649,14 +649,6 @@ fn attempt_sequence_fallback(
 		.index
 		.filter(|_| result.match_count.unwrap_or(1) <= 1)
 	{
-		let next = found + 1;
-		if next <= lines.len().saturating_sub(pattern.len())
-			&& seek_sequence(lines, &pattern, next, false, allow_fuzzy)
-				.index
-				.is_some()
-		{
-			return None;
-		}
 		return Some(found);
 	}
 	for variant in fallback_variants(hunk, aggressive) {
@@ -1258,17 +1250,18 @@ fn compute_replacements(
 			&& !hunk.has_context_lines
 			&& !hunk.is_end_of_file
 			&& line_hint.is_none()
+			&& result.match_count.is_some_and(|count| count > 1)
 		{
-			let refs = pattern.iter().map(String::as_str).collect::<Vec<_>>();
-			let second = seek_sequence(lines, &refs, found + 1, false, allow_fuzzy);
-			if let Some(second) = second.index {
-				return Err(EditError::apply(format!(
-					"Found 2 occurrences in {path}:\n\n{}\n\n{}\n\nAdd more context lines to \
-					 disambiguate.",
-					sequence_preview(lines, found),
-					sequence_preview(lines, second)
-				)));
-			}
+			// Count only candidates from the selected full-hunk matching pass.
+			// A fresh suffix search can downgrade an exact match to fuzzy text.
+			let count = result.match_count.unwrap();
+			let previews =
+				sequence_previews(lines, result.match_indices.as_deref(), result.match_count)
+					.unwrap_or_default();
+			return Err(EditError::apply(format!(
+				"Found {count} occurrences in {path}:\n\n{previews}\n\nAdd more context lines to \
+				 disambiguate."
+			)));
 		}
 		if context_line_indices.len() == pattern.len()
 			&& context_line_indices.len() == new_lines.len()
@@ -1432,6 +1425,11 @@ fn stage_from_parts(
 	};
 	let persisted = match after.as_deref() {
 		Some(text) if use_new_encoding || read.is_none() => Some(persist_new(&resolved, text)?),
+		Some(text) if move_to.is_some() && read.as_ref().is_some_and(|value| value.text == text) => {
+			// A content-preserving move must not reserialize notebook JSON or
+			// reconstruct the source's BOM and individual line terminators.
+			Some(read.as_ref().unwrap().raw.clone())
+		},
 		Some(text) => Some(read.as_ref().unwrap().persist(text)?),
 		None => None,
 	};
@@ -1525,14 +1523,18 @@ pub fn stage_patch(
 		Operation::Update => {
 			let diff = input
 				.diff
+				.or_else(|| input.rename.map(|_| ""))
 				.ok_or_else(|| EditError::apply("Update operation requires diff (hunks)"))?;
 			let read = files.read(input.path)?;
-			let hunks = parse_diff_hunks(diff)?;
-			if hunks.is_empty() {
-				return Err(EditError::apply("Diff contains no hunks"));
-			}
-			let (after, warnings) =
-				apply_hunks(&read.text, input.path, &hunks, threshold, allow_fuzzy)?;
+			let (after, warnings) = if move_to.is_some() && diff.trim().is_empty() {
+				(read.text.clone(), Vec::new())
+			} else {
+				let hunks = parse_diff_hunks(diff)?;
+				if hunks.is_empty() {
+					return Err(EditError::apply("Diff contains no hunks"));
+				}
+				apply_hunks(&read.text, input.path, &hunks, threshold, allow_fuzzy)?
+			};
 			stage_from_parts(
 				&input,
 				read.resolved.clone(),
@@ -1724,15 +1726,18 @@ impl ModeEngine for PatchEngine {
 					}
 					let diff = input
 						.diff
+						.or_else(|| input.rename.map(|_| ""))
 						.ok_or_else(|| EditError::apply("Update operation requires diff (hunks)"))?;
-					let hunks = parse_diff_hunks(diff)?;
-					if hunks.is_empty() {
-						return Err(EditError::apply("Diff contains no hunks"));
+					if !(input.rename.is_some() && diff.trim().is_empty()) {
+						let hunks = parse_diff_hunks(diff)?;
+						if hunks.is_empty() {
+							return Err(EditError::apply("Diff contains no hunks"));
+						}
+						let (next, mut next_warnings) =
+							apply_hunks(&current, path, &hunks, self.fuzzy_threshold, self.allow_fuzzy)?;
+						current = next;
+						warnings.append(&mut next_warnings);
 					}
-					let (next, mut next_warnings) =
-						apply_hunks(&current, path, &hunks, self.fuzzy_threshold, self.allow_fuzzy)?;
-					current = next;
-					warnings.append(&mut next_warnings);
 					final_op = FileOp::Update;
 				},
 			}

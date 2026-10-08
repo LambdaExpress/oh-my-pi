@@ -80,6 +80,16 @@ describe("delimited path expansion", () => {
 		]);
 	});
 
+	it("keeps range-list commas inside each target when recovering a comma-delimited list", async () => {
+		for (const [first, second] of [
+			["apps/a.txt:1-2,-2", "packages/b.txt:1-2"],
+			["apps/a.txt:raw:1-2,-2", "packages/b.txt:1-2:raw"],
+			["apps/a.txt:1-2,-2:raw", "packages/b.txt:raw:1-2"],
+		]) {
+			expect(await splitDelimitedPathEntry(`${first},${second}`, tempDir)).toEqual([first, second]);
+		}
+	});
+
 	it("does not split backslash-escaped delimiters", async () => {
 		expect(await splitDelimitedPathEntry("apps/a.txt\\,packages/b.txt", tempDir)).toBeNull();
 		expect(await splitDelimitedPathEntry("apps/a.txt\\;packages/b.txt", tempDir)).toBeNull();

@@ -12,7 +12,7 @@ import type { ServerConfig } from "./types";
 
 export interface LspConfig {
 	servers: Record<string, ServerConfig>;
-	/** Idle timeout in milliseconds. If set, LSP clients will be shutdown after this period of inactivity. Disabled by default. */
+	/** Idle shutdown timeout in milliseconds. Defaults to five minutes; nonpositive values disable it. */
 	idleTimeoutMs?: number;
 }
 
