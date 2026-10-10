@@ -9,6 +9,8 @@
 
 ### Fixed
 
+- Fixed remote and local compaction divider labels remaining in English when the interface language is Simplified Chinese, including native terminal headings.
+- Fixed PowerShell `timeout: 0` silently becoming a one-second deadline; zero now disables the command deadline while preserving cancellation and bounded output cleanup.
 - Fixed flat todo appends requiring a phase after completed work; omitted phases now select the existing actionable phase without reopening completed tasks.
 - Fixed session SSH updates losing explicit `null` fields before execution, preventing password and other optional configuration from being cleared.
 - Fixed generated images ignoring explicit pixel dimensions; mismatched outputs now retain transparency and return the requested size with consistent saved-file metadata.

@@ -25,6 +25,7 @@ Runs PowerShell 7 scripts directly via `pwsh`; use only when PowerShell itself i
 - NEVER wrap PowerShell in `bash` or nested `pwsh -Command`; use this tool directly.
 - Use `script`, not `command`.
 - Long-running commands need an explicit `timeout`.
+- `timeout: 0` disables the deadline; cancellation still stops the command.
 - Administrator-only operations require starting `omp` itself from an elevated terminal.
 - This tool is unavailable when `pwsh` is missing from PATH.
 </critical>

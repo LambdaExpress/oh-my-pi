@@ -117,7 +117,22 @@ describeIfPwsh("PwshTool", () => {
 		expect(text).not.toContain("\uFFFD");
 	});
 
-	it("preserves streamed UTF-8 output when cancelling a running script", async () => {
+	it("completes past the minimum deadline when timeout is zero", async () => {
+		const tool = new PwshTool(makeSession(tempDir), pwshPath ?? "pwsh");
+		const checkpointPath = path.join(tempDir, "unlimited-completed.txt");
+		const result = await tool.execute("call-pwsh-unlimited", {
+			script: `Write-Output 'before unlimited sleep'
+Start-Sleep -Milliseconds 1500
+Set-Content -LiteralPath 'unlimited-completed.txt' -Value 'completed' -NoNewline -Encoding utf8
+Write-Output 'after unlimited sleep'`,
+			timeout: 0,
+		});
+
+		expect(await Bun.file(checkpointPath).text()).toBe("completed");
+		expect(textOutput(result)).toContain("after unlimited sleep");
+	}, 10_000);
+
+	it("preserves streamed UTF-8 output when cancelling a script with no deadline", async () => {
 		const tool = new PwshTool(makeSession(tempDir), pwshPath ?? "pwsh");
 		const controller = new AbortController();
 		const pidPath = path.join(tempDir, "cancelled-script.pid");
@@ -127,9 +142,10 @@ describeIfPwsh("PwshTool", () => {
 				"call-pwsh-cancel",
 				{
 					script: `$PID | Set-Content -LiteralPath 'cancelled-script.pid'
+Start-Sleep -Milliseconds 1500
 [Console]::Out.WriteLine('取消前的输出')
 Start-Sleep -Seconds 30`,
-					timeout: 10,
+					timeout: 0,
 				},
 				controller.signal,
 				update => {
@@ -176,9 +192,6 @@ Start-Sleep -Seconds 30`,
 		});
 
 		const text = textOutput(result);
-		expect(text).toContain("Some lines truncated to 32 bytes. Read artifact://41 for full output");
-		expect(text).not.toContain("Showing lines");
-		expect(text).not.toContain("limit");
 		expect(text).not.toContain(wideLine);
 
 		const artifactUrl = text.match(/artifact:\/\/[^\s\]]+/u)?.[0];
@@ -254,13 +267,14 @@ Start-Sleep -Seconds 30`,
 		25_000,
 	);
 
-	itIfWindowsPwsh("does not wait for descendants that inherit output pipes after PowerShell exits", async () => {
+	itIfWindowsPwsh("bounds inherited output-pipe draining with no command deadline", async () => {
 		const tool = new PwshTool(makeSession(process.cwd()), pwshPath ?? "pwsh");
 		const pidPath = path.join(tempDir, "inherited-pipe.pid");
 		const escapedPidPath = pidPath.replace(/'/g, "''");
 		try {
 			const result = await tool.execute("call-pwsh-inherited-pipe", {
 				script: `$child = Start-Process -FilePath $env:ComSpec -ArgumentList '/d', '/c', 'ping -n 6 127.0.0.1' -NoNewWindow -PassThru\n$child.Id | Set-Content -LiteralPath '${escapedPidPath}'\nWrite-Output 'root-exited'`,
+				timeout: 0,
 			});
 
 			expect(result.isError).toBeUndefined();

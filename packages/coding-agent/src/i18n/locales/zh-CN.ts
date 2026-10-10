@@ -7293,6 +7293,7 @@ export const zhCN: Record<string, string> = {
 	"loading…": "正在加载…",
 	"local SQLite already supplied an api_key for this provider": "本地 SQLite 已提供该提供商的 api_key",
 	"local-serving": "本地服务",
+	"locally-compacted": "本地压缩",
 	"log matched: {text}": "日志匹配：{text}",
 	"log out account": "退出账户",
 	"log tail unavailable": "日志尾部不可用",
@@ -7623,6 +7624,7 @@ export const zhCN: Record<string, string> = {
 		"远程压缩对 {model} 不可用（未配置远程端点，且回退链中没有提供商原生支持远程的模型）— 改用本地摘要",
 	"remote compaction is unavailable for {model}; trying the next preferred method":
 		"模型 {model} 无法使用服务器端压缩；正在尝试下一个首选方式",
+	"remote-compacted": "远程压缩",
 	removed: "已移除",
 	"render failed: {error}": "渲染失败：{error}",
 	"rendering sample…": "正在渲染示例…",
