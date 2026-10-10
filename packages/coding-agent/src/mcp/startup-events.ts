@@ -1,4 +1,4 @@
-import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { isRecord, sanitizeText } from "@oh-my-pi/pi-utils";
 import { t } from "../i18n";
 import {
 	replaceTabs,
@@ -96,10 +96,6 @@ export function formatMCPConnectionStatusMessage(snapshot: McpConnectionStatusSn
 			: t("Connected to MCP servers: {list}.", { list: formatServerList(connectedServers) });
 	}
 	return "";
-}
-
-function isRecord(data: unknown): data is Record<string, unknown> {
-	return typeof data === "object" && data !== null;
 }
 
 function isStringArray(data: unknown): data is string[] {

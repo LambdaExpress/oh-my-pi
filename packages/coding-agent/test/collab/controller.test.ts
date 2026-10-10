@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, type Mock, spyOn, vi } fro
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { closeModelCacheSharedDb } from "@oh-my-pi/pi-catalog/model-cache";
 import { CollabController } from "@oh-my-pi/pi-coding-agent/collab/controller";
 import { importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
 import { CollabGuestLink } from "@oh-my-pi/pi-coding-agent/collab/guest";
@@ -32,6 +33,8 @@ import { beginStartupComposer, stopPendingStartupComposer } from "@oh-my-pi/pi-c
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { HistoryStorage } from "@oh-my-pi/pi-coding-agent/session/history-storage";
+import { resetSessionIndexForTests } from "@oh-my-pi/pi-coding-agent/session/session-index";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
 import * as utils from "@oh-my-pi/pi-utils";
@@ -47,6 +50,19 @@ import {
 	cfgStartupSetupWizard,
 	cfgStartupShowSplash,
 } from "@oh-my-pi/pi-coding-agent/modes/settings";
+
+const noRecentSessions = async () => [];
+const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+const originalPiProfile = process.env.PI_PROFILE;
+const originalOmpProfile = process.env.OMP_PROFILE;
+
+function restoreEnv(key: string, value: string | undefined): void {
+	if (value === undefined) {
+		delete process.env[key];
+	} else {
+		process.env[key] = value;
+	}
+}
 
 const RELAY_URL = "ws://localhost:8788";
 const WEB_URL = "https://collab.example";
@@ -118,6 +134,7 @@ function makeControllerContext(over: { autoStart?: "off" | "view" | "control"; r
 				await state.transition;
 			},
 			isStreaming: false,
+			isAborting: false,
 			queuedMessageCount: 0,
 			sessionName: "controller-test",
 			model: { provider: "test-provider", id: "test-model" },
@@ -127,11 +144,12 @@ function makeControllerContext(over: { autoStart?: "off" | "view" | "control"; r
 			// host.ts scopes agent snapshots/control to `getAgentScopeId()`.
 			getAgentScopeId: () => state.sessionId,
 			subscribe: () => () => {},
+			subscribeCommandMetadataChanged: () => () => {},
 			emitNotice: () => {},
 			promptCustomMessage: (message: { content: unknown }) => {
 				state.prompts.push(String(message.content));
 				state.prompted.shift()?.();
-				return Promise.resolve();
+				return Promise.resolve(true);
 			},
 			abort: () => Promise.resolve(),
 			registerSessionChangeCallback: (cb: () => void) => {
@@ -202,9 +220,15 @@ let controller: CollabController | undefined;
 const guestCleanups: (() => void)[] = [];
 const publishWaiters: (() => void)[] = [];
 let capturedSockets: FakeWebSocket[] = [];
+let cleanupInteractiveMode: (() => Promise<void>) | undefined;
+let historyDbPath: string;
+let modelDbPath: string;
 
 beforeEach(async () => {
 	tmp = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collabctl-"));
+	utils.setAgentDir(path.join(tmp, "agent"));
+	historyDbPath = utils.getHistoryDbPath();
+	modelDbPath = utils.getModelDbPath();
 	installInMemoryRelay();
 	// Record every fake socket so a test can drive a terminal close on the host's transport.
 	capturedSockets = [];
@@ -222,14 +246,24 @@ beforeEach(async () => {
 		return publication;
 	});
 	controller = undefined;
+	cleanupInteractiveMode = undefined;
 });
 
 afterEach(async () => {
+	await cleanupInteractiveMode?.();
+	cleanupInteractiveMode = undefined;
 	for (const cleanup of guestCleanups.splice(0).reverse()) cleanup();
 	await controller?.shutdown("test cleanup").catch(() => {});
+	HistoryStorage.close(historyDbPath);
+	resetSessionIndexForTests(historyDbPath);
+	closeModelCacheSharedDb(modelDbPath);
 	uninstallInMemoryRelay();
 	publishSpy?.mockRestore();
-	await fs.rm(tmp, { recursive: true, force: true });
+	restoreEnv("PI_CODING_AGENT_DIR", originalAgentDir);
+	restoreEnv("PI_PROFILE", originalPiProfile);
+	restoreEnv("OMP_PROFILE", originalOmpProfile);
+	utils.__resetDirsFromEnvForTests();
+	await utils.removeWithRetries(tmp);
 });
 
 describe("interactive collaboration startup", () => {
@@ -259,18 +293,20 @@ describe("interactive collaboration startup", () => {
 			},
 		});
 		mode = undefined;
-	});
-
-	afterEach(async () => {
-		await mode?.collabGuest?.leave("test cleanup").catch(() => {});
-		for (const remote of remoteHosts.splice(0)) await remote.stop("test cleanup");
-		await mode?.collabController.shutdown("test cleanup").catch(() => {});
-		mode?.stop();
-		stopPendingStartupComposer();
-		await testSession.cleanup();
-		vi.restoreAllMocks();
-		resetSettingsForTest();
-		setProjectDir(originalProject);
+		// Bun runs the outer afterEach first. Release the nested resources and
+		// restore the process cwd before that hook removes its temporary root.
+		cleanupInteractiveMode = async () => {
+			await mode?.collabGuest?.leave("test cleanup").catch(() => {});
+			for (const remote of remoteHosts.splice(0)) await remote.stop("test cleanup");
+			await mode?.collabController.shutdown("test cleanup").catch(() => {});
+			mode?.stop();
+			mode?.ui.disposeChildren();
+			stopPendingStartupComposer();
+			await testSession.cleanup();
+			vi.restoreAllMocks();
+			resetSettingsForTest();
+			setProjectDir(originalProject);
+		};
 	});
 
 	it("keeps renderer-only initialization local without changing the saved policy", async () => {
@@ -362,7 +398,12 @@ describe("interactive collaboration startup", () => {
 				await render.call(this, options);
 			},
 		);
-		beginStartupComposer({ terminal: new VirtualTerminal(), version: "test", cache: false });
+		beginStartupComposer({
+			terminal: new VirtualTerminal(),
+			version: "test",
+			cache: false,
+			recentSessions: noRecentSessions,
+		});
 		spyOn(InteractiveMode.prototype, "getUserInput").mockImplementation(async function (this: InteractiveMode) {
 			mode = this;
 			await this.collabController.idle();
@@ -699,7 +740,12 @@ describe("interactive collaboration startup", () => {
 					super.stop();
 				}
 			}
-			beginStartupComposer({ terminal: new StartupTerminal(), version: "test", cache: false });
+			beginStartupComposer({
+				terminal: new StartupTerminal(),
+				version: "test",
+				cache: false,
+				recentSessions: noRecentSessions,
+			});
 			spyOn(InteractiveMode.prototype, "initHooksAndCustomTools").mockImplementation(
 				async function (this: InteractiveMode) {
 					mode = this;
@@ -1016,6 +1062,34 @@ describe("CollabController", () => {
 		expect(second.generation).toBe(2);
 		expect(ctx.collabHost).toBe(second);
 		expect(await registry.listCollabHosts({ dir: tmp })).toMatchObject([{ generation: 2 }]);
+	});
+
+	it("does not auto-restart when the relay closes during an explicit stop's goodbye drain", async () => {
+		const { ctx } = makeControllerContext({ autoStart: "control" });
+		controller = new CollabController(ctx);
+		controller.autoStart();
+		await settled(publishSpy, 1);
+		const first = ctx.collabHost;
+		if (!first) throw new Error("first room missing");
+		const hostSocket = capturedSockets.find(s => s.role === "host");
+		if (!hostSocket) throw new Error("host transport socket was never created");
+
+		const drain = Promise.withResolvers<void>();
+		const flush = spyOn(CollabSocket.prototype, "flush").mockImplementation(() => drain.promise);
+		const stopping = controller.stop("host stopped");
+		try {
+			expect(first.ending).toBe(true);
+			expect(first.stopped).toBe(false);
+			hostSocket.onclose?.({ code: 4001, reason: "room closed" });
+		} finally {
+			drain.resolve();
+			flush.mockRestore();
+		}
+		await stopping;
+		await controller.idle();
+		expect(ctx.collabHost).toBeUndefined();
+		expect(await registry.listCollabHosts({ dir: tmp })).toEqual([]);
+		expect(publishSpy).toHaveBeenCalledTimes(1);
 	});
 
 	for (const outcome of ["commit", "rollback"] as const) {
@@ -1379,6 +1453,76 @@ describe("CollabController", () => {
 			{ generation: 2, sessionId: state.sessionId },
 		]);
 		expect(state.showStatus.some(m => /discovery unavailable/.test(m))).toBe(false);
+	});
+
+	it("re-applies auto-start for the same session after its room ends on its own", async () => {
+		const { ctx, state } = makeControllerContext({ autoStart: "control" });
+		controller = new CollabController(ctx);
+		controller.autoStart();
+		await settled(publishSpy, 1);
+		const first = ctx.collabHost;
+		if (!first) throw new Error("auto-start did not install a host");
+
+		// Non-retryable relay close after open, the path `#failFatal` (send backlog) also takes.
+		const hostSocket = capturedSockets.find(s => s.role === "host");
+		if (!hostSocket) throw new Error("host transport socket was never created");
+		hostSocket.onclose?.({ code: 4001, reason: "room closed" });
+		expect(first.stopped).toBe(true);
+		await settled(publishSpy, 2);
+		await controller.idle();
+
+		const replacement = ctx.collabHost;
+		expect(replacement).toBeDefined();
+		expect(replacement).not.toBe(first);
+		expect(controller.host).toBe(replacement);
+		expect(await registry.listCollabHosts({ dir: tmp })).toMatchObject([
+			{ instanceId: controller.instanceId, generation: 2, sessionId: state.sessionId, access: "control" },
+		]);
+		await joinAsWriter(replacement!);
+	});
+
+	it("backs off a repeated self-ended room while /collab still hosts at once", async () => {
+		const { ctx } = makeControllerContext({ autoStart: "control" });
+		controller = new CollabController(ctx);
+		controller.autoStart();
+		await settled(publishSpy, 1);
+		const endCurrentRoom = () => {
+			const hostSocket = capturedSockets.findLast(s => s.role === "host");
+			if (!hostSocket) throw new Error("host transport socket was never created");
+			hostSocket.onclose?.({ code: 4001, reason: "room closed" });
+		};
+
+		endCurrentRoom();
+		await settled(publishSpy, 2);
+		await controller.idle();
+		expect(controller.host?.generation).toBe(2);
+
+		// Ending again right away must not relaunch immediately: the relay is still failing.
+		endCurrentRoom();
+		await controller.idle();
+		expect(controller.host).toBeUndefined();
+		expect(publishSpy).toHaveBeenCalledTimes(2);
+
+		// An explicit /collab is not held behind the backoff.
+		const manual = await controller.start({ access: "control" });
+		expect(manual.generation).toBe(3);
+		expect(await registry.listCollabHosts({ dir: tmp })).toMatchObject([{ generation: 3 }]);
+	});
+
+	it("leaves a manual room ended on its own unhosted while auto-start is off", async () => {
+		const { ctx } = makeControllerContext({ autoStart: "off" });
+		controller = new CollabController(ctx);
+		const host = await controller.start({ access: "control" });
+
+		const hostSocket = capturedSockets.find(s => s.role === "host");
+		if (!hostSocket) throw new Error("host transport socket was never created");
+		hostSocket.onclose?.({ code: 4001, reason: "room closed" });
+		await host.stop("drain teardown");
+		await controller.idle();
+
+		expect(ctx.collabHost).toBeUndefined();
+		expect(publishSpy).toHaveBeenCalledTimes(1);
+		expect(await registry.listCollabHosts({ dir: tmp })).toEqual([]);
 	});
 
 	it("shutdown withdraws the room and ignores later session changes", async () => {

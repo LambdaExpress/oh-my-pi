@@ -36,6 +36,7 @@ describe("defaultThinkingLevel on running sessions", () => {
 	});
 
 	afterAll(() => {
+		modelRegistry.authStorage.close();
 		removeSyncWithRetries(authDir);
 	});
 

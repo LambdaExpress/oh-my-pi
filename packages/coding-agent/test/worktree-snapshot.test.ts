@@ -99,6 +99,8 @@ async function createRepo(name: string): Promise<string> {
 	await runGit(repoRoot, ["init", "-q", "-b", "main"]);
 	await runGit(repoRoot, ["config", "user.email", "test@example.com"]);
 	await runGit(repoRoot, ["config", "user.name", "Test User"]);
+	await runGit(repoRoot, ["config", "core.autocrlf", "false"]);
+	await runGit(repoRoot, ["config", "core.eol", "lf"]);
 	await Promise.all([
 		Bun.write(path.join(repoRoot, "tracked.txt"), "base tracked\n"),
 		Bun.write(path.join(repoRoot, ".gitignore"), "secret/\n"),
@@ -129,6 +131,10 @@ async function createRecursiveRepo(name: string): Promise<string> {
 	await runGit(leafRepoRoot, ["init", "-q", "-b", "main"]);
 	await runGit(leafRepoRoot, ["config", "user.email", "test@example.com"]);
 	await runGit(leafRepoRoot, ["config", "user.name", "Test User"]);
+	await runGit(leafRepoRoot, ["config", "core.autocrlf", "false"]);
+	await runGit(leafRepoRoot, ["config", "core.eol", "lf"]);
+	// Attributes travel with cloned submodules; local Git config does not.
+	await Bun.write(path.join(leafRepoRoot, ".gitattributes"), "* -text\n");
 	await Bun.write(path.join(leafRepoRoot, "leaf.txt"), "leaf base\n");
 	await runGit(leafRepoRoot, ["add", "."]);
 	await runGit(leafRepoRoot, ["commit", "-q", "-m", "leaf base"]);
@@ -138,6 +144,9 @@ async function createRecursiveRepo(name: string): Promise<string> {
 	await runGit(childRepoRoot, ["init", "-q", "-b", "main"]);
 	await runGit(childRepoRoot, ["config", "user.email", "test@example.com"]);
 	await runGit(childRepoRoot, ["config", "user.name", "Test User"]);
+	await runGit(childRepoRoot, ["config", "core.autocrlf", "false"]);
+	await runGit(childRepoRoot, ["config", "core.eol", "lf"]);
+	await Bun.write(path.join(childRepoRoot, ".gitattributes"), "* -text\n");
 	await Bun.write(path.join(childRepoRoot, "child.txt"), "child base\n");
 	await runGit(childRepoRoot, ["add", "."]);
 	await runGit(childRepoRoot, ["commit", "-q", "-m", "child base"]);
@@ -149,6 +158,9 @@ async function createRecursiveRepo(name: string): Promise<string> {
 	await runGit(repoRoot, ["init", "-q", "-b", "main"]);
 	await runGit(repoRoot, ["config", "user.email", "test@example.com"]);
 	await runGit(repoRoot, ["config", "user.name", "Test User"]);
+	await runGit(repoRoot, ["config", "core.autocrlf", "false"]);
+	await runGit(repoRoot, ["config", "core.eol", "lf"]);
+	await Bun.write(path.join(repoRoot, ".gitattributes"), "* -text\n");
 	await Bun.write(path.join(repoRoot, "root.txt"), "root base\n");
 	await runGit(repoRoot, ["add", "."]);
 	await runGit(repoRoot, ["commit", "-q", "-m", "root base"]);
@@ -296,6 +308,12 @@ describe("managed worktree snapshots", () => {
 		expect(metadata?.state).toBe("ready");
 		expect(metadata?.worktreeRoot).toBe(restored.worktreeRoot);
 		expect(metadata?.snapshotPath).toBe(snapshotPath);
+		await expect(Bun.file(path.join(repoRoot, "tracked.txt")).text()).resolves.toBe("base tracked\n");
+		await expect(Bun.file(path.join(repoRoot, "secret", "keep.env")).text()).resolves.toBe(
+			"source included ignored\n",
+		);
+		await expect(exists(path.join(repoRoot, "created.txt"))).resolves.toBe(false);
+		expect(await statusLines(repoRoot)).toEqual([]);
 	});
 
 	it("marks metadata orphaned and keeps the new worktree when snapshot restore fails", async () => {

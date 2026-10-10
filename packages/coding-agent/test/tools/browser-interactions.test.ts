@@ -56,6 +56,7 @@ function makeSession(): ToolSession {
 			"browser.enabled": true,
 			"browser.headless": true,
 			"browser.cmux": false,
+			"browser.tern": false,
 			"tools.maxTimeout": 0,
 		}),
 	};
@@ -74,6 +75,147 @@ afterAll(async () => {
 });
 
 describe.skipIf(!CHROMIUM_AVAILABLE)("browser interaction parity", () => {
+	test("fills framework-controlled fields when keyboard dispatch acknowledges without inserting text", async () => {
+		const session = makeSession();
+		const prelude = createBrowserPrelude(session);
+		const name = `fill-${crypto.randomUUID()}`;
+		const context = { session, toolCallId: "browser-fill-contract" };
+		const fixtureDir = path.join(import.meta.dir, "../fixtures");
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch(request) {
+				const pathname = new URL(request.url).pathname;
+				if (pathname === "/react.js") {
+					return new Response(Bun.file(path.join(fixtureDir, "react-18.3.1.production.min.js")));
+				}
+				if (pathname === "/react-dom.js") {
+					return new Response(Bun.file(path.join(fixtureDir, "react-dom-18.3.1.production.min.js")));
+				}
+				return new Response(
+					`<!doctype html><div id="app"></div>
+<div id="editable" contenteditable>stale</div>
+<input id="disabled" disabled value="kept"><fieldset disabled><input id="fieldset" value="kept"></fieldset>
+<input id="readonly" readonly value="kept"><div id="locked-editor" contenteditable aria-readonly="true">kept</div>
+<input id="reject" value="kept">
+<script src="/react.js"></script><script src="/react-dom.js"></script>
+<script>
+window.fillEvents = {};
+for (const type of ["input", "change"]) document.addEventListener(type, event => {
+  const key = event.target.id + ":" + type;
+  fillEvents[key] = (fillEvents[key] || 0) + 1;
+});
+document.querySelector("#reject").addEventListener("input", event => event.target.value = "kept");
+function Form() {
+  const [values, setValues] = React.useState({username:"stale", password:"stale", notes:"stale"});
+  const [revision, setRevision] = React.useState(0);
+  window.formValues = values;
+  const field = (id, tag, type, label) => React.createElement(tag, {
+    id, type, "aria-label":label, value:values[id],
+    onChange:event => setValues(previous => ({...previous, [id]:event.target.value}))
+  });
+  return React.createElement("div", null,
+    field("username", "input", "text", "Username"),
+    field("password", "input", "password", "Password"),
+    field("notes", "textarea", undefined, "Notes"),
+    React.createElement("button", {id:"rerender", onClick:() => setRevision(value => value + 1)}, "Render " + revision));
+}
+ReactDOM.createRoot(document.querySelector("#app")).render(React.createElement(Form));
+</script>`,
+					{ headers: { "content-type": "text/html; charset=utf-8" } },
+				);
+			},
+		});
+		try {
+			await prelude.invoke({ action: "open", name, url: server.url.href }, context);
+			const result = await prelude.invoke(
+				{
+					action: "run",
+					name,
+					code: `await tab.waitFor("#username");
+const keyboard = page.keyboard;
+const originalType = keyboard.type;
+const originalSendCharacter = keyboard.sendCharacter;
+keyboard.type = async () => {};
+keyboard.sendCharacter = async () => {};
+try {
+	await tab.fill('role/textbox[name="Username" exact]', "alice");
+	await tab.fill("#password", "private-fill-fixture");
+	await (await tab.waitFor("#notes")).fill("新的\\n文本");
+	await tab.fill("#editable", "替换\\n内容");
+	await tab.fill("#username", "");
+	await tab.click("#rerender");
+	const blocked = [];
+	for (const selector of ["#disabled", "#fieldset", "#readonly", "#locked-editor"]) {
+		try {
+			await (await tab.waitFor(selector)).fill("private-fill-fixture");
+			blocked.push(false);
+		} catch {
+			blocked.push(true);
+		}
+	}
+	let rejected;
+	try {
+		await tab.fill("#reject", "private-fill-fixture");
+		rejected = { failed:false };
+	} catch (error) {
+		rejected = { failed:true, message:error.message };
+	}
+	return {
+		blocked, rejected,
+		state:await page.mainFrame().mainRealm().evaluate(() => ({
+			username:formValues.username === "" && document.querySelector("#username").value === "",
+			password:formValues.password === "private-fill-fixture" && document.querySelector("#password").value === formValues.password,
+			notes:formValues.notes === "新的\\n文本" && document.querySelector("#notes").value === formValues.notes,
+			editable:document.querySelector("#editable").innerText === "替换\\n内容",
+			unchanged:["disabled","fieldset","readonly","locked-editor","reject"].every(id => {
+				const element = document.getElementById(id);
+				return (element.value ?? element.innerText) === "kept";
+			}),
+			events:fillEvents,
+		})),
+	};
+} finally {
+	keyboard.type = originalType;
+	keyboard.sendCharacter = originalSendCharacter;
+}`,
+					timeout: 20,
+				},
+				context,
+			);
+			const value = valueFrom<{
+				blocked: boolean[];
+				rejected: { failed: boolean; message?: string };
+				state: Record<string, unknown>;
+			}>(result);
+			expect(value.blocked).toEqual([true, true, true, true]);
+			expect(value.rejected.failed).toBe(true);
+			expect(value.rejected.message).not.toContain("private-fill-fixture");
+			expect(value.state).toEqual({
+				username: true,
+				password: true,
+				notes: true,
+				editable: true,
+				unchanged: true,
+				events: {
+					"username:input": 2,
+					"username:change": 2,
+					"password:input": 1,
+					"password:change": 1,
+					"notes:input": 1,
+					"notes:change": 1,
+					"editable:input": 1,
+					"editable:change": 1,
+					"reject:input": 1,
+					"reject:change": 1,
+				},
+			});
+		} finally {
+			await prelude.invoke({ action: "close", name, kill: true }, context).catch(() => undefined);
+			server.stop(true);
+		}
+	}, 30_000);
+
 	test("guards covered clicks and drives keyboard, pointer, drop-zone, checked-state, and highlight interactions", async () => {
 		const session = makeSession();
 		const prelude = createBrowserPrelude(session);

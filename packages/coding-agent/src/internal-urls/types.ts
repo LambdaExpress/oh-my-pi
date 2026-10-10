@@ -180,7 +180,8 @@ export interface InternalResource {
 	};
 	/**
 	 * `value` marks a discrete extracted value (agent://<id>/<json-path>) that
-	 * `read` returns as-is: no line selectors, no paging.
+	 * `read` returns as-is when unselected. Text values support line selectors;
+	 * structured JSON values do not.
 	 * Default `document`.
 	 */
 	shape?: "document" | "value";

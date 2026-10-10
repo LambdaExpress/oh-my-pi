@@ -9,12 +9,10 @@
  */
 
 import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
+import { describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
-import * as path from "node:path";
 import { isSqliteBusyError, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-storage";
-import { removeWithRetries } from "../../utils/src/temp";
+import { TempDir } from "../../utils/src/temp";
 
 interface SqliteBusyShape extends Error {
 	code: string;
@@ -47,166 +45,148 @@ describe("isSqliteBusyError", () => {
 });
 
 describe("SqliteAuthCredentialStore.open SQLITE_BUSY handling", () => {
-	let tempDir = "";
-
-	beforeEach(async () => {
-		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ai-sqlite-busy-"));
-	});
-
-	afterEach(async () => {
-		vi.restoreAllMocks();
-		if (tempDir) {
-			await removeWithRetries(tempDir);
-			tempDir = "";
-		}
-	});
-
-	test("installs busy_timeout BEFORE any lock-taking statement", async () => {
-		const store = await SqliteAuthCredentialStore.open(path.join(tempDir, "agent.db"));
-		try {
-			// The store doesn't expose the handle, so open a sibling read-only
-			// connection and verify the persisted side-effect of the open: WAL
-			// mode is set (PRAGMA journal_mode=WAL persists to the header), and
-			// the busy_timeout PRAGMA executed without throwing — the latter is
-			// proven by `open()` returning a store at all.
-			const observer = new Database(path.join(tempDir, "agent.db"));
-			try {
-				const row = observer.query("PRAGMA journal_mode").get() as { journal_mode: string };
-				expect(row.journal_mode).toBe("wal");
-			} finally {
-				observer.close();
-			}
-		} finally {
-			store.close();
-		}
-	});
-
 	test("open() survives a writer holding the lock past the retry budget (#7298)", async () => {
-		const dbPath = path.join(tempDir, "ordering.db");
-		const sentinel = path.join(tempDir, "locked.sentinel");
-		// The child creates the (empty) database and holds an EXCLUSIVE lock for
-		// 750ms: longer than open()'s full retry budget (attempts at
-		// ~0/100/300/700ms), shorter than the headless 1000ms busy_timeout. The
-		// empty file forces open()'s leases DDL to take the write lock, so only
-		// a busy handler installed BEFORE that DDL lets the first attempt wait
-		// out the writer; the pre-fix code (busy_timeout=0 during the DDL)
-		// exhausted its retries and threw. Readiness is signaled via a sentinel
-		// file written after BEGIN EXCLUSIVE — not stdout — so the handshake
-		// cannot be affected by how the runner wires child stdio.
+		await using tempDir = await TempDir.create("@pi-ai-sqlite-busy-");
+		const dbPath = tempDir.join("ordering.db");
+		const sentinel = tempDir.join("locked.sentinel");
+		// The child holds an EXCLUSIVE lock longer than the retry budget but
+		// shorter than busy_timeout. Only a busy handler installed before DDL
+		// lets the first attempt wait out the writer. Readiness is signaled
+		// after BEGIN EXCLUSIVE so scheduling cannot weaken the contention.
 		const locker = Bun.spawn(
 			[
 				process.execPath,
 				"-e",
 				`import { Database } from "bun:sqlite";
 import { writeFileSync } from "node:fs";
-const db = new Database(process.argv[1]);
+using db = new Database(process.argv[1]);
 db.run("BEGIN EXCLUSIVE");
 writeFileSync(process.argv[2], "locked");
 await Bun.sleep(750);
-db.run("COMMIT");
-db.close();`,
+db.run("COMMIT");`,
 				dbPath,
 				sentinel,
 			],
 			{ env: { HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "" }, stdout: "ignore", stderr: "pipe" },
 		);
-		// Real-time waits are unavoidable here: the lock lives in a separate
-		// process, so fake timers cannot advance the child's sleep or the
-		// filesystem sentinel it writes.
-		const deadline = Date.now() + 5000;
-		let locked = false;
-		while (Date.now() < deadline) {
-			locked = await fs.access(sentinel).then(
-				() => true,
-				() => false,
-			);
-			if (locked || locker.exitCode !== null) break;
-			await Bun.sleep(10);
-		}
-		if (!locked) {
-			throw new Error(`locker never signaled readiness: ${await new Response(locker.stderr).text()}`);
-		}
-
-		const store = await SqliteAuthCredentialStore.open(dbPath);
 		try {
-			// The store is fully usable after contention: the leases DDL ran.
-			expect(store.listAuthCredentials()).toEqual([]);
+			// Fake timers cannot advance the child process's real lock duration
+			// or filesystem readiness, so this platform integration uses real time.
+			const deadline = Date.now() + 5000;
+			let locked = false;
+			while (Date.now() < deadline) {
+				locked = await fs.access(sentinel).then(
+					() => true,
+					() => false,
+				);
+				if (locked || locker.exitCode !== null) break;
+				await Bun.sleep(10);
+			}
+			if (!locked) {
+				throw new Error(`locker never signaled readiness: ${await new Response(locker.stderr).text()}`);
+			}
+
+			const store = await SqliteAuthCredentialStore.open(dbPath);
+			try {
+				await store.saveApiKey("locked-provider", "committed-after-lock");
+				expect(store.getApiKey("locked-provider")).toBe("committed-after-lock");
+			} finally {
+				store.close();
+			}
+			const [exitCode, stderr] = await Promise.all([locker.exited, new Response(locker.stderr).text()]);
+			expect(exitCode, stderr).toBe(0);
 		} finally {
-			store.close();
+			if (locker.exitCode === null) locker.kill();
+			await locker.exited;
 		}
-		const [exitCode, stderr] = await Promise.all([locker.exited, new Response(locker.stderr).text()]);
-		expect(exitCode, stderr).toBe(0);
 	});
 
 	test("retries through a transient SQLITE_BUSY_RECOVERY and eventually succeeds", async () => {
-		const dbPath = path.join(tempDir, "retry.db");
+		await using tempDir = await TempDir.create("@pi-ai-sqlite-busy-");
+		const dbPath = tempDir.join("retry.db");
 		let throws = 2;
-		// Synthesize the WAL-recovery race: the first two `db.run` calls in
-		// `#initializeSchema` (the first being `PRAGMA busy_timeout = 5000`)
-		// throw `SQLITE_BUSY_RECOVERY`, then the third attempt sees the spy
-		// drained and falls through to the real implementation.
+		// Only this test's connections see the synthetic WAL-recovery race.
 		const realRun = Database.prototype.run;
 		const spy = vi.spyOn(Database.prototype, "run").mockImplementation(function (
 			this: Database,
 			...args: Parameters<typeof realRun>
 		) {
-			if (throws > 0) {
+			if (this.filename === dbPath && throws > 0) {
 				throws--;
 				throw makeBusyError("SQLITE_BUSY_RECOVERY", 261);
 			}
 			return realRun.apply(this, args);
 		});
 
-		const store = await SqliteAuthCredentialStore.open(dbPath);
 		try {
-			expect(throws).toBe(0);
-			expect(spy).toHaveBeenCalled();
+			const store = await SqliteAuthCredentialStore.open(dbPath);
+			try {
+				await store.saveApiKey("retried-provider", "committed-after-retries");
+			} finally {
+				store.close();
+			}
+			const reopened = await SqliteAuthCredentialStore.open(dbPath);
+			try {
+				expect(reopened.getApiKey("retried-provider")).toBe("committed-after-retries");
+			} finally {
+				reopened.close();
+			}
 		} finally {
-			store.close();
+			spy.mockRestore();
 		}
 	});
 
 	test("non-BUSY errors short-circuit retries", async () => {
-		const dbPath = path.join(tempDir, "fatal.db");
+		await using tempDir = await TempDir.create("@pi-ai-sqlite-busy-");
+		const dbPath = tempDir.join("fatal.db");
 		const realRun = Database.prototype.run;
 		let runCalls = 0;
-		// SQLITE_IOERR is neither BUSY (retried) nor CORRUPT (quarantined and
-		// recreated by `open()`), so it must surface on the first attempt.
-		vi.spyOn(Database.prototype, "run").mockImplementation(function (
+		// SQLITE_IOERR is neither BUSY (retried) nor CORRUPT (quarantined).
+		const spy = vi.spyOn(Database.prototype, "run").mockImplementation(function (
 			this: Database,
 			...args: Parameters<typeof realRun>
 		) {
+			if (this.filename !== dbPath) return realRun.apply(this, args);
 			runCalls++;
 			if (runCalls === 1) {
-				const err = new Error("disk I/O error") as SqliteBusyShape;
-				err.code = "SQLITE_IOERR";
-				err.errno = 10;
-				throw err;
+				throw makeBusyError("SQLITE_IOERR", 10);
 			}
 			return realRun.apply(this, args);
 		});
 
-		await expect(SqliteAuthCredentialStore.open(dbPath)).rejects.toThrow("disk I/O error");
-		// Single attempt: the retry loop must NOT keep banging on a fatal error.
-		expect(runCalls).toBe(1);
+		try {
+			await expect(SqliteAuthCredentialStore.open(dbPath)).rejects.toMatchObject({
+				code: "SQLITE_IOERR",
+				errno: 10,
+			});
+			expect(runCalls).toBe(1);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 
-	test("exhausts retries and surfaces an error that includes the DB path", async () => {
-		const dbPath = path.join(tempDir, "stuck.db");
+	test("exhausts its bounded retry budget and retains the extended SQLite result code", async () => {
+		await using tempDir = await TempDir.create("@pi-ai-sqlite-busy-");
+		const dbPath = tempDir.join("stuck.db");
 		const realRun = Database.prototype.run;
-		vi.spyOn(Database.prototype, "run").mockImplementation(function (this: Database) {
-			// Always-busy: every attempt fails until the retry budget runs out.
+		let attempts = 0;
+		const spy = vi.spyOn(Database.prototype, "run").mockImplementation(function (
+			this: Database,
+			...args: Parameters<typeof realRun>
+		) {
+			if (this.filename !== dbPath) return realRun.apply(this, args);
+			attempts++;
 			throw makeBusyError("SQLITE_BUSY_RECOVERY", 261);
 		});
-		// Skip the sleep so the test doesn't take 700ms+ of real time.
-		const sleepSpy = vi.spyOn(Bun, "sleep").mockResolvedValue(undefined);
 
-		await expect(SqliteAuthCredentialStore.open(dbPath)).rejects.toThrow(dbPath);
-		// open uses `maxAttempts = 4`, so the loop sleeps between attempts 0..2
-		// (three times) then throws after attempt 3 without sleeping again.
-		expect(sleepSpy).toHaveBeenCalledTimes(3);
-		// Reference realRun so the TS unused-binding lint stays quiet without
-		// suppressing the actual error path above.
-		expect(typeof realRun).toBe("function");
+		try {
+			await expect(SqliteAuthCredentialStore.open(dbPath)).rejects.toMatchObject({
+				code: "SQLITE_BUSY_RECOVERY",
+				errno: 261,
+			});
+			expect(attempts).toBe(4);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 });

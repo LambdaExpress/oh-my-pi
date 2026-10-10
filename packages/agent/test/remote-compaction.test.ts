@@ -38,6 +38,7 @@ import type {
 	UserMessage,
 } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { isBedrockOpenAIUrl } from "@oh-my-pi/pi-catalog/hosts";
 import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
 import * as piUtils from "@oh-my-pi/pi-utils";
 
@@ -722,6 +723,7 @@ describe("remote compaction input forwarding", () => {
 		expect(result.input).toEqual(input);
 		expect(result.input[3].output).toBe("useful latest result");
 		expect(result.estimatedTokensAfter).toBe(result.estimatedTokensBefore);
+		expect(result.fits).toBe(false);
 	});
 
 	test("charges inline images by the maximum vision budget instead of serialized base64 size", () => {
@@ -742,6 +744,32 @@ describe("remote compaction input forwarding", () => {
 		expect(result.input).toEqual(input);
 		expect(result.estimatedTokensAfter).toBeGreaterThan(12_000);
 		expect(result.estimatedTokensAfter).toBeLessThanOrEqual(15_000);
+	});
+
+	test("excludes opaque encrypted reasoning and compaction state from the fit estimate (#13611)", () => {
+		// Base64 ciphertext tokenizes far above what the provider bills for it;
+		// counting it refused Codex histories that the server accepts.
+		const encrypted = Buffer.from(Array.from({ length: 3_000 }, (_, index) => (index * 131 + 7) % 256)).toString(
+			"base64",
+		);
+		const input: Array<Record<string, unknown>> = [{ type: "compaction", encrypted_content: encrypted }];
+		for (let turn = 0; turn < 20; turn++) {
+			input.push({
+				type: "reasoning",
+				id: `rs_${turn}`,
+				summary: [{ type: "summary_text", text: "Inspecting the module." }],
+				encrypted_content: encrypted,
+			});
+			input.push({ type: "function_call", call_id: `call_${turn}`, name: "read", arguments: "{}" });
+			input.push({ type: "function_call_output", call_id: `call_${turn}`, output: `result ${turn}` });
+		}
+
+		const result = trimRemoteCompactionInputToContextWindow(input, new Tokenizer(), 5_000, "compact");
+
+		expect(result.fits).toBe(true);
+		expect(result.rewrittenOutputs).toBe(0);
+		expect(result.input).toEqual(input);
+		expect(result.estimatedTokensAfter).toBeLessThanOrEqual(5_000);
 	});
 
 	test("uses conservative token accounting for token-dense trailing output", () => {
@@ -916,7 +944,7 @@ describe("requestCompactionV2Streaming", () => {
 				remoteCompaction: {
 					enabled: true,
 					v2StreamingEnabled: true,
-					v2Endpoint: "https://compact.example/v1/responses",
+					v2Endpoint: "https://api.openai.com/v1/responses",
 				},
 			});
 			const userItem = { type: "message", role: "user", content: [{ type: "input_text", text: "real user" }] };
@@ -946,6 +974,7 @@ describe("requestCompactionV2Streaming", () => {
 	test("does not select Codex's unsupported V1 compact endpoint by default", () => {
 		const model = makeOpenAiModel({
 			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
 			remoteCompaction: {
 				enabled: true,
 				v2StreamingEnabled: true,
@@ -954,7 +983,7 @@ describe("requestCompactionV2Streaming", () => {
 
 		expect(shouldUseOpenAiRemoteCompaction(model)).toBe(false);
 	});
-	test("requires explicit opt-in for custom Codex API compaction", () => {
+	test("rejects custom Codex API compaction even with explicit opt-in", () => {
 		const model = buildModel({
 			id: "custom-gpt-5",
 			name: "Custom GPT-5",
@@ -967,6 +996,7 @@ describe("requestCompactionV2Streaming", () => {
 			contextWindow: 400000,
 			maxTokens: 128000,
 			remoteCompaction: {
+				enabled: true,
 				api: "openai-codex-responses",
 				endpoint: "https://compact.example/v1/responses/compact",
 			},
@@ -1096,6 +1126,46 @@ describe("requestCompactionV2Streaming", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		expect(error).toBeInstanceOf(AIError.ProviderHttpError);
 		expect(AIError.is(AIError.classify(error), AIError.Flag.AuthFailed)).toBe(true);
+	});
+
+	test("surfaces a standalone error event as a terminal failure without retrying", async () => {
+		const model = makeOpenAiModel({
+			remoteCompaction: {
+				enabled: true,
+				v2StreamingEnabled: true,
+				v2Endpoint: "https://api.openai.com/v1/responses",
+			},
+		});
+		const request = buildCompactionV2Request(
+			model,
+			[{ type: "message", role: "user", content: [{ type: "input_text", text: "real user" }] }],
+			"instructions",
+		);
+		const fetchMock = vi.fn(async () =>
+			sseResponse([
+				{
+					type: "error",
+					status: 400,
+					error: {
+						message:
+							"Your input exceeds the context window of this model. Please adjust your input and try again.",
+						type: "invalid_request_error",
+						code: "context_too_large",
+					},
+				},
+			]),
+		);
+
+		const error = await requestCompactionV2Streaming(model, "test-key", request, undefined, {
+			fetch: fetchMock,
+			retryWait: async () => {},
+		}).catch(cause => cause);
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(error).toBeInstanceOf(AIError.ProviderHttpError);
+		expect(error).toMatchObject({ status: 400 });
+		expect(error.message).toContain("context_too_large");
+		expect(AIError.is(AIError.classify(error), AIError.Flag.ContextOverflow)).toBe(true);
 	});
 });
 
@@ -1764,20 +1834,18 @@ describe("Responses Lite remote compaction", () => {
 	});
 });
 
-test("serializes an explicitly requested custom compaction endpoint", async () => {
+test("serializes an explicitly requested official compaction endpoint and model", async () => {
 	const model = makeOpenAiModel({
-		provider: "cliproxy-codex",
-		baseUrl: "http://127.0.0.1:8317/v1",
 		remoteCompaction: {
 			enabled: true,
 			api: "openai-responses",
-			endpoint: "http://127.0.0.1:8317/v1/responses/compact",
+			endpoint: "https://api.openai.com/v1/responses/compact",
 			model: "gpt-5.5",
 		},
 	});
 	let requestBody: unknown;
 	const fetchMock: FetchImpl = async (input, init) => {
-		expect(String(input)).toBe("http://127.0.0.1:8317/v1/responses/compact");
+		expect(String(input)).toBe("https://api.openai.com/v1/responses/compact");
 		requestBody = JSON.parse(String(init?.body));
 		return new Response(
 			JSON.stringify({
@@ -1797,14 +1865,11 @@ test("serializes an explicitly requested custom compaction endpoint", async () =
 	expect(requestBody).toMatchObject({ model: "gpt-5.5" });
 });
 
-test("uses Azure request shape for Azure Responses remote compaction", async () => {
-	const previousDeploymentMap = Bun.env.AZURE_OPENAI_DEPLOYMENT_NAME_MAP;
-	Bun.env.AZURE_OPENAI_DEPLOYMENT_NAME_MAP = "gpt-5-compact=azure-gpt-5-compact";
-	const model = makeAzureModel({
+test("preserves configured headers on official Responses remote compaction", async () => {
+	const model = makeOpenAiModel({
 		headers: { "x-custom-header": "custom" },
 		remoteCompaction: {
 			enabled: true,
-			api: "azure-openai-responses",
 			model: "gpt-5-compact",
 		},
 	});
@@ -1816,9 +1881,7 @@ test("uses Azure request shape for Azure Responses remote compaction", async () 
 	const stringHeader = (value: string | readonly string[] | undefined): string | undefined =>
 		typeof value === "string" ? value : undefined;
 	const fetchMock: FetchImpl = async (input, init) => {
-		expect(String(input)).toBe(
-			"https://example-resource.openai.azure.com/openai/v1/responses/compact?api-version=v1",
-		);
+		expect(String(input)).toBe("https://api.openai.com/v1/responses/compact");
 		if (!init?.headers || init.headers instanceof Headers || Array.isArray(init.headers)) {
 			throw new Error("Expected remote compaction to send headers as a plain object");
 		}
@@ -1828,29 +1891,24 @@ test("uses Azure request shape for Azure Responses remote compaction", async () 
 		requestCustomHeader = stringHeader(init.headers["x-custom-header"]);
 		requestBody = JSON.parse(String(init.body));
 		return Response.json({
-			output: [{ type: "compaction_summary", summary: "azure compacted" }],
+			output: [{ type: "compaction_summary", summary: "native compacted" }],
 		});
 	};
 
 	await requestOpenAiRemoteCompaction(
 		model,
-		"azure-key",
+		"official-key",
 		[{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
 		"instructions",
 		undefined,
 		{ fetch: fetchMock },
 	);
 
-	expect(requestApiKey).toBe("azure-key");
-	expect(requestAuthorization).toBeUndefined();
+	expect(requestApiKey).toBeUndefined();
+	expect(requestAuthorization).toBe("Bearer official-key");
 	expect(requestContentType).toBe("application/json");
 	expect(requestCustomHeader).toBe("custom");
-	expect(requestBody).toMatchObject({ model: "azure-gpt-5-compact" });
-	if (previousDeploymentMap === undefined) {
-		delete Bun.env.AZURE_OPENAI_DEPLOYMENT_NAME_MAP;
-	} else {
-		Bun.env.AZURE_OPENAI_DEPLOYMENT_NAME_MAP = previousDeploymentMap;
-	}
+	expect(requestBody).toMatchObject({ model: "gpt-5-compact" });
 });
 
 describe("requestOpenAiRemoteCompaction abort", () => {
@@ -2039,6 +2097,10 @@ describe("compact() remote compaction failure handling", () => {
 			model: makeAzureModel(),
 		},
 		{
+			name: "OpenAI provider with a Bedrock Responses route",
+			model: makeOpenAiModel({ baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1" }),
+		},
+		{
 			name: "lookalike OpenAI host",
 			model: makeOpenAiModel({ baseUrl: "https://api.openai.com.proxy.example/v1" }),
 		},
@@ -2116,14 +2178,18 @@ describe("compact() remote compaction failure handling", () => {
 							...baseModel,
 							api: "openai-codex-responses",
 							provider: "openai-codex",
-							baseUrl: "https://chatgpt.example/backend-api",
+							baseUrl: "https://chatgpt.com/backend-api",
 							preferWebsockets: false,
 							remoteCompaction: { enabled: true, api: "openai-codex-responses", v2StreamingEnabled: true },
 						}
 					: baseModel;
 			const requests: Array<{ input: Array<Record<string, unknown>> }> = [];
 			const fetchMock: FetchImpl = async (_url, init) => {
-				requests.push(JSON.parse(String(init?.body)) as (typeof requests)[number]);
+				const body =
+					init?.body instanceof Uint8Array
+						? new TextDecoder().decode(Bun.zstdDecompressSync(init.body))
+						: String(init?.body);
+				requests.push(JSON.parse(body) as (typeof requests)[number]);
 				const item = { type: "compaction", encrypted_content: `history-${requests.length}` };
 				return streaming
 					? sseResponse([
@@ -2155,6 +2221,31 @@ describe("compact() remote compaction failure handling", () => {
 			expect(secondInput).not.toContain(preparation.previousSummary);
 		},
 	);
+
+	test.each(["v1", "v2"])("does not dispatch a native request that cannot fit the window (%s)", async protocol => {
+		const streaming = protocol === "v2";
+		const preparation = makePreparation();
+		preparation.settings = { ...preparation.settings, remoteStreamingV2Enabled: streaming };
+		preparation.messagesToSummarize = [{ role: "user", content: "re-expanded history ".repeat(4_000), timestamp: 1 }];
+		const model: Model = {
+			...makeOpenAiModel({ remoteCompaction: { enabled: true, v2StreamingEnabled: streaming } }),
+			contextWindow: 2_000,
+		};
+		const fetchMock = vi.fn<FetchImpl>(async () => {
+			throw new Error("native compaction must not reach the network");
+		});
+
+		const error = await compact(preparation, model, "test-key", undefined, undefined, { fetch: fetchMock }).catch(
+			cause => cause,
+		);
+
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(error).toBeInstanceOf(NativeCompactionError);
+		// Overflow is deterministic: callers must advance to the next method, not retry.
+		const id = AIError.classify(error.cause);
+		expect(AIError.is(id, AIError.Flag.ContextOverflow)).toBe(true);
+		expect(AIError.retriable(id)).toBe(false);
+	});
 
 	test("streams V2 compaction before V1 when both settings and model opt in", async () => {
 		const completeSpy = vi.spyOn(ai, "completeSimple").mockResolvedValue(localSummaryMessage("local summary"));
@@ -2680,5 +2771,82 @@ describe("compact() remote compaction failure handling", () => {
 			}),
 		).rejects.toThrow("Remote compaction failed");
 		expect(completeSpy).not.toHaveBeenCalled();
+	});
+});
+
+describe("Amazon Bedrock OpenAI routes", () => {
+	function makeBedrockModel(
+		baseUrl: string,
+		overrides: Partial<ModelSpec<"openai-responses">> = {},
+	): Model<"openai-responses"> {
+		return makeOpenAiModel({ id: "us.openai.gpt-6-astra", provider: "bedrock-openai", baseUrl, ...overrides });
+	}
+
+	test.each([
+		["bedrock-runtime", "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1", true],
+		["templated bedrock-mantle", "https://bedrock-mantle.{region}.api.aws/openai/v1", true],
+		["non-Bedrock custom host", "https://llm.example.com/openai/v1", false],
+		[
+			"proxy embedding the Bedrock host",
+			"https://proxy.example.com/bedrock-runtime.us-east-1.amazonaws.com/openai/v1",
+			false,
+		],
+		["Bedrock Anthropic route", "https://bedrock-runtime.us-east-1.amazonaws.com/anthropic", false],
+		["Bedrock root", "https://bedrock-runtime.us-east-1.amazonaws.com", false],
+		["bedrock-runtime FIPS", "https://bedrock-runtime-fips.us-gov-west-1.amazonaws.com/openai/v1", true],
+		["bedrock-mantle documented /v1 base", "https://bedrock-mantle.us-east-1.api.aws/v1", true],
+		// Only Mantle serves the OpenAI APIs at `/v1`; runtime keeps them under `/openai`.
+		["bedrock-runtime /v1", "https://bedrock-runtime.us-east-1.amazonaws.com/v1", false],
+		[
+			"bedrock-runtime PrivateLink",
+			"https://vpce-0a1b2c3d4e5f67890-abcd1234.bedrock-runtime.us-east-1.vpce.amazonaws.com/openai/v1",
+			true,
+		],
+		[
+			"bedrock-mantle zonal PrivateLink",
+			"https://vpce-0a1b2c3d4e5f67890-abcd1234-us-east-1a.bedrock-mantle.us-east-1.vpce.amazonaws.com/v1",
+			true,
+		],
+		[
+			"PrivateLink endpoint for another service",
+			"https://vpce-0a1b2c3d4e5f67890-abcd1234.bedrock-agent-runtime.us-east-1.vpce.amazonaws.com/openai/v1",
+			false,
+		],
+		["plain HTTP", "http://bedrock-runtime.us-east-1.amazonaws.com/openai/v1", false],
+	] as const)(
+		"recognizes Bedrock wire routes without selecting native OpenAI compaction: %s",
+		(_route, baseUrl, isBedrockRoute) => {
+			const model = makeBedrockModel(baseUrl);
+			expect(isBedrockOpenAIUrl(baseUrl)).toBe(isBedrockRoute);
+			expect(shouldUseOpenAiRemoteCompaction(model)).toBe(false);
+			expect(shouldUseCompactionV2Streaming(model)).toBe(false);
+		},
+	);
+
+	test("does not enable the Chat Completions API on Bedrock's OpenAI route", () => {
+		const model = buildModel({
+			id: "chat-model",
+			name: "Chat model",
+			api: "openai-completions",
+			provider: "bedrock-openai",
+			baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 32000,
+		});
+		expect(shouldUseOpenAiRemoteCompaction(model)).toBe(false);
+		expect(shouldUseCompactionV2Streaming(model)).toBe(false);
+	});
+
+	test("does not allow explicit opt-in to bypass the official OpenAI route restriction", () => {
+		const url = "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1";
+		const optedIn = makeBedrockModel(url, {
+			remoteCompaction: { enabled: true, v2StreamingEnabled: true },
+		});
+		expect(shouldUseOpenAiRemoteCompaction(optedIn)).toBe(false);
+		expect(shouldUseCompactionV2Streaming(optedIn)).toBe(false);
+		expect(shouldUseProviderNativeCompaction(optedIn, DEFAULT_COMPACTION_SETTINGS)).toBe(false);
 	});
 });

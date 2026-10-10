@@ -6,6 +6,7 @@ import { Text } from "../../components/text";
 import { WizardStep } from "../../components/wizard-step";
 import { Container } from "../../tui";
 import { t } from "../../i18n";
+import { editorKey } from "../../chrome/keybinding-hints";
 import {
 	enableAutoTheme,
 	getAvailableThemes,
@@ -18,6 +19,9 @@ import {
 	setSymbolPreset,
 	theme,
 } from "../../theme/theme";
+import { col, node, span, text } from "../../native/describe";
+import type { NativeChild, NativeNode } from "../../native/node";
+import { Memo } from "../../native/memo";
 import type { SetupScene, SetupSceneController, SetupSceneHost } from "./types";
 
 type ThemeMode = "curated" | "all";
@@ -65,7 +69,13 @@ function renderMockEditor(width: number): string[] {
 	const top = theme.fg("borderAccent", `${box.topLeft}${horizontal}${box.topRight}`);
 	const bottom = theme.fg("borderMuted", `${box.bottomLeft}${horizontal}${box.bottomRight}`);
 	const prompt = `${theme.fg("accent", ">")} ${theme.fg("text", t("Ask anything, edit files, run tools"))}${theme.inverse(" ")}`;
-	const hint = theme.fg("dim", t("enter send · shift+enter newline · / commands"));
+	const hint = theme.fg(
+		"dim",
+		t("{submit} send · {newline} newline · / commands", {
+			submit: editorKey("tui.input.submit"),
+			newline: editorKey("tui.input.newLine"),
+		}),
+	);
 	return [
 		top,
 		`${theme.fg("borderAccent", box.vertical)}${innerWidth > 0 ? padToWidth(prompt, innerWidth) : ""}${theme.fg("borderAccent", box.vertical)}`,
@@ -103,16 +113,70 @@ function curatedItems(): SelectItem[] {
 	];
 }
 
+/**
+ * Native theme preview: status samples, a status bar and a read-only editor
+ * in the highlighted theme's tokens. The terminal draws the bar and editor
+ * chrome, so none of the ANSI mock's box or fill math applies.
+ */
+function describeThemePreview(): NativeNode {
+	const prompt = t("Ask anything, edit files, run tools");
+	return col(
+		[
+			text([span(t("Preview"), "strong")]),
+			text([
+				span(`${theme.status.success} success`, "success"),
+				span("  "),
+				span(`${theme.status.warning} warning`, "warning"),
+				span("  "),
+				span(`${theme.status.error} error`, "error"),
+				span("  "),
+				span("accent", "accent"),
+			]),
+			text([span(t("Status line"), "muted")]),
+			node("status", {}, [
+				node("seg", { spans: [span(`${theme.icon.model} sonnet`, "statusLineModel")], side: "left" }),
+				node("seg", { spans: [span("~/project", "statusLinePath")], side: "left" }),
+				node("seg", { spans: [span(`${theme.icon.git} main +2`, "statusLineGitDirty")], side: "left" }),
+				node("seg", { spans: [span(`${theme.icon.context} 42%`, "statusLineContext")], side: "right" }),
+				node("seg", { spans: [span(`${theme.icon.cost} 0.18`, "statusLineCost")], side: "right" }),
+			]),
+			text([span(t("Editor"), "muted")]),
+			node("input", {
+				text: prompt,
+				cursor: prompt.length,
+				prompt: [span(">", "accent")],
+				readonly: true,
+			}),
+			text([
+				span(
+					t("{submit} send · {newline} newline · / commands", {
+						submit: editorKey("tui.input.submit"),
+						newline: editorKey("tui.input.newLine"),
+					}),
+					"dim",
+				),
+			]),
+		],
+		{ role: "omp.setup.theme.preview" },
+	);
+}
+
 class ThemeSceneController implements SetupSceneController {
 	title = t("Pick a theme");
-	subtitle = t("Move through the list to preview; Enter saves the highlighted choice.");
+	get subtitle(): string {
+		return t("Move through the list to preview; {confirm} saves the highlighted choice.", {
+			confirm: editorKey("tui.select.confirm"),
+		});
+	}
 	#mode: ThemeMode = "curated";
 	#selectList: SelectList;
 	#loadingAllThemes = false;
+	/** Error copy shown under the list (raw text; styled at render/describe time). */
 	#message: string | undefined;
 	#previewRequest = 0;
 	#disposed = false;
 	#step: WizardStep | undefined;
+	#native = new Memo();
 	readonly #originalTheme = getCurrentThemeName();
 	readonly #originalSymbolPreset: SymbolPreset;
 	readonly #originalColorBlindMode: boolean;
@@ -131,6 +195,7 @@ class ThemeSceneController implements SetupSceneController {
 	}
 
 	invalidate(): void {
+		this.#native.clear();
 		this.#step?.invalidate();
 		this.#selectList.invalidate();
 	}
@@ -157,13 +222,27 @@ class ThemeSceneController implements SetupSceneController {
 	render(width: number, maxLines?: number): readonly string[] {
 		const intro = new Container();
 		intro.addChild(
-			new Text(theme.fg("muted", t("Theme changes preview live. Nothing is saved until you press Enter.")), 0, 0),
+			new Text(
+				theme.fg(
+					"muted",
+					t("Theme changes preview live. Nothing is saved until you press {confirm}.", {
+						confirm: editorKey("tui.select.confirm"),
+					}),
+				),
+				0,
+				0,
+			),
 		);
 		intro.addChild(
 			new Text(
 				this.#mode === "all"
-					? theme.fg("dim", t("Browsing all themes · Esc returns to curated choices"))
-					: theme.fg("dim", t("Esc skips this step")),
+					? theme.fg(
+							"dim",
+							t("Browsing all themes · {cancel} returns to curated choices", {
+								cancel: editorKey("tui.select.cancel"),
+							}),
+						)
+					: theme.fg("dim", t("{cancel} skips this step", { cancel: editorKey("tui.select.cancel") })),
 				0,
 				0,
 			),
@@ -177,7 +256,7 @@ class ThemeSceneController implements SetupSceneController {
 			preview.addChild(new Text(line, 0, 0));
 		}
 		const loading = this.#loadingAllThemes ? new Text(theme.fg("dim", `${t("Loading themes")}…`), 0, 0) : undefined;
-		const status = this.#message ? new Text(this.#message, 0, 0) : undefined;
+		const status = this.#message ? new Text(theme.fg("error", this.#message), 0, 0) : undefined;
 		if (!this.#step) {
 			this.#step = new WizardStep({
 				kind: loading ? "async" : "choice",
@@ -201,6 +280,46 @@ class ThemeSceneController implements SetupSceneController {
 		}
 		this.#step.setMaxHeight(maxLines);
 		return this.#step.render(width);
+	}
+
+	/**
+	 * Intro hints, the live preview, the theme list (a spinner while every
+	 * theme loads) and any preview error. Theme switches re-describe through
+	 * `invalidate()`, so the preview's tokens follow the highlighted theme.
+	 */
+	describe(): NativeNode {
+		const confirm = editorKey("tui.select.confirm");
+		const cancel = editorKey("tui.select.cancel");
+		return this.#native.get(
+			[this.#mode, this.#loadingAllThemes, this.#selectList, this.#message, confirm, cancel],
+			() => {
+				const children: NativeChild[] = [
+					col([
+						text([
+							span(
+								t("Theme changes preview live. Nothing is saved until you press {confirm}.", { confirm }),
+								"muted",
+							),
+						]),
+						text([
+							span(
+								this.#mode === "all"
+									? t("Browsing all themes · {cancel} returns to curated choices", { cancel })
+									: t("{cancel} skips this step", { cancel }),
+								"dim",
+							),
+						]),
+					]),
+					describeThemePreview(),
+					this.#loadingAllThemes
+						? node("spinner", { label: [span(`${t("Loading themes")}…`, "dim")] }, undefined, "loading")
+						: this.#selectList,
+				];
+				if (this.#message)
+					children.push(node("text", { spans: [span(this.#message, "error")] }, undefined, "status"));
+				return col(children, { gap: "sm", role: "omp.setup.theme" });
+			},
+		);
 	}
 
 	#createSelectList(items: readonly SelectItem[], selectedIndex: number): SelectList {
@@ -265,7 +384,7 @@ class ThemeSceneController implements SetupSceneController {
 			this.#selectList = this.#createSelectList(items, selectedIndex);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			this.#message = theme.fg("error", `${t("Failed to load themes")}: ${message}`);
+			this.#message = `${t("Failed to load themes")}: ${message}`;
 		} finally {
 			this.#loadingAllThemes = false;
 			this.#host.requestRender();
@@ -329,7 +448,7 @@ class ThemeSceneController implements SetupSceneController {
 		}
 		if (request !== this.#previewRequest || this.#disposed) return;
 		if (!result.success) {
-			this.#message = theme.fg("error", result.error ?? t("Theme preview failed"));
+			this.#message = result.error ?? t("Theme preview failed");
 		}
 		this.#host.ctx.ui.invalidate();
 		this.#host.requestRender();

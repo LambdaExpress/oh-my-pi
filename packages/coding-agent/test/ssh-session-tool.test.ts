@@ -2,6 +2,7 @@ import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { loadCapability, reset as resetCapabilities } from "@oh-my-pi/pi-coding-agent/capability";
 import { type SSHHost, sshCapability } from "@oh-my-pi/pi-coding-agent/capability/ssh";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import "@oh-my-pi/pi-coding-agent/tools/local-renderers";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { SessionSshConfig, SessionSshConfigMutation } from "@oh-my-pi/pi-coding-agent/session/session-ssh-config";
@@ -10,9 +11,11 @@ import { loadEffectiveSshHosts } from "@oh-my-pi/pi-coding-agent/ssh/host-regist
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
 	type SshSessionParams,
+	type SshSessionToolDetails,
 	SshSessionTool,
 	sshSessionToolRenderer,
 } from "@oh-my-pi/pi-coding-agent/tools/ssh-session";
+import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 import { TUI } from "@oh-my-pi/pi-tui";
 import { getSSHConfigPath, TempDir } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
@@ -22,6 +25,7 @@ const SENTINEL = "session-ssh-password-sentinel";
 interface Harness {
 	configs: Map<string, SessionSshConfig>;
 	mutations: SessionSshConfigMutation[];
+	session: ToolSession;
 	tool: SshSessionTool;
 }
 
@@ -48,11 +52,34 @@ function createHarness(cwd: string): Harness {
 			});
 		},
 	};
-	return { configs, mutations, tool: new SshSessionTool(session) };
+	return { configs, mutations, session, tool: new SshSessionTool(session) };
 }
 
 async function execute(harness: Harness, params: SshSessionParams) {
 	return harness.tool.execute(crypto.randomUUID(), params);
+}
+
+function createDeviceWriter(harness: Harness): WriteTool {
+	const { session, tool } = harness;
+	session.xdev = {
+		tools: new Map([[tool.name, tool]]),
+		mountedNames: new Set([tool.name]),
+		builtInNames: new Set([tool.name]),
+		isActive: () => false,
+	};
+	return new WriteTool(session);
+}
+
+async function executeDevice(writer: WriteTool, params: SshSessionParams) {
+	const result = await writer.execute(crypto.randomUUID(), {
+		path: "xd://ssh_session",
+		content: JSON.stringify(params),
+	});
+	expect(result.isError).toBeUndefined();
+	return {
+		content: result.content,
+		details: result.details?.xdev?.inner as SshSessionToolDetails | undefined,
+	};
 }
 
 beforeAll(async () => {
@@ -64,6 +91,106 @@ afterEach(() => {
 });
 
 describe("ssh_session tool", () => {
+	it("clears a device-stored password while setting a key and preserves omitted fields", async () => {
+		const tempDir = TempDir.createSync("@pi-ssh-session-device-password-");
+		try {
+			const harness = createHarness(tempDir.path());
+			const writer = createDeviceWriter(harness);
+			await executeDevice(writer, {
+				op: "create",
+				name: "prod",
+				host: "203.0.113.10",
+				username: "deploy",
+				port: 2222,
+				description: "production",
+			});
+			const passwordSet = await executeDevice(writer, { op: "update", name: "prod", password: SENTINEL });
+			expect(passwordSet.details?.host?.hasPassword).toBe(true);
+			expect(JSON.stringify(passwordSet)).not.toContain(SENTINEL);
+
+			await executeDevice(writer, { op: "update", name: "prod", username: "ops" });
+			const keyOnly = await executeDevice(writer, { op: "update", name: "prod", key_path: "C:/keys/previous" });
+			expect(keyOnly.details?.host?.hasPassword).toBe(true);
+			expect(harness.configs.get("prod")?.config).toEqual({
+				host: "203.0.113.10",
+				username: "ops",
+				port: 2222,
+				description: "production",
+				password: SENTINEL,
+				keyPath: "C:/keys/previous",
+			});
+
+			const cleared = await executeDevice(writer, {
+				op: "update",
+				name: "prod",
+				password: null,
+				key_path: "C:/keys/prod",
+			});
+			expect(harness.configs.get("prod")?.config).toEqual({
+				host: "203.0.113.10",
+				username: "ops",
+				port: 2222,
+				description: "production",
+				keyPath: "C:/keys/prod",
+			});
+			const clearedHost = cleared.details?.host;
+			expect(clearedHost).toBeDefined();
+			if (!clearedHost) throw new Error("Expected cleared SSH host metadata");
+			expect(clearedHost).toEqual({
+				name: "prod",
+				host: "203.0.113.10",
+				username: "ops",
+				port: 2222,
+				description: "production",
+				keyPath: "C:/keys/prod",
+				hasPassword: false,
+			});
+			expect(cleared.details?.changedFields).toEqual(["key_path", "password"]);
+
+			const listed = await executeDevice(writer, { op: "list" });
+			expect(listed.details?.hosts).toEqual([clearedHost]);
+			expect(JSON.stringify(listed)).not.toContain(SENTINEL);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("clears every declared nullable SSH field through the write device path", async () => {
+		const tempDir = TempDir.createSync("@pi-ssh-session-device-clear-");
+		try {
+			const harness = createHarness(tempDir.path());
+			const writer = createDeviceWriter(harness);
+			await executeDevice(writer, {
+				op: "create",
+				name: "prod",
+				host: "203.0.113.10",
+				username: "deploy",
+				port: 2222,
+				key_path: "C:/keys/prod",
+				description: "production",
+				compat: true,
+				proxy_jump: "relay.example",
+			});
+			const cleared = await executeDevice(writer, {
+				op: "update",
+				name: "prod",
+				username: null,
+				key_path: null,
+				password: null,
+				description: null,
+				port: null,
+				compat: null,
+				proxy_jump: null,
+			});
+			expect(harness.configs.get("prod")?.config).toEqual({ host: "203.0.113.10" });
+			expect(cleared.details?.host).toEqual({ name: "prod", host: "203.0.113.10", hasPassword: false });
+			const listed = await executeDevice(writer, { op: "list" });
+			expect(listed.details?.hosts).toEqual([{ name: "prod", host: "203.0.113.10", hasPassword: false }]);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
 	it("creates, lists, updates, clears, and deletes session-only aliases", async () => {
 		const tempDir = TempDir.createSync("@pi-ssh-session-tool-");
 		try {
@@ -377,14 +504,14 @@ describe("ssh_session tool", () => {
 		const tempDir = TempDir.createSync("@pi-ssh-session-render-");
 		try {
 			const harness = createHarness(tempDir.path());
-			const args: SshSessionParams = {
+			const args = {
 				op: "create",
 				name: "temporary",
 				host: "connect.example.com",
 				username: "root",
 				port: 24314,
 				password: SENTINEL,
-			};
+			} satisfies SshSessionParams;
 			const component = new ToolExecutionComponent(
 				"ssh_session",
 				args,
@@ -393,11 +520,17 @@ describe("ssh_session tool", () => {
 				new TUI(new VirtualTerminal(300, 10)),
 			);
 
+			const pendingRows = component.render(300).filter(row => Bun.stripANSI(row).trim().length > 0);
+			expect(pendingRows).toHaveLength(1);
 			component.updateResult(await execute(harness, args), false);
-			const rendered = Bun.stripANSI(component.render(300).join("\n"));
+			const completedRows = component.render(300).filter(row => Bun.stripANSI(row).trim().length > 0);
+			const rendered = Bun.stripANSI(completedRows.join("\n"));
 
-			expect(rendered.match(/SSH Session/g)).toHaveLength(1);
-			expect(rendered).toContain("temporary: root@connect.example.com:24314 (password configured)");
+			expect(completedRows).toHaveLength(1);
+			expect(completedRows).not.toEqual(pendingRows);
+			expect(rendered).toContain(args.name);
+			expect(rendered).toContain(`${args.username}@${args.host}:${args.port}`);
+			expect(rendered).not.toContain(SENTINEL);
 		} finally {
 			tempDir.removeSync();
 		}

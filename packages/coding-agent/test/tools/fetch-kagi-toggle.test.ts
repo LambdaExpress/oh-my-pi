@@ -12,6 +12,16 @@ import * as scraperUtils from "@oh-my-pi/pi-coding-agent/web/scrapers/utils";
 import * as natives from "@oh-my-pi/pi-natives";
 import { ptree, removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { asGlobalFetch } from "../helpers/fetch-mock";
+import { restoreEnvValue } from "../helpers/settings-test-state";
+import { setLocale } from "../../src/i18n";
+
+beforeEach(() => {
+	setLocale("en");
+});
+
+afterEach(() => {
+	setLocale(null);
+});
 
 const withMissingSystemPython = () => {
 	const whichSpy = vi.spyOn(Bun, "which").mockImplementation(() => null);
@@ -108,23 +118,24 @@ describe("read tool URL selector shorthands", () => {
 		expect(textBlock?.type).toBe("text");
 		expect(textBlock?.text).toContain("Line 1");
 		expect(textBlock?.text).toContain("Line 2");
-		// `:7-8` returns exactly the two requested URL output lines.
 		expect(loadPageSpy).toHaveBeenCalledTimes(1);
 		expect(loadPageSpy).toHaveBeenCalledWith(pageUrl, expect.anything());
 	});
 });
-
 describe("read tool URL handling", () => {
 	let testDir: string;
+	let originalParallelApiKey: string | undefined;
 
 	beforeEach(() => {
+		originalParallelApiKey = process.env.PARALLEL_API_KEY;
+		delete process.env.PARALLEL_API_KEY;
 		testDir = path.join(os.tmpdir(), `fetch-kagi-toggle-${Snowflake.next()}`);
 		fs.mkdirSync(testDir, { recursive: true });
 	});
 
 	afterEach(() => {
 		vi.restoreAllMocks();
-		delete process.env.PARALLEL_API_KEY;
+		restoreEnvValue("PARALLEL_API_KEY", originalParallelApiKey);
 		removeSyncWithRetries(testDir);
 	});
 
@@ -707,8 +718,6 @@ describe("read tool URL handling", () => {
 		});
 		const pagedText = pagedResult.content.find(content => content.type === "text");
 		expect(pagedText?.type).toBe("text");
-		// `:7-8` selects exactly the 2 lines starting at offset 7 of the wrapped
-		// URL output — no adjacent context lines are added.
 		expect(pagedText?.text).toContain("Line 1");
 		expect(pagedText?.text).toContain("Line 2");
 		expect(fs.readdirSync(path.join(testDir, "session")).some(file => file.endsWith(".read.log"))).toBe(true);

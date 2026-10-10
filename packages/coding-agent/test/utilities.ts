@@ -14,7 +14,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createTools, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { Snowflake } from "@oh-my-pi/pi-utils";
+import { removeWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { e2eApiKey } from "../../ai/test/oauth";
 
 export { e2eApiKey };
@@ -104,7 +104,9 @@ export async function createTestSession(options: TestSessionOptions = {}): Promi
 		},
 	});
 
-	const sessionManager = options.inMemory ? SessionManager.inMemory() : SessionManager.create(tempDir, tempDir);
+	const sessionManager = options.inMemory
+		? SessionManager.inMemory()
+		: SessionManager.create(tempDir, SessionManager.getDefaultSessionDir(tempDir, path.join(tempDir, "agent")));
 	const settings = Settings.isolated(options.settingsOverrides);
 
 	const authStorage = await AuthStorage.create(path.join(tempDir, "testauth.db"));
@@ -122,11 +124,12 @@ export async function createTestSession(options: TestSessionOptions = {}): Promi
 	session.subscribe(() => {});
 
 	const cleanup = async () => {
-		await session.dispose();
-		authStorage.close();
-		if (tempDir && fs.existsSync(tempDir)) {
-			fs.rmSync(tempDir, { recursive: true });
+		try {
+			await session.dispose();
+		} finally {
+			authStorage.close();
 		}
+		await removeWithRetries(tempDir);
 	};
 
 	return { session, sessionManager, tempDir, cleanup };

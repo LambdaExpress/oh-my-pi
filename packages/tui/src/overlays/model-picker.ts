@@ -10,12 +10,25 @@ import { type KeyId, parseKey } from "../keys";
 import type { Component, TUI } from "../tui";
 import { t } from "../i18n";
 import { type ThemeColor, theme } from "../theme/theme";
-import { buildSessionModelScope, ModelBrowser, type ModelBrowserItem } from "./model-browser";
+import {
+	buildSessionModelScope,
+	MODEL_PICKER_COLUMNS,
+	ModelBrowser,
+	type ModelBrowserItem,
+	type ModelPickerCatalogue,
+} from "./model-browser";
 import type { ModelBrowserRegistry, ModelBrowserSource } from "./model-browser";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { ScopedModelItem } from "./model-hub";
 import { bottomBorder, row, topBorder } from "../chrome/overlay-box";
 import { resolveSegmentPalette } from "../chrome/segment-track";
+import { formatKeyHint } from "../app-keybindings";
+import { editorKey, editorKeys } from "../chrome/keybinding-hints";
+import { card, compact, span, text } from "../native/describe";
+import type { DescribeContext, NativeChild, NativeNode, NativeUiEvent } from "../native/node";
+import { CLOSE_ACTION, picker, pickerAction, pickerEvent } from "../native/picker";
+import type { TspPickerProps } from "@oh-my-pi/pi-wire";
+import { actionHint, hintsRow, type NativeHint } from "../native/overlay";
 
 /** Configured role resolved to a concrete model. */
 export interface ResolvedRoleModel {
@@ -27,7 +40,8 @@ export interface ResolvedRoleModel {
 
 /** Catalog refresh capability used by the session picker. */
 export interface ModelPickerRegistry extends ModelBrowserRegistry {
-	refresh(strategy: "offline"): Promise<void>;
+	/** Bring the catalog up to date without rebuilding a current one; `true` when the picker must re-read it. */
+	refreshIfStale(): Promise<boolean>;
 }
 
 export interface ModelPickerCallbacks {
@@ -59,10 +73,8 @@ export interface ModelPickerOptions {
 	quickRoleOrder?: ReadonlyArray<string>;
 	/** Active quick role, highlighted when the search begins with `@`. */
 	currentQuickRole?: string;
-	/** Keys that toggle task-subagent mode while the picker is open; typically the alt+p binding. */
+	/** Keys that toggle task-subagent mode while the picker is open; the first is shown in the footer. */
 	taskModeKeys?: readonly KeyId[];
-	/** Human-readable label for the toggle key, shown in footer hints (e.g. "alt+p"). */
-	taskModeKeyLabel?: string;
 	/** `provider/id` highlighted and preselected in task mode (current Task subagent model). */
 	taskSelector?: string;
 }
@@ -79,9 +91,34 @@ const HEIGHT_FRACTION = 0.4;
 const STATUS_HINT = "Session-only switch — role models stay unchanged";
 const QUICK_ROLE_STATUS_HINT = "Quick role switch — applies its model and thinking for this session";
 const TASK_STATUS_HINT = "Task subagent switch — spawned task agents use this model (session-only)";
-const FOOTER_HINT = "↑/↓ models · Enter use for this session · type to search · @ quick roles · Esc close";
-const QUICK_ROLE_FOOTER_HINT = "↑/↓ roles · Enter apply role model · type to search · Esc close";
-const TASK_FOOTER_HINT = "↑/↓ models · Enter use for Task subagents · type to search · Esc close";
+
+/** Footer hint for the active mode; keys resolve at render time so theme/keybinding changes apply. */
+function footerHint(mode: "session" | "role" | "task"): string {
+	const upDown = editorKeys("tui.select.up", "tui.select.down");
+	const enter = formatKeyHint("enter");
+	const cancel = editorKey("tui.select.cancel");
+	switch (mode) {
+		case "role":
+			return t("{upDown} roles · {enter} apply role model · type to search · {cancel} close", {
+				upDown,
+				enter,
+				cancel,
+			});
+		case "task":
+			return t("{upDown} models · {enter} use for Task subagents · type to search · {cancel} close", {
+				upDown,
+				enter,
+				cancel,
+			});
+		default:
+			return t("{upDown} models · {enter} use for this session · type to search · @ quick roles · {cancel} close", {
+				upDown,
+				enter,
+				cancel,
+			});
+	}
+}
+
 /**
  * The alt+p picker component. Hosted as a non-fullscreen bottom-anchored
  * overlay (`ui.showOverlay(..., { anchor: "bottom-center" })`); keyboard-only,
@@ -102,8 +139,18 @@ export class ModelPickerComponent implements Component {
 	#roleMode = false;
 	#taskMode = false;
 	#taskMatchKeys = new Set<string>();
-	#taskModeKeyLabel: string;
+	#taskModeKey: KeyId | undefined;
 	#taskSelector: string | undefined;
+	#nativeRoot: { memo: string; node: NativeNode } | undefined;
+	#pickerRoot:
+		| {
+				memo: string;
+				catalogue: ModelPickerCatalogue;
+				order: object;
+				preview: readonly NativeChild[];
+				node: NativeNode;
+		  }
+		| undefined;
 
 	constructor(
 		tui: TUI,
@@ -120,8 +167,8 @@ export class ModelPickerComponent implements Component {
 		this.#currentSelector = options.currentSelector;
 		this.#currentQuickRoleSelector = options.currentQuickRole ? `@${options.currentQuickRole}` : undefined;
 		this.#taskSelector = options.taskSelector;
-		this.#taskModeKeyLabel = options.taskModeKeyLabel ?? "alt+p";
 		if (callbacks.onPickTask) {
+			this.#taskModeKey = options.taskModeKeys?.[0];
 			for (const key of options.taskModeKeys ?? []) addKeyAliases(this.#taskMatchKeys, key);
 		}
 		this.#quickRoleItems = this.#buildQuickRoleItems(
@@ -132,7 +179,12 @@ export class ModelPickerComponent implements Component {
 		this.#browser = new ModelBrowser(settings, {
 			currentContextTokens: options.currentContextTokens,
 			markOverContext: true,
-			emptyText: () => (this.#roleMode ? `  ${t("No quick roles in the Ctrl+P cycle")}` : undefined),
+			emptyText: () =>
+				this.#roleMode
+					? `  ${t("No quick roles in the {key} cycle", {
+							key: editorKey("app.model.cycleForward") || formatKeyHint("ctrl+p"),
+						})}`
+					: undefined,
 		});
 		this.#browser.onActivate = item => {
 			const quickRole = this.#quickRoles.get(item.selector);
@@ -157,13 +209,15 @@ export class ModelPickerComponent implements Component {
 			this.#browser.selectSelector(options.currentSelector);
 		}
 
-		// Reconcile with cached discovery state in the background. A --models
-		// scope is registry-independent, so the offline reload would only repeat
-		// the synchronous hydration above.
+		// Re-read only if the catalog moves (startup discovery landing, a
+		// models.yml edit): rebuilding a current catalog on every open blocks
+		// the first paint for seconds. A --models scope is registry-independent.
 		if (this.#scopedModels.length === 0) {
 			this.#registry
-				.refresh("offline")
-				.then(() => this.#syncFromRegistryState())
+				.refreshIfStale()
+				.then(changed => {
+					if (changed) this.#syncFromRegistryState();
+				})
 				.catch(error => {
 					this.#configError = error instanceof Error ? error.message : String(error);
 				})
@@ -171,7 +225,11 @@ export class ModelPickerComponent implements Component {
 		}
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.#nativeRoot = undefined;
+		this.#pickerRoot = undefined;
+		this.#browser.invalidate();
+	}
 
 	/** Rebuild model items and role chips from the registry's in-memory state. */
 	#syncFromRegistryState(): void {
@@ -267,9 +325,9 @@ export class ModelPickerComponent implements Component {
 				: theme.fg("muted", ` ${t(this.#roleMode ? QUICK_ROLE_STATUS_HINT : STATUS_HINT)}`);
 
 		const borderColor: ThemeColor | undefined = this.#taskMode ? "error" : undefined;
-		let footer = t(this.#taskMode ? TASK_FOOTER_HINT : this.#roleMode ? QUICK_ROLE_FOOTER_HINT : FOOTER_HINT);
-		if (this.#taskMatchKeys.size > 0 && !this.#roleMode) {
-			footer += ` · ${this.#taskModeKeyLabel} ${t(this.#taskMode ? "session model" : "task model")}`;
+		let footer = footerHint(this.#taskMode ? "task" : this.#roleMode ? "role" : "session");
+		if (this.#taskModeKey !== undefined && !this.#roleMode) {
+			footer += ` · ${formatKeyHint(this.#taskModeKey)} ${t(this.#taskMode ? "session model" : "task model")}`;
 		}
 
 		const out: string[] = [];
@@ -281,5 +339,160 @@ export class ModelPickerComponent implements Component {
 		out.push(row(theme.fg("dim", footer), width, borderColor));
 		out.push(bottomBorder(width, borderColor));
 		return out;
+	}
+
+	/** A `picker` is its own sheet: the backend mounts it in `layer` without an `overlay` wrapper. */
+	nativeSheet(cx: DescribeContext): boolean {
+		return cx.supports("picker");
+	}
+
+	/** Picker pointer events, each on the path of the key it stands for. */
+	handleNativeEvent(event: NativeUiEvent): void {
+		const picked = pickerEvent(event);
+		if (!picked) return;
+		if (picked.kind !== "action") {
+			this.#browser.routePickerItem(picked.item, picked.kind === "activate");
+			return;
+		}
+		switch (picked.act) {
+			case CLOSE_ACTION.id:
+				this.#browser.handleCancel();
+				return;
+			case "clear":
+				if (this.#browser.query.length > 0) this.#browser.handleCancel();
+				return;
+			case "use": {
+				const selected = this.#browser.pickerSelected;
+				if (selected) this.#browser.routePickerItem(selected, true);
+				return;
+			}
+			case "task":
+				if (this.#taskModeKey !== undefined && !this.#roleMode) this.#toggleTaskMode();
+				return;
+		}
+	}
+
+	/** The `md` picker sheet, or the fallback card when the terminal lacks the kind. */
+	describe(cx?: DescribeContext): NativeNode {
+		return cx?.supports("picker") ? this.#describePicker() : this.#describeCard();
+	}
+
+	#describePicker(): NativeNode {
+		const mode = this.#taskMode ? "task" : this.#roleMode ? "role" : "session";
+		const query = this.#browser.query;
+		const view = this.#browser.pickerOrder({
+			providers: false,
+			rest: mode === "role" ? null : t(query.trim() ? "Matches" : "All"),
+		});
+		const catalogue = this.#browser.pickerItems(this.#roleMode ? this.#quickRoleItems : this.#modelItems);
+		const current =
+			mode === "role"
+				? this.#currentQuickRoleSelector
+				: mode === "task"
+					? this.#taskSelector
+					: this.#currentSelector;
+		const preview = this.#browser.pickerPreview("compact", current);
+		const selected = this.#browser.pickerSelected;
+		const cursor = this.#browser.cursor;
+		const memo = `${mode}\0${this.#configError ?? ""}\0${query}\0${cursor}\0${selected ?? ""}`;
+		const cached = this.#pickerRoot;
+		if (
+			cached !== undefined &&
+			cached.memo === memo &&
+			cached.catalogue === catalogue &&
+			cached.order === view &&
+			cached.preview === preview
+		) {
+			return cached.node;
+		}
+		const subtitle: TspPickerProps["subtitle"] = this.#configError
+			? [span(this.#configError, "error")]
+			: mode === "task"
+				? [span(t(TASK_STATUS_HINT), "warning")]
+				: mode === "role"
+					? t(QUICK_ROLE_STATUS_HINT)
+					: t(STATUS_HINT);
+		const cycleKey = editorKey("app.model.cycleForward") || formatKeyHint("ctrl+p");
+		const node = picker(
+			{
+				title: t(mode === "task" ? "Switch task model" : "Switch model"),
+				subtitle,
+				icon: "cpu",
+				noun: t(mode === "role" ? "roles" : "models"),
+				size: "md",
+				layout: "rows",
+				preview: "below",
+				query,
+				cursor,
+				placeholder: t(mode === "task" ? "Search models…" : "Search models, @ for quick roles…"),
+				columns: MODEL_PICKER_COLUMNS,
+				...catalogue,
+				order: view.order,
+				...(view.hits ? { hits: view.hits } : {}),
+				selected,
+				...(current ? { current: [current] } : {}),
+				total: this.#browser.baseCount,
+				empty:
+					mode === "role" ? t("No quick roles in the {key} cycle", { key: cycleKey }) : t("No models available"),
+				actions: compact([
+					pickerAction(
+						"use",
+						t(mode === "role" ? "Apply role" : mode === "task" ? "Use for Task subagents" : "Use for session"),
+						"enter",
+						{ primary: true },
+					),
+					this.#taskModeKey !== undefined && mode !== "role"
+						? pickerAction("task", t("Task model"), this.#taskModeKey, { on: mode === "task" })
+						: undefined,
+					{ ...CLOSE_ACTION, label: t(query.length > 0 ? "Clear search" : "Close") },
+				]),
+			},
+			preview,
+		);
+		this.#pickerRoot = { memo, catalogue, order: view, preview, node };
+		return node;
+	}
+
+	/** Root card over the status line, the embedded browser, and the mode's key hints. */
+	#describeCard(): NativeNode {
+		const mode = this.#taskMode ? "task" : this.#roleMode ? "role" : "session";
+		const memo = `${mode}\0${this.#configError ?? ""}\0${this.#taskModeKey ?? ""}`;
+		if (this.#nativeRoot?.memo === memo) return this.#nativeRoot.node;
+
+		const status = this.#configError
+			? span(this.#configError, "error")
+			: this.#taskMode
+				? span(t(TASK_STATUS_HINT), "error")
+				: span(t(this.#roleMode ? QUICK_ROLE_STATUS_HINT : STATUS_HINT), "muted");
+		const hints: (NativeHint | undefined)[] = [
+			actionHint(["tui.select.up", "tui.select.down"], t(mode === "role" ? "roles" : "models")),
+			{
+				keys: ["enter"],
+				label: t(
+					mode === "role"
+						? "apply role model"
+						: mode === "task"
+							? "use for Task subagents"
+							: "use for this session",
+				),
+			},
+			{ keys: [], label: t("type to search") },
+		];
+		if (mode === "session") hints.push({ keys: ["@"], label: t("quick roles") });
+		hints.push(actionHint("tui.select.cancel", t("close")));
+		if (this.#taskModeKey !== undefined && !this.#roleMode) {
+			hints.push({ keys: [this.#taskModeKey], label: t(this.#taskMode ? "session model" : "task model") });
+		}
+		// `card` directly: the task-mode tone is a common prop `overlayCard` doesn't take.
+		const node = card(
+			{
+				role: "omp.overlay.model-picker",
+				head: t(this.#taskMode ? "Switch Task Model" : "Switch Model"),
+				tone: this.#taskMode ? "error" : undefined,
+			},
+			[text([status], { wrap: "word" }), this.#browser, hintsRow(hints)],
+		);
+		this.#nativeRoot = { memo, node };
+		return node;
 	}
 }

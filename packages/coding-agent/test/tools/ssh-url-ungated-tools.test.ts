@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as os from "node:os";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls/router";
@@ -13,6 +13,17 @@ import * as capability from "../../src/capability";
 import type { SSHHost } from "../../src/capability/ssh";
 import type { CapabilityResult, SourceMeta } from "../../src/capability/types";
 import * as fileTransfer from "../../src/ssh/file-transfer";
+import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "../helpers/settings-test-state";
+
+let settingsState: SettingsTestState | undefined;
+
+beforeEach(() => {
+	settingsState = beginSettingsTest();
+});
+
+afterEach(() => {
+	restoreSettingsTestState(settingsState);
+});
 
 const SOURCE: SourceMeta = {
 	provider: "ssh-json",
@@ -66,14 +77,6 @@ function mockPersistentHosts(hosts: SSHHost[]): void {
 // connection. The security contract these tests defend: those lower-tier tools
 // never call `resolve` (never connect) for an ssh:// path.
 describe("ssh:// is rejected before any connection in read/write-tier tools", () => {
-	beforeAll(async () => {
-		await Settings.init({ inMemory: true });
-	});
-
-	afterEach(() => {
-		vi.restoreAllMocks();
-	});
-
 	it("resolveToolSearchScope (ast_grep + ast_edit) throws on ssh:// without resolving", async () => {
 		// Reject if resolve is ever reached, so a guard regression fails loudly
 		// instead of attempting a real connection.
@@ -111,34 +114,33 @@ describe("ssh:// is rejected before any connection in read/write-tier tools", ()
 });
 
 describe("ssh:// ProxyJump survives ungated tool routing", () => {
-	beforeAll(async () => {
-		await Settings.init({ inMemory: true });
-	});
-
-	afterEach(() => {
-		vi.restoreAllMocks();
-	});
-
-	it("passes a session alias ProxyJump through ReadTool and the internal URL router", async () => {
+	it("reads the session alias content instead of a same-name persistent destination", async () => {
 		const proxyJump = "jump-user@bastion.example:2200,edge";
 		const host = sshHost("session-read", proxyJump);
+		const persistentHost = { ...sshHost("session-read", "persistent-bastion", "user"), host: "persistent.internal" };
+		mockPersistentHosts([persistentHost]);
 		const session = createTestToolSession(os.tmpdir(), {
 			getSessionSshHosts: async () => [host],
 		});
 		vi.spyOn(fileTransfer, "statRemotePath").mockResolvedValue("file");
-		const readSpy = vi
-			.spyOn(fileTransfer, "readRemoteFile")
-			.mockResolvedValue({ bytes: new TextEncoder().encode("remote text\n"), truncated: false });
+		vi.spyOn(fileTransfer, "readRemoteFile").mockImplementation(async target => ({
+			bytes: new TextEncoder().encode(
+				target.host === host.host && target.proxyJump === proxyJump
+					? "session-only document\n"
+					: "wrong destination document\n",
+			),
+			truncated: false,
+		}));
 
-		await new ReadTool(session).execute("read-proxy-jump", {
+		const result = await new ReadTool(session).execute("read-proxy-jump", {
 			path: "ssh://session-read/tmp/example.txt",
 		});
-
-		expect(readSpy.mock.calls[0]?.[0]).toMatchObject({
-			name: "session-read",
-			host: "session-read.internal",
-			proxyJump,
-		});
+		const text = result.content
+			.filter(block => block.type === "text")
+			.map(block => block.text)
+			.join("\n");
+		expect(text).toContain("session-only document");
+		expect(text).not.toContain("wrong destination document");
 	});
 
 	it("passes a session alias ProxyJump through WriteTool and the internal URL router", async () => {

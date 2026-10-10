@@ -2,8 +2,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@oh-my-pi/pi-ai";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
@@ -15,7 +17,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { CompactionSummaryMessage, CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { Text, type Component } from "@oh-my-pi/pi-tui";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { TempDir, withTimeout } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { setLocale } from "../src/i18n";
 
@@ -64,7 +66,7 @@ describe("libkitty end-to-end", () => {
 		session = new AgentSession({
 			agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
 			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
-			settings: Settings.isolated(),
+			settings,
 			modelRegistry,
 		});
 		term = new VirtualTerminal(120, 32);
@@ -76,9 +78,108 @@ describe("libkitty end-to-end", () => {
 		mode?.stop();
 		await session?.dispose();
 		authStorage?.close();
-		tempDir?.removeSync();
 		resetSettingsForTest();
+		tempDir?.removeSync();
 		setLocale(null);
+	});
+
+	async function startLiveSteeredRun() {
+		const started = Promise.withResolvers<void>();
+		const claimed = Promise.withResolvers<void>();
+		const aborted = Promise.withResolvers<void>();
+		const answered = Promise.withResolvers<void>();
+		const mock = createMockModel({ handler: { content: ["Redirected answer"] } });
+		let calls = 0;
+		authStorage.keys.setRuntime("anthropic", "test-key");
+		session.agent.streamFn = async (model, context, options) => {
+			if (++calls > 1) return mock.stream(model, context, options);
+			const signal = options?.signal;
+			const live = options?.liveSteering;
+			if (!signal || !live) throw new Error("Missing live steering");
+			const stream = new AssistantMessageEventStream();
+			signal.addEventListener(
+				"abort",
+				() => {
+					aborted.resolve();
+					stream.fail(new Error("Interrupted"));
+				},
+				{ once: true },
+			);
+			started.resolve();
+			void (async () => {
+				await live.wait(signal);
+				const claim = await live.claim(signal);
+				if (!claim) throw new Error("Missing live steering claim");
+				claim.accept();
+				claimed.resolve();
+			})().catch(error => stream.fail(error));
+			return stream;
+		};
+		session.subscribe(event => {
+			if (
+				event.type === "message_end" &&
+				event.message.role === "assistant" &&
+				event.message.stopReason === "stop"
+			) {
+				answered.resolve();
+			}
+		});
+		const running = session.prompt("Keep thinking", { expandPromptTemplates: false });
+		await withTimeout(started.promise, 2_000, "Provider did not start");
+		return { claimed: claimed.promise, aborted: aborted.promise, answered: answered.promise, running, mock };
+	}
+
+	it("empty Enter interrupts provider-claimed steering and delivers it exactly once", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		const run = await startLiveSteeredRun();
+		term.sendInput("Change direction");
+		term.sendInput("\r");
+		await withTimeout(run.claimed, 2_000, "Steering was not claimed");
+		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("Change direction")));
+		expect(session.agent.peekSteeringQueue()).toEqual([]);
+
+		term.sendInput("\r");
+
+		await withTimeout(run.aborted, 2_000, "Enter did not interrupt live steering");
+		await withTimeout(run.answered, 2_000, "Interrupted steering was not answered");
+		await run.running;
+		await session.waitForIdle();
+		expect(
+			session.messages.filter(
+				message => message.role === "user" && JSON.stringify(message.content).includes("Change direction"),
+			),
+		).toHaveLength(1);
+		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [] });
+		expect(run.mock.calls).toHaveLength(1);
+		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("Redirected answer")));
+	});
+
+	it("Alt+Up restores provider-claimed steering without delivering it or losing the newer draft", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		const run = await startLiveSteeredRun();
+		term.sendInput("Change direction");
+		term.sendInput("\r");
+		await withTimeout(run.claimed, 2_000, "Steering was not claimed");
+		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("Change direction")));
+		expect(session.agent.peekSteeringQueue()).toEqual([]);
+		term.sendInput("New draft");
+
+		term.sendInput("\x1b[1;3A");
+		await term.waitForRender();
+
+		expect(mode.editor.getText()).toBe("Change direction\n\nNew draft");
+		await withTimeout(run.aborted, 2_000, "Restoring live steering did not cancel its provider response");
+		await run.running;
+		await session.waitForIdle();
+		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [] });
+		expect(
+			session.messages.filter(
+				message => message.role === "user" && JSON.stringify(message.content).includes("Change direction"),
+			),
+		).toEqual([]);
+		expect(run.mock.calls).toEqual([]);
 	});
 
 	it("paints the submitted user message before any model reply", async () => {
@@ -309,6 +410,7 @@ describe("libkitty end-to-end", () => {
 		const composer = new Composer({ terminal: term });
 		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
 		session.settings.set("display.collapseCompacted", false);
+		mode.toolOutputExpanded = true;
 
 		const usage: Usage = {
 			input: 1,
@@ -396,7 +498,7 @@ describe("libkitty end-to-end", () => {
 				marker,
 			).toHaveLength(1);
 		}
-		expect(rows.filter(row => row.includes("locally-compacted"))).toHaveLength(1);
+		expect(rows.filter(row => row.includes(summary.summary))).toHaveLength(1);
 	});
 
 	it("keeps a delivered follow-up unique while a task is live and after resizing", async () => {

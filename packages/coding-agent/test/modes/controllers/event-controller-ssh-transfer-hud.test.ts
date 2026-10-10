@@ -10,12 +10,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { SshTransferHud } from "@oh-my-pi/pi-coding-agent/modes/components/ssh-transfer-hud";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
-import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
-import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AsyncJobSnapshotItem } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SshTransferToolDetails } from "@oh-my-pi/pi-tui/tools/ssh-transfer-summary";
+import { createInteractiveModeContext } from "../../helpers/interactive-mode-context";
 
 function transferDetails(
 	status: SshTransferToolDetails["status"],
@@ -78,31 +77,12 @@ describe("EventController SSH transfer HUD persistence", () => {
 
 	function createFixture() {
 		const sshTransferHud = new SshTransferHud();
-		const chatContainer = new TranscriptContainer();
-		const ctx = {
-			isInitialized: true,
-			init: vi.fn(async () => {}),
-			ui: {
-				requestRender: vi.fn(),
-				requestComponentRender: vi.fn(),
-			},
-			statusLine: { invalidate: vi.fn() },
-			updateEditorTopBorder: vi.fn(),
-			toolOutputExpanded: false,
-			transcriptMessageComponents: new WeakMap(),
-			pendingTools: new Map(),
-			chatContainer,
+		const ctx = createInteractiveModeContext({
 			sshTransferHud,
-			sshTransferContainer: { clear: vi.fn(), addChild: vi.fn() },
-			session: { getToolByName: () => undefined, hasBuiltInTool: () => true, isStreaming: true },
-			showWarning: vi.fn(),
-			viewSession: { getToolByName: () => undefined, hasBuiltInTool: () => true, isStreaming: false },
-			sessionManager: { getCwd: () => process.cwd() },
-			setTodos: vi.fn(),
-			addMessageToChat: vi.fn(),
-			optimisticCustomMessageSignature: undefined,
-		} as unknown as InteractiveModeContext;
-		return { controller: new EventController(ctx), ctx, chatContainer, sshTransferHud };
+			session: { isStreaming: true },
+			viewSession: { isStreaming: false },
+		});
+		return { controller: new EventController(ctx), ctx, chatContainer: ctx.chatContainer, sshTransferHud };
 	}
 
 	it("repaints the original tool card while a background upload advances", async () => {

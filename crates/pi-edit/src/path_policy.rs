@@ -374,9 +374,13 @@ impl PathPolicy {
 		let Some(target) = physical_path(&lexical_absolute(absolute, &self.cwd)) else {
 			return false;
 		};
+		self.physical_in_plan_writable_root(&target)
+	}
+
+	fn physical_in_plan_writable_root(&self, target: &Path) -> bool {
 		self.plan_writable_roots.iter().any(|root| {
 			physical_path(&lexical_absolute(root, &self.cwd))
-				.is_some_and(|root| is_within(&target, &root))
+				.is_some_and(|root| is_within(target, &root))
 		})
 	}
 
@@ -386,9 +390,12 @@ impl PathPolicy {
 		if !matches!(self.address(unwrap_hashline_header_path(authored)), Address::Path) {
 			return false;
 		}
-		let recovered = lexical_absolute(recovered, &self.cwd);
-		is_within(&recovered, &lexical_absolute(&self.cwd, &self.cwd))
-			|| self.in_plan_writable_root(&recovered)
+		let Some(recovered) = physical_path(&lexical_absolute(recovered, &self.cwd)) else {
+			return false;
+		};
+		physical_path(&lexical_absolute(&self.cwd, &self.cwd))
+			.is_some_and(|cwd| is_within(&recovered, &cwd))
+			|| self.physical_in_plan_writable_root(&recovered)
 	}
 
 	/// Return the model-facing generated-file rejection, when applicable.
@@ -430,25 +437,20 @@ fn unknown_uri_target(display: &str, suggestion: Option<&str>) -> String {
 }
 
 /// Strip a strict `[path]` / `[path#XXXX]` hashline header wrapper.
+///
+/// Mirrors the hashline tokenizer: a valid trailing tag lets the path contain
+/// `#`; an untagged `#` is a malformed tag and leaves `target` untouched.
 pub fn unwrap_hashline_header_path(target: &str) -> &str {
 	let trimmed = target.trim_end();
 	let Some(inner) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
 		return target;
 	};
-	let path = if let Some((path, tag)) = inner.rsplit_once('#') {
-		if tag.len() == 4 && tag.bytes().all(|b| b.is_ascii_hexdigit()) {
-			path
-		} else {
-			return target;
-		}
-	} else {
-		inner
+	let path = match inner.rsplit_once('#') {
+		Some((path, tag)) if tag.len() == 4 && tag.bytes().all(|b| b.is_ascii_hexdigit()) => path,
+		Some(_) => return target,
+		None => inner,
 	};
-	if path.is_empty() || path.contains('#') {
-		target
-	} else {
-		path
-	}
+	if path.is_empty() { target } else { path }
 }
 
 /// Snapshot key: realpath, parent realpath plus basename, or input. A target
@@ -869,7 +871,8 @@ mod tests {
 		assert_eq!(unwrap_hashline_header_path("[src/a.ts#Ab12]  \n"), "src/a.ts");
 		assert_eq!(unwrap_hashline_header_path("[src/a.ts]"), "src/a.ts");
 		assert_eq!(unwrap_hashline_header_path("[src/a.ts#bad]"), "[src/a.ts#bad]");
-		assert_eq!(unwrap_hashline_header_path("[a#b#1234]"), "[a#b#1234]");
+		assert_eq!(unwrap_hashline_header_path("[conf##host.a#1234]"), "conf##host.a");
+		assert_eq!(unwrap_hashline_header_path("[conf##host.a]"), "[conf##host.a]");
 	}
 
 	#[test]
@@ -880,10 +883,16 @@ mod tests {
 		assert_eq!(p.resolve("/", &urls).unwrap().absolute, tmp.path());
 		assert_eq!(p.resolve("@~/x", &urls).unwrap().absolute, tmp.path().join("home/x"));
 		assert_eq!(p.resolve(":./x", &urls).unwrap().absolute, tmp.path().join("./x"));
-		assert_eq!(
-			p.resolve("file:///tmp/a%20b", &urls).unwrap().absolute,
-			PathBuf::from("/tmp/a b")
+		let file_path = tmp.path().join("a b");
+		let file_url = format!(
+			"file://{}",
+			file_path
+				.to_str()
+				.unwrap()
+				.replace('\\', "/")
+				.replace(' ', "%20")
 		);
+		assert_eq!(p.resolve(&file_url, &urls).unwrap().absolute, file_path);
 		// Scheme-colon names without a slash, Windows drives, and `./`-prefixed
 		// URI-shaped names are plain paths.
 		assert_eq!(p.resolve("sbx:x", &urls).unwrap().absolute, tmp.path().join("sbx:x"));
@@ -986,6 +995,35 @@ mod tests {
 			p.resolve(dotted.to_str().unwrap(), &urls).unwrap().absolute,
 			sandbox.join("plan.md")
 		);
+		let recovery_policy = policy(&sandbox);
+		assert!(
+			!recovery_policy.allow_tag_path_recovery("escape.txt", &sandbox.join("link/escape.txt"))
+		);
+		assert!(!recovery_policy.allow_tag_path_recovery("dangling", &sandbox.join("dangling")));
+	}
+
+	#[test]
+	fn tag_path_recovery_compares_physical_roots() {
+		let tmp = tempfile::tempdir().unwrap();
+		let cwd = tmp.path().join("work");
+		let nested = cwd.join("nested/a.txt");
+		let outside = tmp.path().join("work-other/a.txt");
+		let plan_root = tmp.path().join("plans");
+		std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+		std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+		std::fs::create_dir_all(&plan_root).unwrap();
+		std::fs::write(&nested, "before\n").unwrap();
+		std::fs::write(&outside, "before\n").unwrap();
+		let mut p = policy(&std::fs::canonicalize(&cwd).unwrap());
+		p.plan_writable_roots = vec![std::fs::canonicalize(&plan_root).unwrap()];
+		let recovered = canonical_key(&nested);
+		assert!(p.allow_tag_path_recovery("a.txt", &recovered));
+		assert!(!p.allow_tag_path_recovery("a.txt", &canonical_key(&outside)));
+		assert!(!p.allow_tag_path_recovery("a.txt", &cwd.join("../work-other/a.txt")));
+		assert!(p.allow_tag_path_recovery("plan.md", &plan_root.join("nested/plan.md")));
+		for authored in ["sbx://a.txt", "ro:/a.txt", "bogus://a.txt"] {
+			assert!(!p.allow_tag_path_recovery(authored, &recovered));
+		}
 	}
 
 	#[test]
@@ -1157,8 +1195,7 @@ mod tests {
 		let missing = tmp.path().join("missing.txt");
 		assert_eq!(
 			canonical_key(&missing),
-			std::fs::canonicalize(tmp.path())
-				.unwrap()
+			strip_windows_verbatim_path(std::fs::canonicalize(tmp.path()).unwrap())
 				.join("missing.txt")
 		);
 	}

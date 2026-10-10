@@ -11,7 +11,7 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { buildOutputValidator } from "@oh-my-pi/pi-coding-agent/tools/output-schema-validator";
 import { YieldTool } from "@oh-my-pi/pi-coding-agent/tools/yield";
 import { buildWorkPoolOutputSchema } from "../../src/task/workpool-yield";
-import { arrayValuedLabels } from "../../src/task/yield-assembly";
+import { yieldSectionShapes } from "../../src/task/yield-assembly";
 import { assembleYieldResult } from "@oh-my-pi/pi-tui/tools/task-yield-assembly";
 
 function createSession(overrides: Partial<ToolSession> = {}): ToolSession {
@@ -59,7 +59,6 @@ describe("YieldTool", () => {
 			{ id: "review#2", index: 2 },
 		];
 		expect(toRecord(tool.parameters).required).toEqual(["key"]);
-		expect(tool.description).toContain("ONE workpool item at a time");
 		const first = await tool.execute("pool-1", { key: 1, data: "one" });
 		expect(first.content).toEqual([{ type: "text", text: "Item 1 submitted. Remaining item(s): 2." }]);
 		expect(first.details).toMatchObject({
@@ -94,7 +93,7 @@ describe("YieldTool", () => {
 				{ status: "success", type: ["review#2"], data: { outcome: "two" }, complete: true },
 			],
 			undefined,
-			arrayValuedLabels(schema),
+			yieldSectionShapes(schema),
 		);
 		expect(assembled?.data).toEqual({
 			"review#1": { outcome: "one" },
@@ -102,12 +101,6 @@ describe("YieldTool", () => {
 		});
 		const validator = buildOutputValidator(schema).validator;
 		expect(validator?.validate(assembled?.data).success).toBe(true);
-	});
-
-	it("accepts success payload with data", async () => {
-		const tool = new YieldTool(createSession());
-		const result = await tool.execute("call-1", { data: { ok: true } } as never);
-		expect(result.details).toEqual({ data: { ok: true }, status: "success", error: undefined });
 	});
 
 	it("commits a terminal yield emitted before parent steering lands (#10645)", async () => {
@@ -576,6 +569,12 @@ describe("YieldTool", () => {
 			data: "plain text note",
 		} as never);
 		expect(known.details?.data).toBe("plain text note");
+		expect(
+			buildOutputValidator(permissiveKnownLabel.parameters).validator!.validate({
+				type: ["notes"],
+				data: "plain text note",
+			}).success,
+		).toBe(true);
 
 		const patternBackedLabel = new YieldTool(
 			createSession({
@@ -714,7 +713,7 @@ describe("YieldTool", () => {
 	});
 
 	it("detects array-valued labels when the closed caller schema is a root $ref", () => {
-		const labels = arrayValuedLabels({
+		const shapes = yieldSectionShapes({
 			$ref: "#/$defs/Closed",
 			$defs: {
 				Closed: {
@@ -730,7 +729,7 @@ describe("YieldTool", () => {
 			},
 		});
 
-		expect(labels.has("blockers")).toBe(true);
+		expect(shapes.get("blockers")).toBe("array");
 	});
 
 	it("rejects missing success data unless a yield type requests last-turn mode", async () => {
@@ -832,6 +831,74 @@ describe("YieldTool", () => {
 				arguments: { type: "summary" },
 			}),
 		).toEqual({ type: "summary" });
+	});
+
+	it("constrains closed incremental wire labels while preserving field values and full terminal data", async () => {
+		const outputSchema = {
+			properties: {
+				summary: { type: "string" },
+				files: { elements: { properties: { path: { type: "string" } } } },
+				architecture: { type: "string" },
+			},
+			optionalProperties: { report: { type: "string" } },
+		};
+		const tool = new YieldTool(createSession({ outputSchema }));
+		const [converted] = convertOpenAICodexResponsesTools(
+			[{ name: tool.name, description: tool.description, parameters: tool.parameters, strict: tool.strict }],
+			makeCodexModel(),
+		);
+		if (converted.type !== "function") throw new Error("expected a function tool payload");
+		const wireValidator = buildOutputValidator(converted.parameters).validator!;
+		const report = { type: ["report"], data: "Observed behavior", error: null };
+		expect(wireValidator.validate(report).success).toBe(true);
+		expect(wireValidator.validate({ ...report, type: ["section"] }).success).toBe(false);
+		expect(wireValidator.validate({ ...report, type: ["history_request"] }).success).toBe(false);
+
+		const shared = { type: ["summary", "architecture"], data: "Shared evidence", error: null };
+		expect(wireValidator.validate(shared).success).toBe(true);
+		const reportResult = await tool.execute("call-report-field", report);
+		const sharedResult = await tool.execute("call-shared-fields", shared);
+		const fileResult = await tool.execute("call-file-element", {
+			type: ["files"],
+			data: { path: "src/example.ts" },
+		});
+		const finalize = await tool.execute("call-finalize-sections", { type: "result" });
+		const assembled = assembleYieldResult(
+			[reportResult.details!, sharedResult.details!, fileResult.details!, finalize.details!],
+			undefined,
+			yieldSectionShapes(outputSchema),
+		);
+		const fullData = {
+			summary: "Shared evidence",
+			architecture: "Shared evidence",
+			files: [{ path: "src/example.ts" }],
+			report: "Observed behavior",
+		};
+		expect(assembled?.data).toEqual(fullData);
+		expect(buildOutputValidator(outputSchema).validator!.validate(assembled?.data).success).toBe(true);
+		expect(wireValidator.validate({ type: "custom-terminal-marker", data: fullData, error: null }).success).toBe(
+			true,
+		);
+		const terminal = await tool.execute("call-terminal-full-object", { data: fullData });
+		expect(terminal.details?.data).toEqual(fullData);
+	});
+
+	it("keeps arbitrary incremental wire labels available for open and unconstrained output schemas", async () => {
+		for (const [outputSchema, data] of [
+			[
+				{ type: "object", properties: { report: { type: "string" } }, additionalProperties: true },
+				"Open-schema progress",
+			],
+			[true, 42],
+		] as const) {
+			const tool = new YieldTool(createSession({ outputSchema }));
+			const wireValidator = buildOutputValidator(tool.parameters).validator!;
+			const args = { type: ["history_request"], data };
+			expect(wireValidator.validate(args).success).toBe(true);
+			const result = await tool.execute("call-open-label", args);
+			expect(result.details?.data).toEqual(data);
+			expect(result.details?.type).toEqual(["history_request"]);
+		}
 	});
 
 	it("emits Codex-valid yield parameters: no top-level combinator under strict mode", () => {

@@ -1,9 +1,11 @@
-import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as path from "node:path";
 import * as url from "node:url";
+import { setTerminalHyperlinks, TERMINAL } from "@oh-my-pi/pi-tui";
 import { applyHyperlinkSetting } from "../src/render/hyperlink";
 import { getThemeByName, initTheme } from "@oh-my-pi/pi-tui/theme";
 import { readToolRenderer } from "@oh-my-pi/pi-tui/tools/read";
+import * as urlSchemeHost from "@oh-my-pi/pi-tui/tools/url-scheme-host";
 
 function extractLinkUris(text: string): string[] {
 	return [...text.matchAll(/\x1b\]8;[^;]*;([^\x1b]+)\x1b\\/g)].map(match => match[1]!);
@@ -19,8 +21,15 @@ beforeAll(async () => {
 	await initTheme();
 });
 
+let previousHyperlinks: boolean;
+
+beforeEach(() => {
+	previousHyperlinks = TERMINAL.hyperlinks;
+});
+
 afterEach(() => {
 	applyHyperlinkSetting("auto");
+	setTerminalHyperlinks(previousHyperlinks);
 });
 
 describe("readToolRenderer hyperlinks", () => {
@@ -29,28 +38,36 @@ describe("readToolRenderer hyperlinks", () => {
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 
-		const handoffPath = path.resolve("/tmp/omp-local/handoff.md");
-		const component = readToolRenderer.renderResult(
-			{
-				content: [{ type: "text", text: "second line" }],
-				details: {
-					resolvedPath: handoffPath,
-					displayContent: { text: "second line", startLine: 2 },
-					contentType: "text/plain",
-				},
-			},
-			{ expanded: false, isPartial: false },
-			theme!,
-			{ path: "local://handoff.md:2" },
+		const spec = urlSchemeHost.internalUrlSchemeSpec;
+		const schemeSpy = spyOn(urlSchemeHost, "internalUrlSchemeSpec").mockImplementation(scheme =>
+			scheme === "local" ? { selectors: "lines", compactTranscript: true } : spec(scheme),
 		);
+		try {
+			const handoffPath = path.resolve("/tmp/omp-local/handoff.md");
+			const component = readToolRenderer.renderResult(
+				{
+					content: [{ type: "text", text: "second line" }],
+					details: {
+						resolvedPath: handoffPath,
+						displayContent: { text: "second line", startLine: 2 },
+						contentType: "text/plain",
+					},
+				},
+				{ expanded: false, isPartial: false },
+				theme!,
+				{ path: "local://handoff.md:2" },
+			);
 
-		const rendered = component.render(200).join("\n");
-		expect(rendered).toContain("local://handoff.md");
-		expect(rendered).toContain(":2");
-		const handoffUri = url.pathToFileURL(path.resolve(handoffPath)).href;
-		expect(extractLinkUris(rendered)).toContain(handoffUri);
-		expect(extractLinkTexts(rendered)).toContain("local://handoff.md");
-		expect(extractLinkTexts(rendered)).not.toContain("local://handoff.md:2");
+			const rendered = component.render(200).join("\n");
+			expect(rendered).toContain("local://handoff.md");
+			expect(rendered).toContain(":2");
+			const handoffUri = url.pathToFileURL(path.resolve(handoffPath)).href;
+			expect(extractLinkUris(rendered)).toContain(handoffUri);
+			expect(extractLinkTexts(rendered)).toContain("local://handoff.md");
+			expect(extractLinkTexts(rendered)).not.toContain("local://handoff.md:2");
+		} finally {
+			schemeSpy.mockRestore();
+		}
 	});
 
 	it("links absolute read call paths to file URIs with selector lines", async () => {

@@ -39,6 +39,8 @@ export interface CodexAcceptedSteer {
 export interface CodexSteerOutcome {
 	responseId: string | undefined;
 	accepted: CodexAcceptedSteer[];
+	/** The protocol code of an explicit rejection; its input remains caller-owned. */
+	rejectedCode: string | undefined;
 	/**
 	 * A submission ended without an acknowledgement, so the server may or may
 	 * not hold it. The caller must drop the socket rather than chain from it.
@@ -53,8 +55,8 @@ const EMPTY_CLAIM_BACKOFF_MS = 25;
 
 /**
  * Submits caller steering to one in-flight response. Stops after the first
- * rejection: the server only rejects when the response no longer accepts input,
- * and later submissions would reorder the caller's input.
+ * rejection, including a native lane that cannot accept stateful input.
+ * Later submissions would reorder the caller's deferred input.
  */
 export class CodexSteerPump {
 	readonly #source: LiveSteering;
@@ -64,6 +66,7 @@ export class CodexSteerPump {
 	readonly #accepted: CodexAcceptedSteer[] = [];
 	#responseId: string | undefined;
 	#run: Promise<void> | undefined;
+	#rejectedCode: string | undefined;
 	#uncertain = false;
 
 	constructor(
@@ -92,7 +95,12 @@ export class CodexSteerPump {
 	async finish(): Promise<CodexSteerOutcome> {
 		this.#stop.abort();
 		await this.#run;
-		return { responseId: this.#responseId, accepted: this.#accepted, uncertain: this.#uncertain };
+		return {
+			responseId: this.#responseId,
+			accepted: this.#accepted,
+			rejectedCode: this.#rejectedCode,
+			uncertain: this.#uncertain,
+		};
 	}
 
 	async #loop(responseId: string): Promise<void> {
@@ -130,6 +138,7 @@ export class CodexSteerPump {
 					return;
 				}
 				if (!ack.accepted) {
+					this.#rejectedCode = ack.code;
 					logger.debug("Codex steering rejected", { responseId, code: ack.code, message: ack.message });
 					claim.reject();
 					return;

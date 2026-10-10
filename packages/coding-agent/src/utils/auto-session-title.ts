@@ -1,86 +1,42 @@
-import type { Api, Model } from "@oh-my-pi/pi-ai";
-import { $env, logger } from "@oh-my-pi/pi-utils";
-import type { ModelRegistry } from "../config/model-registry";
-import type { Settings } from "../config/settings";
-import { isLowSignalTitleInput } from "../tiny/text";
-import { generateSessionTitle, setSessionTerminalTitle } from "./title-generator";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { titleTextFromSkillPrompt } from "@oh-my-pi/pi-tui/chat/skill-title-input";
+import { textContent } from "@oh-my-pi/pi-tui/chat/transcript-entry";
+import { isTitleContextReply } from "../session/messages";
+import { formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
 
-type TitleSession = {
-	sessionId: string;
-	model?: Model<Api>;
-	modelRegistry: ModelRegistry;
-	agent: {
-		metadataForProvider(provider: string): Record<string, unknown> | undefined;
-	};
-};
-
-type TitleSessionManager = {
-	getSessionName(): string | undefined;
-	setSessionName(name: string, source: "auto"): Promise<boolean>;
-	getCwd(): string;
-};
-
-type GenerateSessionTitleFn = (
-	firstMessage: string,
-	registry: ModelRegistry,
-	settings: Settings,
-	sessionId?: string,
-	currentModel?: Model<Api>,
-	metadataResolver?: (provider: string) => Record<string, unknown> | undefined,
-	customSystemPrompt?: string,
-) => Promise<string | null>;
-
-type SetSessionTerminalTitleFn = (sessionName: string | undefined, cwd?: string) => void;
-
-export interface AutoSessionTitleOptions {
-	text: string;
-	session: TitleSession;
-	sessionManager: TitleSessionManager;
-	settings: Settings;
-	titleSystemPrompt?: string;
-	onBeforeGenerate?: () => void;
-	onTitleApplied?: () => void;
-	generateTitle?: GenerateSessionTitleFn;
-	setTerminalTitle?: SetSessionTerminalTitleFn;
-}
+const DEFERRED_TITLE_CONTEXT_TURN_LIMIT = 6;
 
 /**
- * Fire-and-forget auto-title generation for the first meaningful user prompt.
- * Returns true when a generation request was started.
+ * Build the recent exchange for a declined first-message title. Unlike replan
+ * titles, this path needs the assistant's reply to disambiguate the request.
+ * Only successful replies count; tool output and agent-authored prompts do not.
  */
-export function startAutoSessionTitleGeneration(options: AutoSessionTitleOptions): boolean {
-	const { text, session, sessionManager, settings, titleSystemPrompt } = options;
-	if (sessionManager.getSessionName()) return false;
-	if ($env.PI_NO_TITLE) return false;
-	if (isLowSignalTitleInput(text)) return false;
-
-	options.onBeforeGenerate?.();
-	const generateTitle = options.generateTitle ?? generateSessionTitle;
-	const setTerminalTitle = options.setTerminalTitle ?? setSessionTerminalTitle;
-
-	generateTitle(
-		text,
-		session.modelRegistry,
-		settings,
-		session.sessionId,
-		session.model,
-		provider => session.agent.metadataForProvider(provider),
-		titleSystemPrompt,
-	)
-		.then(async title => {
-			if (!title || sessionManager.getSessionName()) return;
-			const applied = await sessionManager.setSessionName(title, "auto");
-			if (!applied) return;
-			setTerminalTitle(sessionManager.getSessionName() ?? title, sessionManager.getCwd());
-			options.onTitleApplied?.();
-		})
-		.catch(err => {
-			logger.warn("title-generator: uncaught auto-title error", {
-				sessionId: session.sessionId,
-				reason: "uncaught-auto-title-error",
-				error: err instanceof Error ? err.message : String(err),
-			});
-		});
-
-	return true;
+export function buildDeferredTitleContext(messages: readonly AgentMessage[]): string {
+	const turns: TitleConversationTurn[] = [];
+	let hasReply = false;
+	for (let index = messages.length - 1; index >= 0 && turns.length < DEFERRED_TITLE_CONTEXT_TURN_LIMIT; index--) {
+		const message = messages[index];
+		if (!message) continue;
+		let text: string | undefined;
+		if (message.role === "user") {
+			if (message.attribution === "agent") continue;
+			text = textContent(message.content, "\n\n");
+		} else if (message.role === "assistant") {
+			if (!isTitleContextReply(message)) continue;
+			text = textContent(message.content, "\n\n");
+			for (const block of message.content) {
+				if (block.type !== "thinking" || !block.thinking.trim()) continue;
+				text += `${text ? "\n\n" : ""}${block.thinking}`;
+			}
+		} else {
+			text = titleTextFromSkillPrompt(message);
+		}
+		if (!text?.trim()) continue;
+		const role = message.role === "assistant" ? "assistant" : "user";
+		turns.push({ role, text });
+		if (role === "assistant") hasReply = true;
+	}
+	if (!hasReply) return "";
+	turns.reverse();
+	return formatTitleConversationContext(turns);
 }

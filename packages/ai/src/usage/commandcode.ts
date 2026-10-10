@@ -1,203 +1,223 @@
 import { ProviderHttpError } from "../error";
 import type {
-	UsageCredential,
+	CredentialRankingStrategy,
 	UsageFetchContext,
 	UsageFetchParams,
 	UsageLimit,
 	UsageProvider,
 	UsageReport,
-	UsageWindow,
 } from "../usage";
 import { isRecord } from "../utils";
-import { DAY_MS, HOUR_MS, parsePositiveTimestamp, usageStatus } from "./shared";
+import { HOUR_MS, parsePositiveTimestamp, usageStatus, WEEK_MS } from "./shared";
 
-const COMMANDCODE_PROVIDER = "commandcode";
-const DEFAULT_API_BASE = "https://api.commandcode.ai";
+const PROVIDER = "commandcode";
+const DEFAULT_ORIGIN = "https://api.commandcode.ai";
 const WHOAMI_PATH = "/alpha/whoami";
 const CREDITS_PATH = "/alpha/billing/credits";
 
-/**
- * Subscription windows reported by `GET /alpha/billing/credits`. Each entry
- * carries the credits spent inside the rolling span against the plan's cap
- * (`windowLimits.fiveHour` / `.weekly`), where `used: 0, cap: 0` means the plan
- * does not meter that window at all.
- */
-const COMMANDCODE_WINDOWS = [
-	{ key: "fiveHour", limitId: "five-hour", windowId: "5h", label: "5 Hour", durationMs: 5 * HOUR_MS },
-	{ key: "weekly", limitId: "weekly", windowId: "7d", label: "Weekly", durationMs: 7 * DAY_MS },
-] as const;
-
-/**
- * The catalog `baseUrl` is the Provider API root (`/provider/v1`), while the
- * account routes live at the deployment root, so that suffix has to come off
- * before the `/alpha` paths are appended. Same split the retired
- * `pi-commandcode-provider` extension handled in its `legacyApiBase`.
- */
-function resolveApiBase(baseUrl?: string): string {
+/** Account routes live at the origin, not the inference `/provider/v1` base. */
+function resolveOrigin(baseUrl: string | undefined): string {
 	const trimmed = baseUrl?.trim();
-	if (!trimmed) return DEFAULT_API_BASE;
-	const root = trimmed
-		.replace(/\/+$/, "")
-		.replace(/\/provider\/v1$/i, "")
-		.replace(/\/v1$/i, "");
-	return root || DEFAULT_API_BASE;
+	if (!trimmed) return DEFAULT_ORIGIN;
+	try {
+		return new URL(trimmed).origin;
+	} catch {
+		return DEFAULT_ORIGIN;
+	}
 }
 
-/** Command Code stores its bearer in the OAuth slot; plain keys use `apiKey`. */
-function bearerToken(credential: UsageCredential): string | undefined {
-	const token = credential.accessToken?.trim() || credential.apiKey?.trim();
-	return token ? token : undefined;
+function nonEmptyString(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function isAuthFailure(status: number): boolean {
-	return status === 401 || status === 403;
+function finiteNumber(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function buildWindowLimit(descriptor: (typeof COMMANDCODE_WINDOWS)[number], entry: unknown): UsageLimit | undefined {
-	if (!isRecord(entry)) return undefined;
-	const used =
-		typeof entry.used === "number" && Number.isFinite(entry.used) && entry.used >= 0 ? entry.used : undefined;
-	const cap = typeof entry.cap === "number" && Number.isFinite(entry.cap) && entry.cap > 0 ? entry.cap : undefined;
-	// An unusable cap cannot express a fraction; `0 / 0` is an unmetered window,
-	// not a fully spent one, so it is dropped rather than reported as exhausted.
-	if (used === undefined || cap === undefined) return undefined;
-	const usedFraction = Math.min(1, used / cap);
-	const resetsAt = parsePositiveTimestamp(entry.resetAt);
-	const window: UsageWindow = { id: descriptor.windowId, label: descriptor.label, durationMs: descriptor.durationMs };
-	if (resetsAt !== undefined) window.resetsAt = resetsAt;
+/** A 401 invalidates the bearer; 403 can mean no access to a usage-only route. */
+async function getJson(
+	url: string,
+	token: string,
+	signal: AbortSignal | undefined,
+	ctx: UsageFetchContext,
+): Promise<Record<string, unknown> | null> {
+	try {
+		const response = await ctx.fetch(url, {
+			headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+			signal,
+		});
+		if (!response.ok) {
+			if (response.status === 401) {
+				throw new ProviderHttpError(
+					`Command Code usage endpoint returned ${response.status} ${response.statusText}`.trim(),
+					response.status,
+				);
+			}
+			ctx.logger?.warn("Command Code usage fetch failed", {
+				url,
+				status: response.status,
+				statusText: response.statusText,
+			});
+			return null;
+		}
+		const json: unknown = await response.json();
+		if (!isRecord(json)) return null;
+		return isRecord(json.data) ? json.data : json;
+	} catch (error) {
+		if (error instanceof ProviderHttpError) throw error;
+		ctx.logger?.warn("Command Code usage fetch error", { url, error: String(error) });
+		return null;
+	}
+}
+
+interface WindowSpec {
+	key: "fiveHour" | "weekly";
+	id: "5h" | "7d";
+	limitLabel: string;
+	windowLabel: string;
+	durationMs: number;
+}
+
+const WINDOWS: readonly WindowSpec[] = [
+	{ key: "fiveHour", id: "5h", limitLabel: "5-hour limit", windowLabel: "5-hour", durationMs: 5 * HOUR_MS },
+	{ key: "weekly", id: "7d", limitLabel: "Weekly limit", windowLabel: "Weekly", durationMs: WEEK_MS },
+];
+
+function buildWindowLimit(
+	spec: WindowSpec,
+	raw: unknown,
+	accountId: string | undefined,
+	orgId: string | undefined,
+): UsageLimit | undefined {
+	if (!isRecord(raw)) return undefined;
+	const used = finiteNumber(raw.used);
+	if (used === undefined || used < 0) return undefined;
+	const cap = finiteNumber(raw.cap);
+	// Zero caps mean unmetered, not exhausted. An absent cap can still report
+	// absolute usage, but an explicitly malformed/negative cap cannot.
+	if (raw.cap !== undefined && (cap === undefined || cap <= 0)) return undefined;
+	const usedFraction = cap !== undefined ? Math.min(1, used / cap) : undefined;
+	const resetsAt = parsePositiveTimestamp(raw.resetAt);
 	return {
-		id: descriptor.limitId,
-		label: `${descriptor.label} limit`,
-		scope: { provider: COMMANDCODE_PROVIDER, windowId: descriptor.windowId, shared: true },
-		window,
+		id: `${PROVIDER}:${spec.id}`,
+		label: spec.limitLabel,
+		scope: {
+			provider: PROVIDER,
+			...(accountId ? { accountId } : {}),
+			...(orgId ? { orgId } : {}),
+			windowId: spec.id,
+			shared: true,
+		},
+		window: {
+			id: spec.id,
+			label: spec.windowLabel,
+			durationMs: spec.durationMs,
+			...(resetsAt !== undefined ? { resetsAt } : {}),
+		},
 		amount: {
 			used,
-			limit: cap,
-			usedFraction,
-			remainingFraction: Math.max(0, 1 - usedFraction),
+			...(cap !== undefined ? { limit: cap } : {}),
+			...(usedFraction !== undefined ? { usedFraction, remainingFraction: Math.max(0, 1 - usedFraction) } : {}),
 			unit: "credits",
 		},
-		// The payload's own `exceeded` flag is authoritative: it accounts for the
-		// plan's rounding, which a raw `used / cap` comparison cannot see.
-		status: entry.exceeded === true ? "exhausted" : usageStatus(usedFraction),
+		// The API flag accounts for plan rounding that a raw fraction cannot see.
+		status: raw.exceeded === true ? "exhausted" : usageStatus(usedFraction),
 	};
 }
 
-interface CommandCodeAccount {
-	orgId?: string;
-	email?: string;
-	user?: string;
-}
-
-/** `whoami` carries the account label and the org a subscription bills to. */
-function parseAccount(payload: unknown): CommandCodeAccount | undefined {
-	if (!isRecord(payload)) return undefined;
-	const account: CommandCodeAccount = {};
-	if (isRecord(payload.user)) {
-		const email = payload.user.email;
-		if (typeof email === "string" && email.trim()) account.email = email.trim();
-		const { name, userName } = payload.user;
-		const display =
-			(typeof name === "string" && name.trim() ? name.trim() : undefined) ??
-			(typeof userName === "string" && userName.trim() ? userName.trim() : undefined);
-		if (display) account.user = display;
-	}
-	const org = payload.org;
-	const orgId =
-		typeof org === "string" && org.trim()
-			? org.trim()
-			: isRecord(org) && typeof org.id === "string" && org.id.trim()
-				? org.id.trim()
-				: undefined;
-	if (orgId) account.orgId = orgId;
-	else if (typeof payload.orgId === "string" && payload.orgId.trim()) account.orgId = payload.orgId.trim();
-	return account;
-}
-
-type AlphaResponse = { ok: true; payload: unknown } | { ok: false; status: number };
-
-async function requestAlpha(
-	url: string,
-	token: string,
-	params: UsageFetchParams,
-	ctx: UsageFetchContext,
-): Promise<AlphaResponse> {
-	try {
-		const response = await ctx.fetch(url, {
-			headers: { accept: "application/json", authorization: `Bearer ${token}` },
-			signal: params.signal,
-		});
-		if (!response.ok) return { ok: false, status: response.status };
-		return { ok: true, payload: (await response.json()) as unknown };
-	} catch (error) {
-		if (error instanceof ProviderHttpError) throw error;
-		ctx.logger?.warn("Command Code usage request failed", { url, error: String(error) });
-		return { ok: false, status: 0 };
-	}
-}
-
+/** Reports subscription windows and the spendable balance for either bearer type. */
 async function fetchCommandCodeUsage(params: UsageFetchParams, ctx: UsageFetchContext): Promise<UsageReport | null> {
-	if (params.provider !== COMMANDCODE_PROVIDER) return null;
-	const token = bearerToken(params.credential);
+	if (params.provider !== PROVIDER) return null;
+	const token = nonEmptyString(params.credential.accessToken) ?? nonEmptyString(params.credential.apiKey);
 	if (!token) return null;
-	const apiBase = resolveApiBase(params.baseUrl);
+	const origin = resolveOrigin(params.baseUrl);
 
-	// Identity is optional metadata: an org-scoped subscription still reports
-	// through the same credits route, so a transient `whoami` failure must not
-	// hide the limits. A rejected bearer is different — it fails both routes and
-	// has to surface so credential health can flag it.
-	const whoami = await requestAlpha(`${apiBase}${WHOAMI_PATH}`, token, params, ctx);
-	if (!whoami.ok && isAuthFailure(whoami.status)) {
-		throw new ProviderHttpError(`Command Code account lookup returned ${whoami.status}`, whoami.status);
-	}
-	const account = whoami.ok ? parseAccount(whoami.payload) : undefined;
+	// Identity is optional: transient lookup failures must not hide credits.
+	// A rejected bearer still throws from getJson for credential health.
+	const whoami = await getJson(`${origin}${WHOAMI_PATH}`, token, params.signal, ctx);
+	const userData = whoami?.user;
+	const orgData = whoami?.org;
+	const user = isRecord(userData) ? userData : undefined;
+	const org = isRecord(orgData) ? orgData : undefined;
+	const userId = nonEmptyString(user?.id) ?? nonEmptyString(params.credential.accountId);
+	const orgId =
+		nonEmptyString(org?.id) ??
+		nonEmptyString(whoami?.org) ??
+		nonEmptyString(whoami?.orgId) ??
+		nonEmptyString(params.credential.orgId);
+	const orgName = nonEmptyString(org?.login) ?? nonEmptyString(org?.name) ?? nonEmptyString(params.credential.orgName);
 
-	const orgId = account?.orgId ?? params.credential.orgId?.trim();
-	const creditsUrl = `${apiBase}${CREDITS_PATH}${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`;
-	const credits = await requestAlpha(creditsUrl, token, params, ctx);
-	if (!credits.ok) {
-		if (isAuthFailure(credits.status)) {
-			throw new ProviderHttpError(`Command Code credits endpoint returned ${credits.status}`, credits.status);
-		}
-		// Transient failure — `null` keeps the last good report serving.
-		ctx.logger?.warn("Command Code credits fetch failed", { status: credits.status });
-		return null;
-	}
-	if (!isRecord(credits.payload)) {
-		ctx.logger?.warn("Command Code credits response was not an object");
-		return null;
-	}
-	const windowLimits = credits.payload.windowLimits;
-	if (windowLimits !== undefined && !isRecord(windowLimits)) {
+	const creditsUrl = `${origin}${CREDITS_PATH}${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`;
+	const creditsBody = await getJson(creditsUrl, token, params.signal, ctx);
+	if (!creditsBody) return null;
+	if (creditsBody.windowLimits !== undefined && !isRecord(creditsBody.windowLimits)) {
 		ctx.logger?.warn("Command Code credits response had a malformed windowLimits block");
 		return null;
 	}
-
+	const credits = isRecord(creditsBody.credits) ? creditsBody.credits : undefined;
+	const monthly = finiteNumber(credits?.monthlyCredits);
+	const purchased = finiteNumber(credits?.purchasedCredits);
+	const free = finiteNumber(credits?.freeCredits);
 	const limits: UsageLimit[] = [];
-	for (const descriptor of COMMANDCODE_WINDOWS) {
-		const limit = buildWindowLimit(descriptor, isRecord(windowLimits) ? windowLimits[descriptor.key] : undefined);
+	const windowLimits = isRecord(creditsBody.windowLimits) ? creditsBody.windowLimits : undefined;
+	for (const spec of WINDOWS) {
+		const limit = buildWindowLimit(spec, windowLimits?.[spec.key], userId, orgId);
 		if (limit) limits.push(limit);
 	}
+	if (monthly !== undefined || purchased !== undefined || free !== undefined) {
+		limits.push({
+			id: `${PROVIDER}:balance`,
+			label: "Credit balance",
+			scope: {
+				provider: PROVIDER,
+				...(userId ? { accountId: userId } : {}),
+				...(orgId ? { orgId } : {}),
+				windowId: "balance",
+				shared: true,
+			},
+			amount: { remaining: (monthly ?? 0) + (purchased ?? 0) + (free ?? 0), unit: "credits" },
+		});
+	} else if (!windowLimits) {
+		return null;
+	}
 
+	const email = nonEmptyString(user?.email) ?? nonEmptyString(params.credential.email);
+	const displayName = nonEmptyString(user?.name) ?? nonEmptyString(user?.userName);
+	const planType = nonEmptyString(credits?.planId);
 	return {
-		provider: COMMANDCODE_PROVIDER,
+		provider: PROVIDER,
 		fetchedAt: Date.now(),
-		// An account without an active subscription reports no metered window;
-		// an empty report leaves the spend readout in place instead of claiming
-		// a limit that does not exist.
 		limits,
 		metadata: {
-			...(account?.email ? { email: account.email } : {}),
-			...(account?.user ? { user: account.user } : {}),
+			...(userId ? { accountId: userId } : {}),
+			...(email ? { email } : {}),
+			...(displayName ? { user: displayName } : {}),
+			...(orgId ? { orgId } : {}),
+			...(orgName ? { orgName } : {}),
+			...(planType ? { planType } : {}),
 			endpoint: creditsUrl,
 		},
-		raw: credits.payload,
+		raw: { whoami, credits: creditsBody },
 	};
 }
 
 export const commandCodeUsageProvider: UsageProvider = {
-	id: COMMANDCODE_PROVIDER,
+	id: PROVIDER,
 	fetchUsage: fetchCommandCodeUsage,
-	supports: params => params.provider === COMMANDCODE_PROVIDER && bearerToken(params.credential) !== undefined,
+	supports: params =>
+		params.provider === PROVIDER &&
+		(nonEmptyString(params.credential.accessToken) ?? nonEmptyString(params.credential.apiKey)) !== undefined,
 	validatesCredentials: true,
+};
+
+/** Ranks Command Code accounts by the 5-hour and weekly credit windows. */
+export const commandCodeRankingStrategy: CredentialRankingStrategy = {
+	findWindowLimits: report => ({
+		primary: report.limits.find(limit => limit.window?.id === "5h"),
+		secondary: report.limits.find(limit => limit.window?.id === "7d"),
+	}),
+	windowDefaults: {
+		primaryMs: 5 * HOUR_MS,
+		secondaryMs: WEEK_MS,
+	},
 };

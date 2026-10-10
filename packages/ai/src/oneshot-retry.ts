@@ -182,7 +182,10 @@ export async function retryTransientCompletion(
 
 		const errorId =
 			thrown !== undefined ? AIError.classify(thrown) : AIError.classifyMessage(message as AssistantMessage);
-		if (AIError.is(errorId, AIError.Flag.Abort) || AIError.is(errorId, AIError.Flag.UserInterrupt)) {
+		if (
+			(AIError.is(errorId, AIError.Flag.Abort) && !AIError.is(errorId, AIError.Flag.Transient)) ||
+			AIError.is(errorId, AIError.Flag.UserInterrupt)
+		) {
 			if (thrown !== undefined) throw thrown;
 			return message as AssistantMessage;
 		}

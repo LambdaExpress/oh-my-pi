@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import * as path from "node:path";
 import { type MuxConnectParams, muxServerKey } from "@oh-my-pi/pi-coding-agent/lsp/mux/protocol";
 
 const base: MuxConnectParams = {
@@ -8,8 +9,14 @@ const base: MuxConnectParams = {
 };
 
 describe("muxServerKey", () => {
-	it("is stable across equal-by-value handshake parameters", () => {
-		expect(muxServerKey({ ...base })).toBe(muxServerKey({ ...base, args: [...base.args] }));
+	it("reuses the same workspace identity across equivalent path spellings", () => {
+		const cwd = process.cwd();
+		const key = muxServerKey({ ...base, cwd });
+		expect(muxServerKey({ ...base, cwd: `${cwd}${path.sep}.` })).toBe(key);
+		if (process.platform === "win32") {
+			expect(muxServerKey({ ...base, cwd: cwd.replaceAll("\\", "/") })).toBe(key);
+			expect(muxServerKey({ ...base, cwd: cwd.toUpperCase() })).toBe(key);
+		}
 	});
 
 	it("still separates servers by command and by cwd", () => {

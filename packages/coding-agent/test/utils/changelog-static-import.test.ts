@@ -18,6 +18,7 @@ const repoRoot = path.resolve(import.meta.dir, "..", "..", "..", "..");
 const heapProbePath = path.resolve(import.meta.dir, "..", "fixtures", "changelog-static-import-heap-probe.ts");
 const bundleProbePath = path.resolve(import.meta.dir, "..", "fixtures", "changelog-bundle-fallback-probe.ts");
 const utilsStubPath = path.resolve(import.meta.dir, "..", "fixtures", "changelog-utils-stub.ts");
+const translationRuntimePath = path.join(repoRoot, "packages", "tui", "src", "i18n.ts");
 
 async function runProbe(command: string[], cwd?: string): Promise<BundleProbeResult> {
 	const proc = Bun.spawn(command, {
@@ -36,7 +37,8 @@ async function runProbe(command: string[], cwd?: string): Promise<BundleProbeRes
 
 /**
  * Swap `@oh-my-pi/pi-utils` and the changelog module's `../config` import for a
- * dependency-free stub. Both pull the native addon loader into the bundle graph, and
+ * dependency-free stub, and use the standalone translation runtime without the
+ * settings-owning host adapter. Those host dependencies pull the native addon loader into the bundle graph, and
  * that loader resolves `pi_natives.<platform>.node` relative to the emitted artifact,
  * so any probe written outside the repo fails to start. The subject under test is
  * emitted-asset resolution, not native loading.
@@ -47,7 +49,12 @@ function changelogUtilsStubPlugin(): BunPlugin {
 		setup(build) {
 			build.onResolve({ filter: /^@oh-my-pi\/pi-utils$/ }, () => ({ path: utilsStubPath }));
 			build.onResolve({ filter: /^\.\.\/config$/ }, args =>
-				args.importer.endsWith("/utils/changelog.ts") ? { path: utilsStubPath } : undefined,
+				args.importer.replaceAll("\\", "/").endsWith("/utils/changelog.ts") ? { path: utilsStubPath } : undefined,
+			);
+			build.onResolve({ filter: /^\.\.\/i18n$/ }, args =>
+				args.importer.replaceAll("\\", "/").endsWith("/utils/changelog.ts")
+					? { path: translationRuntimePath }
+					: undefined,
 			);
 		},
 	};
@@ -124,7 +131,10 @@ describe("changelog static import resources", () => {
 	test("reads the emitted changelog asset from a compiled binary", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-changelog-compiled-"));
 		try {
-			const binaryPath = path.join(tempDir, "changelog-probe");
+			const binaryPath = path.join(
+				tempDir,
+				process.platform === "win32" ? "changelog-probe.exe" : "changelog-probe",
+			);
 			const unrelatedCwd = path.join(tempDir, "cwd");
 			const missingPackageChangelogPath = path.join(tempDir, "missing-package", "CHANGELOG.md");
 			await fs.mkdir(unrelatedCwd);

@@ -3,6 +3,7 @@ import { untilAborted } from "@oh-my-pi/pi-utils";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import type { ElementHandle, KeyInput, MouseButton, Page } from "puppeteer-core";
 import { throwIfAborted } from "../tool-errors";
+import { isObservationElementVisible } from "./query-handlers";
 
 /** Options accepted by coordinate-based mouse clicks. */
 export interface ClickAtOptions {
@@ -119,6 +120,33 @@ interface PageGlobals {
 	DragEvent: new (type: string, options: { bubbles: boolean; cancelable: boolean; dataTransfer: unknown }) => unknown;
 }
 
+interface FillElement {
+	tagName: string;
+	type?: string;
+	value: string;
+	innerText: string;
+	isContentEditable: boolean;
+	isConnected: boolean;
+	readOnly?: boolean;
+	disabled?: boolean;
+	matches(selector: string): boolean;
+	closest(selector: string): FillElement | null;
+	getAttribute(name: string): string | null;
+	focus(): void;
+	dispatchEvent(event: unknown): boolean;
+	ownerDocument: {
+		defaultView: {
+			HTMLInputElement: { prototype: object };
+			HTMLTextAreaElement: { prototype: object };
+			Event: new (type: string, options: { bubbles: boolean; composed?: boolean }) => unknown;
+			InputEvent: new (
+				type: string,
+				options: { bubbles: boolean; composed: boolean; inputType: string; data: string },
+			) => unknown;
+		} | null;
+	};
+}
+
 function requireFiniteNumber(value: number, label: string): void {
 	if (!Number.isFinite(value)) throw new ToolError(`${label} must be a finite number`);
 }
@@ -221,73 +249,122 @@ export async function clickElement(
 }
 
 /**
- * Focus, clear any existing value, then retype.
+ * Replace an editable value and notify the page's input/change listeners.
  *
- * Every step is a DOM evaluation or an input dispatch, so this works on tabs
- * that produce no animation frames — unlike Puppeteer's `Locator.fill`, whose
- * viewport/stability/enabled preconditions wait on `requestAnimationFrame`
- * and `IntersectionObserver` callbacks that a backgrounded headless tab never
- * delivers (#12892).
- *
- * `type` overrides how the value is entered, for callers that need their own
- * abort-aware keyboard loop.
+ * Relay input dispatch can acknowledge keystrokes without editing an unfocused
+ * browser window. Use the native setter rather than an element's framework value
+ * tracker, and verify the result after event handlers have run. Neither step waits
+ * for animation frames or IntersectionObserver callbacks in background tabs.
  */
-export async function fillViaHandle(
-	handle: ElementHandle,
-	value: string,
-	signal?: AbortSignal,
-	type: (text: string) => Promise<unknown> = text => handle.type(text, { delay: 0 }),
-): Promise<void> {
-	await untilAborted(signal, () =>
-		handle.evaluate(el => {
-			const node = el as unknown as {
-				value?: string;
-				focus?: () => void;
-				isContentEditable?: boolean;
-				innerText?: string;
-			};
-			node.focus?.();
-			if (node.isContentEditable) node.innerText = "";
-			else if ("value" in node) node.value = "";
-		}),
+export async function fillViaHandle(handle: ElementHandle, value: string, signal?: AbortSignal): Promise<void> {
+	const reason = await untilAborted(signal, () =>
+		handle.evaluate((el, text) => {
+			const node = el as unknown as FillElement;
+			if (!node.isConnected) return "detached";
+			if (node.disabled || node.matches(":disabled") || node.getAttribute("aria-disabled") === "true") {
+				return "disabled";
+			}
+			if (node.closest("[inert]")) return "inert";
+			if (node.readOnly || node.getAttribute("readonly") !== null || node.getAttribute("aria-readonly") === "true") {
+				return "readonly";
+			}
+			const tag = node.tagName.toLowerCase();
+			const textInput =
+				tag === "input" &&
+				!["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"].includes(
+					node.type ?? "text",
+				);
+			if (!textInput && tag !== "textarea" && !node.isContentEditable) return "not-fillable";
+			const win = node.ownerDocument.defaultView;
+			if (!win) return "detached";
+			node.focus();
+			if (!node.isConnected) return "detached";
+			if (node.isContentEditable) {
+				node.innerText = text;
+			} else {
+				const prototype = tag === "textarea" ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
+				const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+				if (!setter) return "not-fillable";
+				setter.call(node, text);
+			}
+			node.dispatchEvent(
+				new win.InputEvent("input", {
+					bubbles: true,
+					composed: true,
+					inputType: "insertReplacementText",
+					data: text,
+				}),
+			);
+			node.dispatchEvent(new win.Event("change", { bubbles: true }));
+			return null;
+		}, value),
 	);
-	await untilAborted(signal, () => type(value));
+	if (reason) throw new ToolError(`fill blocked: target is ${reason}`);
+	const matches = await untilAborted(signal, () =>
+		handle.evaluate((el, text) => {
+			const node = el as unknown as FillElement;
+			return node.isConnected && (node.isContentEditable ? node.innerText : node.value) === text;
+		}, value),
+	);
+	if (!matches) throw new ToolError("fill failed: target did not retain the requested value");
 }
 
 /** Resolve text-query matches to the first visible clickable candidate in document order. */
 export async function resolveActionableQueryHandlerClickTarget(
 	handles: ElementHandle[],
+	signal?: AbortSignal,
 ): Promise<ElementHandle | null> {
-	const candidates: Array<{ handle: ElementHandle; x: number; y: number; owned: boolean }> = [];
-	for (const handle of handles) {
-		let candidate = handle;
-		let owned = false;
-		try {
-			const proxy = await handle.evaluateHandle(el =>
-				(el as Element).closest('a,button,[role="button"],[role="link"],input[type="button"],input[type="submit"]'),
-			);
-			const element = proxy.asElement();
-			if (element) {
-				candidate = element;
-				owned = candidate !== handle;
-			} else await proxy.dispose();
-			const rect = (await candidate.evaluate(el => {
-				const box = (el as Element).getBoundingClientRect();
-				return { x: box.left, y: box.top, width: box.width, height: box.height };
-			})) as { x: number; y: number; width: number; height: number };
-			if (rect.width >= 1 && rect.height >= 1 && (await candidate.isIntersectingViewport())) {
-				candidates.push({ handle: candidate, x: rect.x, y: rect.y, owned });
-			} else if (owned) await candidate.dispose().catch(() => undefined);
-		} catch {
-			if (owned) await candidate.dispose().catch(() => undefined);
+	const candidates: Array<{ handle: ElementHandle; inViewport: boolean; owned: boolean }> = [];
+	let winner: ElementHandle | null = null;
+	try {
+		for (const handle of handles) {
+			throwIfAborted(signal);
+			let candidate = handle;
+			let owned = false;
+			try {
+				const proxy = await untilAborted(signal, () =>
+					handle.evaluateHandle(el =>
+						(el as Element).closest(
+							'a,button,[role="button"],[role="link"],input[type="button"],input[type="submit"]',
+						),
+					),
+				);
+				const element = proxy.asElement();
+				if (element) {
+					candidate = element;
+					owned = candidate !== handle;
+				} else await proxy.dispose();
+				const enabled = await untilAborted(signal, () =>
+					candidate.evaluate(el => !el.matches(":disabled") && el.getAttribute("aria-disabled") !== "true"),
+				);
+				const visible =
+					enabled &&
+					(await untilAborted(signal, () =>
+						candidate.evaluate(isObservationElementVisible, { viewportOnly: false, interactive: true }),
+					));
+				if (visible) {
+					const inViewport = await untilAborted(signal, () =>
+						candidate.evaluate(isObservationElementVisible, { viewportOnly: true, interactive: true }),
+					);
+					candidates.push({ handle: candidate, inViewport, owned });
+				} else if (owned) await candidate.dispose().catch(() => undefined);
+			} catch {
+				if (owned) await candidate.dispose().catch(() => undefined);
+				throwIfAborted(signal);
+			}
 		}
+		// Prefer an already visible match, but keep offscreen controls for clickElement
+		// to scroll into view. Layout order must not override document-order selectors.
+		candidates.sort((a, b) => Number(b.inViewport) - Number(a.inViewport));
+		winner = candidates[0]?.handle ?? null;
+		return winner;
+	} finally {
+		await Promise.all(
+			candidates
+				.filter(candidate => candidate.owned && candidate.handle !== winner)
+				.map(candidate => candidate.handle.dispose().catch(() => undefined)),
+		);
 	}
-	candidates.sort((a, b) => a.y - b.y || a.x - b.x);
-	const winner = candidates.shift();
-	for (const candidate of candidates) {
-		if (candidate.owned) await candidate.handle.dispose().catch(() => undefined);
-	}
-	return winner?.handle ?? null;
 }
 
 /** Click the actionable match chosen for a Puppeteer text query handler. */
@@ -305,7 +382,7 @@ export async function clickQueryHandlerText(
 		const handles = (await untilAborted(clickSignal, () => page.$$(selector))) as ElementHandle[];
 		let target: ElementHandle | null = null;
 		try {
-			target = await resolveActionableQueryHandlerClickTarget(handles);
+			target = await resolveActionableQueryHandlerClickTarget(handles, clickSignal);
 			if (!target) {
 				await untilAborted(clickSignal, () => Bun.sleep(50));
 				continue;

@@ -2,7 +2,11 @@ import { t } from "../../i18n";
 import { type SgrMouseEvent } from "../../mouse";
 import { TabBar } from "../../components/tab-bar";
 import { getTabBarTheme } from "../../chrome/shared";
-import { SignInTab } from "./sign-in";
+import { editorKey } from "../../chrome/keybinding-hints";
+import { col as nativeCol } from "../../native/describe";
+import { Memo } from "../../native/memo";
+import type { DescribeContext, NativeNode, NativeUiEvent } from "../../native/node";
+import { SignInScene } from "./sign-in";
 import type { SetupScene, SetupSceneController, SetupSceneHost, SetupTab } from "./types";
 import { WebSearchTab } from "./web-search";
 
@@ -14,15 +18,20 @@ import { WebSearchTab } from "./web-search";
  */
 class ProvidersSceneController implements SetupSceneController {
 	title = t("Set up your providers");
-	subtitle = t("Sign in and pick a web search provider. Press Esc when you're done.");
+	get subtitle(): string {
+		return t("Sign in and pick a web search provider. Press {key} when you're done.", {
+			key: editorKey("tui.select.cancel"),
+		});
+	}
 
 	#tabs: SetupTab[];
 	#tabBar: TabBar;
+	#native = new Memo();
 	/** Lines the tab bar occupied in the last render (body starts one blank line below). */
 	#tabRowCount = 1;
 
 	constructor(host: SetupSceneHost) {
-		this.#tabs = [new SignInTab(host), new WebSearchTab(host)];
+		this.#tabs = [new SignInScene(host), new WebSearchTab(host)];
 		this.#tabBar = new TabBar(
 			t("Providers"),
 			this.#tabs.map(tab => ({ id: tab.id, label: tab.label })),
@@ -43,6 +52,8 @@ class ProvidersSceneController implements SetupSceneController {
 	}
 
 	invalidate(): void {
+		this.#native.clear();
+		this.#tabBar.invalidate();
 		for (const tab of this.#tabs) tab.invalidate();
 	}
 
@@ -92,6 +103,20 @@ class ProvidersSceneController implements SetupSceneController {
 		this.#tabRowCount = tabLines.length;
 		const tabBudget = maxLines === undefined ? undefined : Math.max(1, maxLines - tabLines.length - 1);
 		return [...tabLines, "", ...this.#activeTab().render(width, tabBudget)];
+	}
+
+	/** Own the native tab strip so its pointer actions obey the same modal guard as keyboard input. */
+	describe(cx: DescribeContext): NativeNode {
+		const tabs = this.#tabBar.describe(cx);
+		const active = this.#activeTab();
+		return this.#native.get([tabs, active], () =>
+			nativeCol([{ ...tabs, key: "tabs" }, active], { gap: "sm", role: "omp.setup.providers" }),
+		);
+	}
+
+	handleNativeEvent(event: NativeUiEvent): void {
+		if (this.#activeTab().modal) return;
+		if (event.key === "tabs" || event.key.startsWith("tabs/")) this.#tabBar.handleNativeEvent(event);
 	}
 
 	dispose(): void {

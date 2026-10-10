@@ -3,13 +3,14 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ImageContent, Model, OpenAICompat } from "@oh-my-pi/pi-ai";
+import { sendsImageInputOnWire } from "@oh-my-pi/pi-ai/providers/vision-guard";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
-	needsImageDescriptionForModel,
 	SessionProviderBoundary,
 	type SessionProviderBoundaryHost,
 } from "@oh-my-pi/pi-coding-agent/session/session-provider-boundary";
+import { shouldDescribeImagesForTextModel } from "@oh-my-pi/pi-coding-agent/utils/image-vision-fallback";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 // 1x1 transparent PNG.
@@ -36,6 +37,21 @@ function deepseekFlash(compat?: OpenAICompat): Model<"openai-completions"> {
 		contextWindow: 1_000_000,
 		maxTokens: 384_000,
 		...(compat ? { compat } : {}),
+	});
+}
+
+function textOnlyModel(): Model<"openai-completions"> {
+	return buildModel({
+		id: "deepseek-v4-pro",
+		name: "DeepSeek V4 Pro",
+		api: "openai-completions",
+		provider: "deepseek",
+		baseUrl: "https://api.deepseek.com",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0.435, output: 0.87, cacheRead: 0.003625, cacheWrite: 0 },
+		contextWindow: 1_000_000,
+		maxTokens: 384_000,
 	});
 }
 
@@ -73,7 +89,7 @@ describe("image description gate", () => {
 		expect(model.input).toEqual(["text", "image"]);
 		expect(model.compat.stripImageInput).toBe(true);
 
-		expect(needsImageDescriptionForModel(model, Settings.isolated())).toBe(true);
+		expect(shouldDescribeImagesForTextModel(model, Settings.isolated())).toBe(true);
 		expect(await boundary(model).buildImageDescriptionNotice([image])).toBeDefined();
 	});
 
@@ -81,31 +97,43 @@ describe("image description gate", () => {
 		const model = deepseekFlash({ stripImageInput: false });
 		expect(model.compat.stripImageInput).toBe(false);
 
-		expect(needsImageDescriptionForModel(model, Settings.isolated())).toBe(false);
+		expect(shouldDescribeImagesForTextModel(model, Settings.isolated())).toBe(false);
 		expect(await boundary(model).buildImageDescriptionNotice([image])).toBeUndefined();
 	});
 
-	it("keeps describing for text-only models and honors the image settings", async () => {
-		const model = buildModel({
-			id: "deepseek-v4-pro",
-			name: "DeepSeek V4 Pro",
-			api: "openai-completions",
-			provider: "deepseek",
-			baseUrl: "https://api.deepseek.com",
-			reasoning: true,
-			input: ["text"],
-			cost: { input: 0.435, output: 0.87, cacheRead: 0.003625, cacheWrite: 0 },
-			contextWindow: 1_000_000,
-			maxTokens: 384_000,
-		});
+	it("keeps the strip guard when the native transport advertises image delivery", async () => {
+		const model: Model<"openai-completions"> = { ...deepseekFlash(), transport: "pi-native" };
+		expect(sendsImageInputOnWire(model)).toBe(true);
+		expect(model.compat.stripImageInput).toBe(true);
 
-		expect(needsImageDescriptionForModel(model, Settings.isolated())).toBe(true);
-		expect(needsImageDescriptionForModel(model, Settings.isolated({ "images.describeForTextModels": false }))).toBe(
-			false,
-		);
-		expect(needsImageDescriptionForModel(model, Settings.isolated({ "images.blockImages": true }))).toBe(false);
-		expect(
-			await boundary(model, Settings.isolated({ "images.blockImages": true })).buildImageDescriptionNotice([image]),
-		).toBeUndefined();
+		expect(shouldDescribeImagesForTextModel(model, Settings.isolated())).toBe(true);
+		expect(await boundary(model).buildImageDescriptionNotice([image])).toBeDefined();
+	});
+
+	it("keeps describing for text-only models", async () => {
+		const model = textOnlyModel();
+
+		expect(shouldDescribeImagesForTextModel(model, Settings.isolated())).toBe(true);
+		expect(await boundary(model).buildImageDescriptionNotice([image])).toBeDefined();
+	});
+
+	it("honors the description opt-out for text-only and stripped-image models", async () => {
+		const settings = Settings.isolated({ "images.describeForTextModels": false });
+		for (const model of [textOnlyModel(), deepseekFlash()]) {
+			expect(shouldDescribeImagesForTextModel(model, settings)).toBe(false);
+			expect(await boundary(model, settings).buildImageDescriptionNotice([image])).toBeUndefined();
+		}
+	});
+
+	it("lets image blocking win over the description preference", async () => {
+		const settings = Settings.isolated({ "images.blockImages": true, "images.describeForTextModels": true });
+		for (const model of [textOnlyModel(), deepseekFlash()]) {
+			expect(shouldDescribeImagesForTextModel(model, settings)).toBe(false);
+			expect(await boundary(model, settings).buildImageDescriptionNotice([image])).toBeUndefined();
+		}
+	});
+
+	it("does not describe images without an active model", () => {
+		expect(shouldDescribeImagesForTextModel(undefined, Settings.isolated())).toBe(false);
 	});
 });

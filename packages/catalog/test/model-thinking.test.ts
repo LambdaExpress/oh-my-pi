@@ -248,6 +248,11 @@ describe("model thinking derivation", () => {
 		// aggregator host (DeepSeek's docs advertise `low` for both V4 SKUs).
 		expect(getSupportedEfforts(pro)).toEqual([Effort.Low, Effort.High, Effort.Max]);
 		expect(staleFlash.thinking?.efforts).toEqual([Effort.Low, Effort.High, Effort.Max]);
+		expect(requireSupportedEffort(staleFlash, Effort.Max)).toBe(Effort.Max);
+		expect(clampThinkingLevelForModel(staleFlash, Effort.Medium)).toBe(Effort.Low);
+		expect(clampThinkingLevelForModel(staleFlash, Effort.XHigh)).toBe(Effort.High);
+		expect(() => requireSupportedEffort(staleFlash, Effort.Medium)).toThrow();
+		expect(() => requireSupportedEffort(staleFlash, Effort.XHigh)).toThrow();
 	});
 
 	it("derives Anthropic adaptive thinking for SAP hai-proxy version-first Claude ids", () => {
@@ -842,6 +847,19 @@ describe("model thinking derivation", () => {
 		expect(direct.compat.supportsTurnScopedSystem).toBe(true);
 	});
 
+	it("keeps Sonnet 5.5 binding controls off Vertex, which rejects thinking.block_binding", () => {
+		const direct = createModel({ id: "claude-sonnet-5-5", api: "anthropic-messages", provider: "anthropic" });
+		const vertex = createModel({
+			id: "claude-sonnet-5-5@default",
+			api: "anthropic-messages",
+			provider: "google-vertex",
+		});
+
+		expect(direct.compat.supportsThinkingBindingControls).toBe(true);
+		expect(vertex.compat.supportsThinkingBindingControls).toBe(false);
+		expect(vertex.compat.supportsPerMessageEffort).toBe(true);
+	});
+
 	it("uses Bedrock Fable 5.1's five supported effort levels", () => {
 		const ids = [
 			"global.anthropic.claude-fable-5-1",
@@ -909,16 +927,16 @@ describe("model thinking derivation", () => {
 				createModel({ id, api: "anthropic-messages", provider: "anthropic" }).compat.supportsServerCompaction,
 			).toBe(false);
 		}
-		expect(
-			createModel({ id: "claude-sonnet-4-6", api: "anthropic-messages", provider: "google-vertex" }).compat
-				.supportsServerCompaction,
-		).toBe(true);
-		for (const provider of ["amazon-bedrock", "opencode-zen"]) {
+		for (const provider of ["google-vertex", "amazon-bedrock", "bedrock-mantle"]) {
 			expect(
 				createModel({ id: "claude-sonnet-4-6", api: "anthropic-messages", provider }).compat
 					.supportsServerCompaction,
-			).toBe(false);
+			).toBe(true);
 		}
+		expect(
+			createModel({ id: "claude-sonnet-4-6", api: "anthropic-messages", provider: "opencode-zen" }).compat
+				.supportsServerCompaction,
+		).toBe(false);
 	});
 
 	it("classifies OpenAI-schema Bedrock models as effort, leaving gpt-oss on budget", () => {
@@ -936,6 +954,40 @@ describe("model thinking derivation", () => {
 			createModel({ id: "openai.gpt-oss-120b", api: "bedrock-converse-stream", provider: "amazon-bedrock" }).thinking
 				?.mode,
 		).toBe("budget");
+	});
+
+	it("keeps Bedrock Grok 4.6 on the native effort ladder including xhigh", () => {
+		// Regression: dotted Bedrock ids classified unknown and inherited
+		// budget + [minimal,low,medium,high], so --thinking xhigh snapped to high
+		// and Converse sent budget_tokens instead of reasoning.effort.
+		for (const id of ["us.xai.grok-4.6", "global.xai.grok-4.6", "xai.grok-4.6"]) {
+			const model = createModel({ id, api: "bedrock-converse-stream", provider: "amazon-bedrock" });
+			expect(model.thinking).toEqual({
+				mode: "effort",
+				efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+			});
+			expect(clampThinkingLevelForModel(model, Effort.XHigh)).toBe(Effort.XHigh);
+			expect(clampThinkingLevelForModel(model, Effort.Max)).toBe(Effort.XHigh);
+			expect(clampThinkingLevelForModel(model, Effort.Minimal)).toBe(Effort.Low);
+		}
+	});
+
+	it("keeps Bedrock Grok 4.3 on the budget wire", () => {
+		const model = createModel({ id: "xai.grok-4.3", api: "bedrock-converse-stream", provider: "amazon-bedrock" });
+		expect(model.thinking?.mode).toBe("budget");
+	});
+
+	it("keeps Bedrock Opus 5.5 on the first-party adaptive ladder including xhigh and max", () => {
+		// The class >=4.7 xhigh/max ladder omitted amazon-bedrock, and the
+		// Bedrock-only efforts rule stopped at <5.1, so --thinking max snapped
+		// to high while Converse already accepted adaptive output_config.effort.
+		for (const id of ["us.anthropic.claude-opus-5-5", "global.anthropic.claude-opus-5-5"]) {
+			const model = createModel({ id, api: "bedrock-converse-stream", provider: "amazon-bedrock" });
+			expect(model.thinking?.mode).toBe("anthropic-adaptive");
+			expect(model.thinking?.efforts).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max]);
+			expect(clampThinkingLevelForModel(model, Effort.XHigh)).toBe(Effort.XHigh);
+			expect(clampThinkingLevelForModel(model, Effort.Max)).toBe(Effort.Max);
+		}
 	});
 
 	it("backfills wire facts onto explicit thinking, explicit values winning", () => {
@@ -1045,17 +1097,22 @@ describe("model thinking derivation", () => {
 	});
 
 	it("bakes the wire-exact five-tier low..max ladder on GPT-5.6 wire-effort APIs", () => {
-		const codex = createModel({
-			id: "gpt-5.6-sol",
-			api: "openai-codex-responses",
-			provider: "openai-codex",
-		});
+		for (const [api, provider] of [
+			["openai-completions", "openai"],
+			["openai-responses", "openai"],
+			["openai-codex-responses", "openai-codex"],
+			["azure-openai-responses", "azure"],
+			["openrouter", "openrouter"],
+			["bedrock-converse-stream", "amazon-bedrock"],
+		] as const) {
+			const model = createModel({ id: "gpt-5.6-sol", api, provider });
 
-		expect(codex.thinking).toEqual({
-			mode: "effort",
-			efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
-		});
-		expect(requireSupportedEffort(codex, Effort.Max)).toBe(Effort.Max);
+			expect(model.thinking).toEqual({
+				mode: "effort",
+				efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+			});
+			expect(requireSupportedEffort(model, Effort.Max)).toBe(Effort.Max);
+		}
 
 		const futureGpt = createModel({
 			id: "gpt-5.7",
@@ -1110,7 +1167,7 @@ describe("model thinking derivation", () => {
 		});
 		expect(gpt55.thinking?.effortMap).toBeUndefined();
 		expect(clampThinkingLevelForModel(gpt55, Effort.Max)).toBe(Effort.XHigh);
-		expect(() => requireSupportedEffort(gpt55, Effort.Max)).toThrow(/Supported efforts: low, medium, high, xhigh/);
+		expect(() => requireSupportedEffort(gpt55, Effort.Max)).toThrow();
 
 		const nonWireGpt56 = createModel({
 			id: "gpt-5.6-sol",
@@ -1118,6 +1175,8 @@ describe("model thinking derivation", () => {
 			provider: "vercel",
 		});
 		expect(nonWireGpt56.thinking?.efforts).not.toContain(Effort.Max);
+		expect(() => requireSupportedEffort(nonWireGpt56, Effort.Max)).toThrow();
+		expect(clampThinkingLevelForModel(nonWireGpt56, Effort.Max)).toBe(Effort.XHigh);
 
 		// Devin selects effort by routing to per-tier sibling model ids, never
 		// via a wire reasoning.effort field — no effort map may attach.
@@ -1142,6 +1201,7 @@ describe("model thinking derivation", () => {
 
 		expect(devin.thinking?.effortMap).toBeUndefined();
 		expect(devin.thinking?.efforts).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max]);
+		expect(requireSupportedEffort(devin, Effort.Max)).toBe(Effort.Max);
 	});
 	it("classifies Z.ai GLM-5.2 on the anthropic-messages coding endpoint as budget-effort with high/max", () => {
 		// Z.ai's anthropic-messages proxy (api.z.ai/api/anthropic) serves
@@ -1541,6 +1601,11 @@ describe("Qwen 3.8 local template effort ladder", () => {
 		});
 		expect(qwen36.compat.qwenTemplateReasoningEffort).toBe(false);
 		expect(qwen36.thinking?.requiresEffort).toBeUndefined();
+		// Pre-3.8 templates only toggle thinking, so every selection collapses
+		// onto one on-rung instead of advertising inert low..max tiers (#13454).
+		expect(qwen36.thinking?.efforts).toEqual([Effort.High]);
+		expect(clampThinkingLevelForModel(qwen36, Effort.Low)).toBe(Effort.High);
+		expect(clampThinkingLevelForModel(qwen36, Effort.Max)).toBe(Effort.High);
 
 		// Local Ollama renders its own (Go) templates and keeps the generic local fallback ladder.
 		const ollama = createModel({

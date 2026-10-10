@@ -15,9 +15,11 @@ use std::{
 	os::unix::ffi::{OsStrExt, OsStringExt},
 };
 
+#[cfg(unix)]
+use pi_walker::FollowLinks;
 use pi_walker::{
-	CompiledWalkGlob, Entry, EntryVisitor, FollowLinks, ParallelWalkControl, WalkControl, WalkError,
-	WalkFilter, WalkOptions, WalkOrder, WalkRequest, WalkStatus, walk_entries,
+	CompiledWalkGlob, Entry, EntryVisitor, ParallelWalkControl, WalkControl, WalkError, WalkFilter,
+	WalkOptions, WalkOrder, WalkRequest, WalkStatus, walk_entries,
 };
 
 struct TempTree {

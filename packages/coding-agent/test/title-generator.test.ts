@@ -15,9 +15,11 @@ import {
 	setExtensionTerminalTitle,
 	setSessionTerminalTitle,
 	setTerminalTitle,
+	setTerminalTitlePullRequest,
 	setTerminalTitleSpinnerStyle,
 	setTerminalTitleState,
 } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
+import { setNativeRendering } from "@oh-my-pi/pi-tui/native/state";
 import { isWsl, logger, setTerminalHeadless } from "@oh-my-pi/pi-utils";
 import { mockWindowsConsoleTitle, type WindowsConsoleTitleMock } from "./terminal-title-test-utils";
 
@@ -790,25 +792,8 @@ describe("title generator", () => {
 	it("falls back to the current model when the online title model returns a provider error", async () => {
 		const titleModel = getModelOrThrow("claude-haiku-4-5");
 		const currentModel = getModelOrThrow("claude-sonnet-4-5");
-		const settings = {
-			get(path: string) {
-				if (path === "providers.tinyModel") return "online";
-				return undefined;
-			},
-			getModelRole(role: string) {
-				return role === "tiny" ? `${titleModel.provider}/${titleModel.id}` : undefined;
-			},
-			getStorage() {
-				return undefined;
-			},
-		} as never;
-		const registry = {
-			getAvailable: () => [titleModel, currentModel],
-			getApiKey: async () => "test-key",
-			getApiKeyForProvider: async () => "test-key",
-			authStorage: { rotateSessionCredential: async () => false },
-			resolver: () => async () => "test-key",
-		} as never;
+		const settings = createSettings(titleModel);
+		const registry = createRegistry(titleModel, [titleModel, currentModel]);
 		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockImplementation(async model => {
 			if (model === titleModel) {
 				return {
@@ -1325,5 +1310,29 @@ describe("terminal title runtime", () => {
 		expect(last).toBeDefined();
 		expect(last).toContain("my-session");
 		expectWorkingSeparator(last, "my-session");
+	});
+
+	it("titles the tab with the bare session name while a TSP terminal renders, and restores the run state after", () => {
+		setSessionTerminalTitle("Ack path refactor");
+		setTerminalTitleState("working");
+		try {
+			setNativeRendering(true);
+			resetEmitted();
+			// The terminal shows run state itself: no brand, no spinner ticks.
+			vi.advanceTimersByTime(400);
+			setTerminalTitlePullRequest(412);
+			expect(emittedTitles()).toEqual(["Ack path refactor · #412"]);
+
+			setSessionTerminalTitle("Renamed");
+			expect(emittedTitles().at(-1)).toBe("Renamed · #412");
+			setSessionTerminalTitle(undefined);
+			setTerminalTitlePullRequest(undefined);
+			expect(emittedTitles().at(-1)).toBe("omp");
+			setSessionTerminalTitle("Renamed");
+		} finally {
+			setNativeRendering(false);
+			setTerminalTitlePullRequest(undefined);
+		}
+		expectWorkingSeparator(emittedTitles().at(-1), "Renamed");
 	});
 });

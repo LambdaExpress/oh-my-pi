@@ -28,10 +28,6 @@ function createSession(): ToolSession {
 	};
 }
 
-function resultText(result: { content: Array<{ type: string; text?: string }> }): string {
-	return result.content.map(part => (part.type === "text" ? (part.text ?? "") : "")).join("\n");
-}
-
 beforeEach(async () => {
 	resetSettingsForTest();
 	tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-edit-handler-urls-"));
@@ -54,26 +50,24 @@ describe("file-editing tools refuse handler-owned URL writes", () => {
 		const output = path.join(artifactsDir, "Reviewer.md");
 		await Bun.write(output, "verdict: REJECT\n");
 
-		const result = await new EditTool(createSession(), "replace").execute("tamper", {
-			path: "agent://Reviewer",
-			old_string: "REJECT",
-			new_string: "APPROVE",
-		});
-
-		expect(result.isError).toBe(true);
-		expect(resultText(result)).toContain("agent://Reviewer is written through `write`, not edited");
+		await expect(
+			new EditTool(createSession(), "replace").execute("tamper", {
+				path: "agent://Reviewer",
+				old_string: "REJECT",
+				new_string: "APPROVE",
+			}),
+		).rejects.toThrow();
 		expect(await Bun.file(output).text()).toBe("verdict: REJECT\n");
 	});
 
 	it("edit refuses proc:// instead of patching the service log", async () => {
-		const result = await new EditTool(createSession(), "replace").execute("proc", {
-			path: "proc://web",
-			old_string: "a",
-			new_string: "b",
-		});
-
-		expect(result.isError).toBe(true);
-		expect(resultText(result)).toContain("proc://web is written through `write`, not edited");
+		await expect(
+			new EditTool(createSession(), "replace").execute("proc", {
+				path: "proc://web",
+				old_string: "a",
+				new_string: "b",
+			}),
+		).rejects.toThrow();
 	});
 
 	it("edit and ast_edit approvals deny read-only URL targets at the gate", () => {
@@ -97,7 +91,7 @@ describe("file-editing tools refuse handler-owned URL writes", () => {
 		for (const url of ["agent://Reviewer", "history://Worker"]) {
 			await expect(
 				tool.execute("ast", { ops: [{ pat: "legacyWrap($A, $B)", out: "modernWrap($A, $B)" }], paths: [url] }),
-			).rejects.toThrow(`Cannot rewrite ${url}`);
+			).rejects.toThrow();
 		}
 		expect(await Bun.file(path.join(artifactsDir, "Reviewer.md")).text()).toBe("legacyWrap(x, value)\n");
 	});

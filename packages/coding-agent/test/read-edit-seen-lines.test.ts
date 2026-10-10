@@ -9,8 +9,8 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
-// A call whose arguments span several lines, so a structural read elides the
-// inner rows (3-4) and displays the rest.
+// A call whose arguments span several lines, so a selector can display its
+// final row without displaying the nested arguments.
 const SOURCE = [
 	"def draw(sheet, anchor, alpha, beta):",
 	"    add_native_hole_callout(sheet=sheet,",
@@ -36,16 +36,13 @@ function createSession(cwd: string): ToolSession {
 		getSessionFile: () => path.join(cwd, "session.jsonl"),
 		getSessionSpawns: () => "*",
 		getArtifactsDir: () => path.join(cwd, "artifacts"),
-		settings: Settings.isolated(),
+		settings: Settings.isolated({ "edit.enforceSeenLines": true }),
 	} as unknown as ToolSession;
 }
 
-// Regression: the hashline prompt promises that hunks anchored on lines a read
-// never displayed are rejected, but the seen-line guard shipped opt-in. With
-// the guard off, a hunk whose range fell inside an elided region was instead
-// "auto-repaired" — the syntax probe kept the row the range had selected and
-// spliced the body into the neighbouring call, silently and with valid syntax.
-describe("read → edit seen-line guard under default settings", () => {
+// An unseen anchor must be rejected rather than "auto-repaired" into a
+// neighbouring call, even when that unintended edit would have valid syntax.
+describe("read → edit seen-line guard", () => {
 	let cwd: string;
 	let file: string;
 
@@ -59,18 +56,16 @@ describe("read → edit seen-line guard under default settings", () => {
 		await removeWithRetries(cwd);
 	});
 
-	it("rejects a hunk anchored on a line the read elided", async () => {
+	it("rejects a hunk anchored on a line outside the read selector", async () => {
 		const session = createSession(cwd);
 		const read = textOutput(await new ReadTool(session).execute("read", { path: "draw.py:7-7" }));
-		expect(read.split("\n")[0]).toMatch(/^\[draw\.py#[0-9A-F]{4}\]$/);
-		expect(read).toContain("…");
 		expect(read).not.toContain("beta),");
 
 		const result = await new EditTool(session, "hashline").execute("edit", {
 			input: `${read.split("\n")[0]}\nPUT 4.=4:\n+            beta, gamma),\n`,
 		});
 
-		expect(textOutput(result)).toContain("never displayed");
+		expect(result.isError).toBe(true);
 		expect(await Bun.file(file).text()).toBe(SOURCE);
 	});
 

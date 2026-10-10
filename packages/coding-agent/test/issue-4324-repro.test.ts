@@ -7,8 +7,8 @@
  * and the parent only ever logged `tts subprocess exited with code 7`, with no
  * way to diagnose what actually blew up.
  *
- * The fix pipes stderr without starting a live read while the worker is idle;
- * after `onExit`, it drains the pipe, keeps the last 16 KiB in a bounded ring,
+ * The fix captures stderr without starting a live read while the worker is idle;
+ * after `onExit`, it drains the capture, keeps the last 16 KiB in a bounded ring,
  * and appends that tail to the `Error` surfaced to `onError` handlers. These
  * tests pin that contract so the exit-code-7 crash (and the next one) actually
  * shows up in `~/.omp/logs/omp.log` without regressing idle-worker shutdown.
@@ -60,10 +60,17 @@ describe("issue #4324 — worker subprocess stderr survives to the exit error", 
 	it("truncates a large stderr to the last ~16 KiB so a chatty runtime can't blow the parent up", async () => {
 		// Write well past the 16 KiB tail limit. A recognisable trailer must
 		// still land at the end so the diagnostic tail is what survives.
-		const filler = "A".repeat(64 * 1024);
 		const trailer = "FATAL: onnxruntime session run failed\n";
 		const sub = createWorkerSubprocess<FakeWorkerOutbound>({
-			spawnCommand: stderrExitCommand(filler + trailer, 7),
+			// Generate the payload inside the child rather than exceeding Windows'
+			// command-line limit with a 64 KiB argument.
+			spawnCommand: {
+				cmd: [
+					process.execPath,
+					"-e",
+					`process.stderr.write("A".repeat(64 * 1024) + ${JSON.stringify(trailer)}); process.exit(7);`,
+				],
+			},
 			env: {},
 			exitLabel: "tts subprocess",
 		});

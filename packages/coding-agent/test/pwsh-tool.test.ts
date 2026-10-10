@@ -5,8 +5,8 @@ import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { wrapToolWithMetaNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
-import { PwshTool, resolvePwshExecutable, shouldHidePwshWindow } from "@oh-my-pi/pi-coding-agent/tools/pwsh";
-import { Process } from "@oh-my-pi/pi-natives";
+import { PwshTool, resolvePwshExecutable } from "@oh-my-pi/pi-coding-agent/tools/pwsh";
+import { Process, ProcessStatus, PtySession } from "@oh-my-pi/pi-natives";
 
 const pwshPath = resolvePwshExecutable();
 const describeIfPwsh = pwshPath ? describe : describe.skip;
@@ -47,20 +47,6 @@ async function terminateRecordedProcess(pidPath: string): Promise<void> {
 	await fs.rm(pidPath, { force: true });
 }
 
-describe("shouldHidePwshWindow", () => {
-	it("hides PowerShell on Windows when the host has no inheritable console", () => {
-		expect(shouldHidePwshWindow({ platform: "win32", hostHasInheritableConsole: false })).toBe(true);
-	});
-
-	it("inherits an attached Windows console so native grandchildren do not allocate their own", () => {
-		expect(shouldHidePwshWindow({ platform: "win32", hostHasInheritableConsole: true })).toBe(false);
-	});
-
-	it("never sets the Win32-only hide flag off Windows", () => {
-		expect(shouldHidePwshWindow({ platform: "linux", hostHasInheritableConsole: false })).toBe(false);
-		expect(shouldHidePwshWindow({ platform: "darwin", hostHasInheritableConsole: false })).toBe(false);
-	});
-});
 describeIfPwsh("PwshTool", () => {
 	let tempDir: string;
 
@@ -98,6 +84,88 @@ describeIfPwsh("PwshTool", () => {
 		expect(text).toContain("Command exited with code 7");
 	});
 
+	it("captures readable parser diagnostics before executing any user statements", async () => {
+		const tool = new PwshTool(makeSession(tempDir), pwshPath ?? "pwsh");
+		const markerPath = path.join(tempDir, "parse-error-marker.txt");
+		const invalidLine = "Write-Output '中文诊断’s'";
+		const result = await tool.execute("call-pwsh-parse-error", {
+			script: `Set-Content -LiteralPath 'parse-error-marker.txt' -Value 'executed'\n${invalidLine}`,
+		});
+
+		expect(result.isError).toBe(true);
+		expect(result.details?.exitCode).toBe(1);
+		const text = textOutput(result);
+		expect(text).toContain(invalidLine);
+		expect(text).not.toContain("\uFFFD");
+		expect(await Bun.file(markerPath).exists()).toBe(false);
+	});
+
+	it("captures UTF-8 output and diagnostics with explicit environment values", async () => {
+		const tool = new PwshTool(makeSession(tempDir), pwshPath ?? "pwsh");
+		const result = await tool.execute("call-pwsh-utf8", {
+			script: `Write-Output "中文输出：$env:OMP_PWSH_TOOL_TEST"
+[Console]::Out.WriteLine('控制台输出：你好')
+[Console]::Error.WriteLine('错误诊断：中文')`,
+			env: { OMP_PWSH_TOOL_TEST: "环境变量" },
+		});
+
+		expect(result.isError).toBeUndefined();
+		const text = textOutput(result);
+		expect(text).toContain("中文输出：环境变量");
+		expect(text).toContain("控制台输出：你好");
+		expect(text).toContain("错误诊断：中文");
+		expect(text).not.toContain("\uFFFD");
+	});
+
+	it("completes past the minimum deadline when timeout is zero", async () => {
+		const tool = new PwshTool(makeSession(tempDir), pwshPath ?? "pwsh");
+		const checkpointPath = path.join(tempDir, "unlimited-completed.txt");
+		const result = await tool.execute("call-pwsh-unlimited", {
+			script: `Write-Output 'before unlimited sleep'
+Start-Sleep -Milliseconds 1500
+Set-Content -LiteralPath 'unlimited-completed.txt' -Value 'completed' -NoNewline -Encoding utf8
+Write-Output 'after unlimited sleep'`,
+			timeout: 0,
+		});
+
+		expect(await Bun.file(checkpointPath).text()).toBe("completed");
+		expect(textOutput(result)).toContain("after unlimited sleep");
+	}, 10_000);
+
+	it("preserves streamed UTF-8 output when cancelling a script with no deadline", async () => {
+		const tool = new PwshTool(makeSession(tempDir), pwshPath ?? "pwsh");
+		const controller = new AbortController();
+		const pidPath = path.join(tempDir, "cancelled-script.pid");
+		let sawOutput = false;
+		try {
+			const execution = tool.execute(
+				"call-pwsh-cancel",
+				{
+					script: `$PID | Set-Content -LiteralPath 'cancelled-script.pid'
+Start-Sleep -Milliseconds 1500
+[Console]::Out.WriteLine('取消前的输出')
+Start-Sleep -Seconds 30`,
+					timeout: 0,
+				},
+				controller.signal,
+				update => {
+					if (textOutput(update).includes("取消前的输出")) {
+						sawOutput = true;
+						controller.abort();
+					}
+				},
+			);
+
+			await expect(execution).rejects.toThrow("取消前的输出\n\n[PowerShell command aborted]");
+			expect(sawOutput).toBe(true);
+			const pid = Number.parseInt(await fs.readFile(pidPath, "utf8"), 10);
+			expect(Process.fromPid(pid)?.status()).not.toBe(ProcessStatus.Running);
+		} finally {
+			controller.abort();
+			await terminateRecordedProcess(pidPath);
+		}
+	}, 15_000);
+
 	it("links column-capped output to its recoverable session artifact", async () => {
 		const wideLine = "x".repeat(2048);
 		const artifactPaths = new Map<string, string>();
@@ -124,9 +192,6 @@ describeIfPwsh("PwshTool", () => {
 		});
 
 		const text = textOutput(result);
-		expect(text).toContain("Some lines truncated to 32 bytes. Read artifact://41 for full output");
-		expect(text).not.toContain("Showing lines");
-		expect(text).not.toContain("limit");
 		expect(text).not.toContain(wideLine);
 
 		const artifactUrl = text.match(/artifact:\/\/[^\s\]]+/u)?.[0];
@@ -151,19 +216,71 @@ describeIfPwsh("PwshTool", () => {
 		expect(text).toContain("ps-after");
 	});
 
-	itIfWindowsPwsh("does not wait for descendants that inherit output pipes after PowerShell exits", async () => {
+	itIfWindowsPwsh(
+		"isolates descendant console writes while capturing standard output",
+		async () => {
+			const reportPath = path.join(tempDir, "console-isolation.json");
+			const terminal = new PtySession();
+			let output = "";
+			let callbackError: Error | null = null;
+			let exited = false;
+			try {
+				const result = await terminal.startArgv(
+					{
+						application: process.execPath,
+						args: [path.join(import.meta.dir, "fixtures/pwsh-console-isolation.ts"), reportPath],
+						cwd: tempDir,
+						timeoutMs: 20_000,
+						cols: 120,
+						rows: 24,
+					},
+					(error, chunk) => {
+						if (error) callbackError = error;
+						if (chunk) output += chunk;
+					},
+				);
+				exited = true;
+
+				expect(callbackError).toBeNull();
+				expect(result.timedOut).toBeFalse();
+				expect(result.exitCode).toBe(0);
+				expect(output).toContain("PWSH-CONSOLE-FIXTURE-COMPLETE");
+				const captured: { isError?: boolean; content: Array<{ type: string; text?: string }> } =
+					await Bun.file(reportPath).json();
+				expect(captured.isError).toBeUndefined();
+				const text = textOutput(captured);
+				expect(text).toContain("captured-before");
+				expect(text).toContain("native-stdout");
+				expect(text).toContain("native-stderr");
+				expect(text).toContain("子进程标准输出");
+				expect(text).toContain("子进程错误输出");
+				expect(text).toContain("direct-written=27");
+				expect(text).toContain("console-visible=false");
+				expect(text).toContain("captured-after");
+				expect(text).not.toContain("\uFFFD");
+				expect(text).not.toContain("BACKGROUND-CONSOLE-LEAK");
+				expect(output).not.toContain("BACKGROUND-CONSOLE-LEAK");
+			} finally {
+				if (!exited) terminal.kill();
+			}
+		},
+		25_000,
+	);
+
+	itIfWindowsPwsh("bounds inherited output-pipe draining with no command deadline", async () => {
 		const tool = new PwshTool(makeSession(process.cwd()), pwshPath ?? "pwsh");
 		const pidPath = path.join(tempDir, "inherited-pipe.pid");
 		const escapedPidPath = pidPath.replace(/'/g, "''");
-		const startedAt = performance.now();
 		try {
 			const result = await tool.execute("call-pwsh-inherited-pipe", {
-				script: `$child = Start-Process -FilePath $env:ComSpec -ArgumentList '/d', '/c', 'ping -n 6 127.0.0.1' -NoNewWindow -PassThru\n$child.Id | Set-Content -LiteralPath '${escapedPidPath}'`,
-				timeout: 1,
+				script: `$child = Start-Process -FilePath $env:ComSpec -ArgumentList '/d', '/c', 'ping -n 6 127.0.0.1' -NoNewWindow -PassThru\n$child.Id | Set-Content -LiteralPath '${escapedPidPath}'\nWrite-Output 'root-exited'`,
+				timeout: 0,
 			});
 
 			expect(result.isError).toBeUndefined();
-			expect(performance.now() - startedAt).toBeLessThan(3000);
+			expect(textOutput(result)).toContain("root-exited");
+			const childPid = Number.parseInt(await fs.readFile(pidPath, "utf8"), 10);
+			expect(Process.fromPid(childPid)?.status()).toBe(ProcessStatus.Running);
 		} finally {
 			await terminateRecordedProcess(pidPath);
 		}

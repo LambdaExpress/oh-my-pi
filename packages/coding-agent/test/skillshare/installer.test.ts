@@ -228,7 +228,12 @@ describe("installer", () => {
 		});
 		const store = getSkillStorePath(SCOPE, NAME, "1.1.0");
 		expect(await Bun.file(path.join(store, "SKILL.md")).text()).toContain("# PDF 1.1.0");
-		expect((await fs.stat(path.join(store, "scripts", "run.sh"))).mode & 0o111).not.toBe(0);
+		const script = path.join(store, "scripts", "run.sh");
+		expect(await Bun.file(script).text()).toBe("#!/bin/sh\necho hi\n");
+		// Native Windows has no POSIX execute bits; Linux (including WSL) retains them.
+		if (process.platform !== "win32") {
+			expect((await fs.stat(script)).mode & 0o111).not.toBe(0);
+		}
 	});
 
 	it("aborts on an integrity mismatch before writing anything", async () => {

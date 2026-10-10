@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { encodeAsar, readAsar, sniffAsar } from "../../src/ar/asar";
 import { ArchiveError } from "../../src/ar/error";
 import { DEFAULT_ARCHIVE_LIMITS } from "../../src/ar/limits";
+import { openArchive } from "../../src/ar/open";
 import { memoryByteSource } from "../../src/ar/source";
 import type { ArchiveIndexEntry } from "../../src/ar/types";
 import { arFixture } from "./fixtures";
@@ -109,6 +110,51 @@ test("encodeAsar round-trips nested and zero-length members", async () => {
 	expect(await readMember(findEntry(entries, "nested/data.bin"))).toEqual(new Uint8Array([0, 1, 2, 255]));
 });
 
+test.each([false, true])(
+	"lists oversized members and reads small aliases without extracting unrelated data (unpacked: %s)",
+	async unpacked => {
+		const payload = encoder.encode('{"name":"asar-fixture"}\n');
+		const largeSize = DEFAULT_ARCHIVE_LIMITS.maxMemberSize + 1;
+		const bytes = headerFixture(
+			{
+				"package.json": { size: payload.byteLength, offset: "0" },
+				"package-link.json": { link: "package.json" },
+				"large.dat": unpacked
+					? { size: largeSize, unpacked: true }
+					: { size: largeSize, offset: String(payload.byteLength) },
+				"large-link.dat": { link: "large.dat" },
+			},
+			payload,
+		);
+		// Only the header and small payload are available. Reading the large
+		// packed tail would fail rather than allocate a large test buffer.
+		const source = {
+			...memoryByteSource(bytes),
+			size: bytes.byteLength + (unpacked ? 0 : largeSize),
+		};
+		const archive = await openArchive({ source, format: "asar" });
+
+		expect(
+			archive
+				.listDirectory()
+				.map(entry => [entry.name, entry.size])
+				.sort(),
+		).toEqual([
+			["large-link.dat", largeSize],
+			["large.dat", largeSize],
+			["package-link.json", payload.byteLength],
+			["package.json", payload.byteLength],
+		]);
+		expect((await archive.readFile("package-link.json")).bytes).toEqual(payload);
+		await expect(archive.readFile("large.dat")).rejects.toThrow(
+			"Archive member 'large.dat' is too large to extract in memory",
+		);
+		await expect(archive.readFile("large-link.dat")).rejects.toThrow(
+			"Archive member 'large-link.dat' is too large to extract in memory",
+		);
+	},
+);
+
 test("maps links and executable flags and verifies integrity", async () => {
 	const payload = encoder.encode("payload");
 	const hash = Bun.SHA256.hash(payload, "hex");
@@ -160,7 +206,14 @@ test("rejects traversal, malformed records, truncation, and non-zero Pickle padd
 	}
 });
 
-test("enforces header, entry, member, and path limits before indexing", async () => {
+test("rejects an oversized packed member outside the archive boundary", async () => {
+	const bytes = headerFixture({ "large.dat": { size: DEFAULT_ARCHIVE_LIMITS.maxMemberSize + 1, offset: "0" } });
+	await expect(openArchive({ bytes, format: "asar" })).rejects.toThrow(
+		"Invalid ASAR archive: file 'large.dat' extends beyond archive boundary",
+	);
+});
+
+test("enforces header, entry, and path limits before indexing", async () => {
 	const bytes = headerFixture({ one: { size: 1, offset: "0" }, two: { size: 0, offset: "1" } }, new Uint8Array([1]));
 	await expect(
 		readAsar(memoryByteSource(bytes), {
@@ -172,11 +225,6 @@ test("enforces header, entry, member, and path limits before indexing", async ()
 			limits: { ...DEFAULT_ARCHIVE_LIMITS, maxEntries: 1 },
 		}),
 	).rejects.toThrow("too many entries");
-	await expect(
-		readAsar(memoryByteSource(bytes), {
-			limits: { ...DEFAULT_ARCHIVE_LIMITS, maxMemberSize: 0 },
-		}),
-	).rejects.toThrow("too large to extract");
 	await expect(
 		readAsar(memoryByteSource(headerFixture({ lengthy: { size: 0, offset: "0" } })), {
 			limits: { ...DEFAULT_ARCHIVE_LIMITS, maxPathBytes: 3 },

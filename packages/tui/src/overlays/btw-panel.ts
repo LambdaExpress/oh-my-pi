@@ -5,6 +5,11 @@ import { sanitizeErrorLine } from "../chrome/error-block";
 import { OverlayPanel } from "../chrome/overlay-box";
 import { StreamingPanelContent } from "../chrome/streaming-panel";
 import { t } from "../i18n";
+import { boundKeys, interruptKey } from "../chrome/keybinding-hints";
+import { formatKeyHint } from "../app-keybindings";
+import type { NativeNode } from "../native/node";
+import { col, md, node, span, text } from "../native/describe";
+import { hintsRow, type NativeHint, statusHintsRow } from "../native/overlay";
 
 type BtwPanelState = "running" | "complete" | "branching" | "aborted" | "error";
 
@@ -26,14 +31,17 @@ export class BtwPanelComponent extends OverlayPanel {
 	#closed = false;
 	#copied = false;
 	#baseTitle: string;
+	readonly #question: string;
 	readonly #content: StreamingPanelContent;
+	#native: { node: NativeNode; canFollowUp: boolean; canBranch: boolean } | undefined;
 
 	constructor(options: BtwPanelComponentOptions) {
 		// The panel is the side-question surface itself, so the title carries the
 		// question alone: echoing the `/btw` the user typed is noise.
 		const baseTitle = replaceTabs(options.question);
-		super(baseTitle);
+		super(baseTitle, "omp.overlay.btw");
 		this.#baseTitle = baseTitle;
+		this.#question = replaceTabs(options.question);
 		this.#tui = options.tui;
 		this.#canBranch = options.canBranch;
 		this.#canFollowUp = options.canFollowUp;
@@ -78,7 +86,7 @@ export class BtwPanelComponent extends OverlayPanel {
 
 	#setCopied(copied: boolean): void {
 		this.#copied = copied;
-		this.title = copied ? `${this.#baseTitle} ✓ Copied` : this.#baseTitle;
+		this.title = copied ? `${this.#baseTitle} ✓ ${t("Copied")}` : this.#baseTitle;
 	}
 
 	/** Shows that the completed answer is being promoted into the chat session. */
@@ -122,7 +130,68 @@ export class BtwPanelComponent extends OverlayPanel {
 		this.#closed = true;
 	}
 
+	override invalidate(): void {
+		this.#native = undefined;
+		super.invalidate();
+	}
+
+	override describe(): NativeNode {
+		const canFollowUp = this.#canFollowUp?.() ?? false;
+		const canBranch = this.#canBranch?.() ?? this.isBranchable();
+		const memo = this.#native;
+		if (memo && memo.canFollowUp === canFollowUp && memo.canBranch === canBranch) return memo.node;
+		// Inline in the dock, styled as a sheet by role: a borderless column headed by the question.
+		const title = text([span(this.#question)], { truncate: "end", lines: 1 });
+		const live = this.#state === "running" || this.#state === "branching";
+		const head = node("row", { role: "omp.sheet.head", gap: "sm", align: "center" }, [
+			...(live ? [node("spinner", {})] : []),
+			title,
+		]);
+		const described = col([head, this.#describeBody(), this.#describeFooter(canFollowUp, canBranch)], {
+			role: this.nativeRole,
+			gap: "sm",
+			tone: this.#state === "error" ? "error" : this.#state === "aborted" ? "warning" : undefined,
+		});
+		this.#native = { node: described, canFollowUp, canBranch };
+		return described;
+	}
+
+	#describeBody(): NativeNode {
+		if (this.#state === "error") {
+			return text([span(sanitizeErrorLine(this.#errorMessage ?? t("Unknown error")), "error")], { wrap: "word" });
+		}
+		const answer = this.#visibleAnswer;
+		if (answer) return md(answer, { stream: this.#state === "running" });
+		const waiting =
+			this.#state === "running" ? `${theme.status.pending} ${t("Waiting for response…")}` : t("No text returned.");
+		return text([span(waiting, "dim")]);
+	}
+
+	#describeFooter(canFollowUp: boolean, canBranch: boolean): NativeNode {
+		const esc: NativeHint = { keys: boundKeys("app.interrupt", ["escape"]).slice(0, 1), label: t("to close") };
+		switch (this.#state) {
+			case "running":
+				return hintsRow([{ ...esc, label: t("to cancel") }]);
+			case "complete": {
+				const hints: NativeHint[] = [];
+				if (this.isCopyable()) hints.push({ keys: ["c"], label: t(this.#copied ? "to copy again" : "to copy") });
+				if (canFollowUp) hints.push({ keys: ["f"], label: t("to follow up") });
+				if (canBranch) hints.push({ keys: ["b"], label: t("to branch") });
+				hints.push(esc);
+				if (!this.#copied) return hintsRow(hints);
+				return statusHintsRow([span(`✓ ${t("Copied to clipboard")}`, "success")], hints);
+			}
+			case "branching":
+				return text([span(`${theme.status.pending} ${t("Branching to chat…")}`, "muted")]);
+			case "aborted":
+				return statusHintsRow([span(`${theme.status.warning} ${t("Cancelled")}`, "warning")], [esc]);
+			case "error":
+				return statusHintsRow([span(`${theme.status.error} ${t("Error")}`, "error")], [esc]);
+		}
+	}
+
 	#rebuild(): void {
+		this.#native = undefined;
 		this.#content.refresh();
 		// Component-scoped: a rebuild replaces only this panel's own children
 		// (streaming deltas arrive per token, and a full compose would re-walk
@@ -132,15 +201,18 @@ export class BtwPanelComponent extends OverlayPanel {
 	}
 
 	#footerLine(): string {
+		// The main editor routes `app.interrupt` (Escape by default) to the panel.
+		const esc = interruptKey();
 		switch (this.#state) {
 			case "running":
-				return theme.fg("muted", t("Esc to cancel"));
+				return theme.fg("muted", `${esc} ${t("to cancel")}`);
 			case "complete": {
 				const actions: string[] = [];
-				if (this.isCopyable()) actions.push(this.#copied ? t("c to copy again") : t("c to copy"));
-				if (this.#canFollowUp?.()) actions.push(t("f to follow up"));
-				if (this.#canBranch?.() ?? this.isBranchable()) actions.push(t("b to branch"));
-				actions.push(t("Esc to close"));
+				const copyKey = formatKeyHint("c");
+				if (this.isCopyable()) actions.push(`${copyKey} ${t(this.#copied ? "to copy again" : "to copy")}`);
+				if (this.#canFollowUp?.()) actions.push(`${formatKeyHint("f")} ${t("to follow up")}`);
+				if (this.#canBranch?.() ?? this.isBranchable()) actions.push(`${formatKeyHint("b")} ${t("to branch")}`);
+				actions.push(`${esc} ${t("to close")}`);
 				if (this.#copied) {
 					return `${theme.fg("success", `✓ ${t("Copied to clipboard")}`)}${theme.fg("muted", actions.length > 0 ? ` · ${actions.join(" · ")}` : "")}`;
 				}
@@ -149,9 +221,9 @@ export class BtwPanelComponent extends OverlayPanel {
 			case "branching":
 				return theme.fg("muted", `${theme.status.pending} ${t("Branching to chat…")}`);
 			case "aborted":
-				return theme.fg("warning", `${theme.status.warning} ${t("Cancelled · Esc to close")}`);
+				return theme.fg("warning", `${theme.status.warning} ${t("Cancelled")} · ${esc} ${t("to close")}`);
 			case "error":
-				return theme.fg("error", `${theme.status.error} ${t("Error · Esc to close")}`);
+				return theme.fg("error", `${theme.status.error} ${t("Error")} · ${esc} ${t("to close")}`);
 		}
 	}
 

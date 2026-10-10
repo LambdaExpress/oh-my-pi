@@ -16,6 +16,8 @@ mod count_fast {
 	#[cfg(windows)]
 	use std::os::windows::fs::MetadataExt;
 	#[cfg(windows)]
+	use std::io::{Seek, SeekFrom};
+	#[cfg(windows)]
 	const FILE_ATTRIBUTE_ARCHIVE: u32 = 32;
 	#[cfg(windows)]
 	const FILE_ATTRIBUTE_NORMAL: u32 = 128;
@@ -114,14 +116,18 @@ mod count_fast {
 	
 		#[cfg(windows)]
 		{
-			if let Some(file) = handle.native_file() {
+			if let Some(mut file) = handle.native_file() {
 				if let Ok(metadata) = file.metadata() {
 					let attributes = metadata.file_attributes();
 	
 					if (attributes & FILE_ATTRIBUTE_ARCHIVE) != 0
 						|| (attributes & FILE_ATTRIBUTE_NORMAL) != 0
 					{
-						return (metadata.file_size() as usize, None);
+						if let Ok(current) = file.stream_position()
+							&& let Ok(end) = file.seek(SeekFrom::End(0))
+						{
+							return (end.saturating_sub(current) as usize, None);
+						}
 					}
 				}
 			}
@@ -1626,6 +1632,7 @@ mod tests {
 		let (bytes, error) = count_bytes_fast(&mut file);
 		assert_eq!(bytes, 4);
 		assert!(error.is_none());
+		assert_eq!(file.stream_position().unwrap(), 6);
 	}
 
 	#[test]

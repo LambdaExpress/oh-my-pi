@@ -70,11 +70,7 @@ function session(cwd: string = os.tmpdir(), maxTimeout = 30): ToolSession {
 		hasUI: false,
 		getSessionFile: () => null,
 		getSessionSpawns: () => null,
-		settings: {
-			get(key: string): unknown {
-				return key === "tools.maxTimeout" ? maxTimeout : undefined;
-			},
-		},
+		settings: Settings.isolated({ "tools.maxTimeout": maxTimeout }),
 	} as ToolSession;
 }
 

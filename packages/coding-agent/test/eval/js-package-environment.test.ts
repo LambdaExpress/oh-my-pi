@@ -110,4 +110,143 @@ describe("persistent JavaScript package environments", () => {
 		expect(result.exitCode).toBe(1);
 		expect(result.output).toContain("JS package environment fallback");
 	});
+
+	it("imports and refreshes workspace exports with type-only imports and realpath-relative dependencies", async () => {
+		using workspace = TempDir.createSync("@omp-js-workspace-exports-");
+		const packageDir = workspace.join("packages/library");
+		await Bun.write(
+			path.join(packageDir, "package.json"),
+			JSON.stringify({
+				name: "@fixture/library",
+				type: "module",
+				exports: { "./tools/*": { types: "./types/*.d.ts", import: "./src/*.ts" } },
+			}),
+		);
+		await Bun.write(
+			path.join(packageDir, "src/value.ts"),
+			'import { marker } from "fixture-dependency"; export const value = marker + ":workspace";\n',
+		);
+		await Bun.write(
+			path.join(packageDir, "node_modules/fixture-dependency/package.json"),
+			JSON.stringify({ name: "fixture-dependency", main: "./index.js" }),
+		);
+		await Bun.write(path.join(packageDir, "node_modules/fixture-dependency/index.js"), 'exports.marker = "local";\n');
+		await fs.mkdir(workspace.join("node_modules/@fixture"), { recursive: true });
+		await fs.symlink(
+			packageDir,
+			workspace.join("node_modules/@fixture/library"),
+			process.platform === "win32" ? "junction" : "dir",
+		);
+		await Bun.write(
+			workspace.join("entry.ts"),
+			[
+				'import type { Unused } from "uninstalled-types";',
+				'import { type AlsoUnused } from "another-uninstalled-type";',
+				'import { value } from "@fixture/library/tools/value";',
+				"export const answer: string = value;",
+			].join("\n"),
+		);
+		const sessionId = `js-workspace-exports:${crypto.randomUUID()}`;
+		const session = makeSession(workspace.path(), sessionId);
+		const result = await executeJs(
+			'import { answer } from "./entry.ts"; answer;',
+			executorOptions(session, sessionId),
+		);
+		expect(result.exitCode, result.output).toBe(0);
+		expect(result.output.trim()).toBe("local:workspace");
+
+		const filename = path.join(packageDir, "src/value.ts");
+		const updatedTime = new Date((await fs.stat(filename)).mtimeMs + 2_000);
+		await Bun.write(
+			filename,
+			'import { marker } from "fixture-dependency"; export const value = marker + ":updated";\n',
+		);
+		await fs.utimes(filename, updatedTime, updatedTime);
+		const updated = await executeJs(
+			'import { answer as updatedAnswer } from "./entry.ts"; updatedAnswer;',
+			executorOptions(session, sessionId),
+		);
+		expect(updated.exitCode, updated.output).toBe(0);
+		expect(updated.output.trim()).toBe("local:updated");
+	});
+
+	it("preserves module-owned require and filename bindings", async () => {
+		using workspace = TempDir.createSync("@omp-js-module-bindings-");
+		await Bun.write(workspace.join("directory.ts"), 'export const directory = "module-dir";\n');
+		await Bun.write(
+			workspace.join("block-shadow.ts"),
+			'if (true) { function require() { return "shadow"; } void require; } export const separator = require("node:path").sep;\n',
+		);
+		await Bun.write(
+			workspace.join("entry.ts"),
+			[
+				'import { directory as __dirname } from "./directory.ts";',
+				'export function require(value: string) { return "module:" + value; }',
+				'const { __filename } = { __filename: "module-file" };',
+				'import { separator } from "./block-shadow.ts";',
+				'export const answer = [require("value"), __dirname, __filename, separator];',
+			].join("\n"),
+		);
+		const sessionId = `js-module-bindings:${crypto.randomUUID()}`;
+		const session = makeSession(workspace.path(), sessionId);
+		const result = await executeJs(
+			'import { answer } from "./entry.ts"; JSON.stringify(answer);',
+			executorOptions(session, sessionId),
+		);
+		expect(result.exitCode, result.output).toBe(0);
+		expect(JSON.parse(result.output.trim())).toEqual(["module:value", "module-dir", "module-file", path.sep]);
+	});
+
+	it("uses the selected package environment only when the project does not own the package", async () => {
+		using workspace = TempDir.createSync("@omp-js-package-boundary-");
+		const environment = resolveJsPackageEnvironment(workspace.path());
+		managedRoots.push(environment.root);
+		await Bun.write(
+			workspace.join("node_modules/fixture-owned/package.json"),
+			JSON.stringify({ name: "fixture-owned", exports: { ".": "./index.js" } }),
+		);
+		await Bun.write(workspace.join("node_modules/fixture-owned/index.js"), 'exports.value = "project";\n');
+		await Bun.write(workspace.join("node_modules/fixture-owned/private.js"), 'exports.value = "private";\n');
+		for (const name of ["fixture-owned", "fixture-fallback"]) {
+			await Bun.write(
+				path.join(environment.root, "node_modules", name, "package.json"),
+				JSON.stringify({ name, main: "./index.js" }),
+			);
+			await Bun.write(
+				path.join(environment.root, "node_modules", name, "index.js"),
+				'exports.value = "environment";\n',
+			);
+			await Bun.write(
+				path.join(environment.root, "node_modules", name, "private.js"),
+				'exports.value = "environment-private";\n',
+			);
+		}
+		const sessionId = `js-package-boundary:${crypto.randomUUID()}`;
+		const session = makeSession(workspace.path(), sessionId);
+		const options = executorOptions(session, sessionId);
+		// These imports must run inside the kernel, not in the test runner's package graph.
+		const result = await executeJs(
+			'JSON.stringify([(await import("fixture-owned")).value, (await import("fixture-fallback")).value]);',
+			options,
+		);
+		expect(result.exitCode, result.output).toBe(0);
+		expect(JSON.parse(result.output.trim())).toEqual(["project", "environment"]);
+		const hidden = await executeJs('await import("fixture-owned/private.js");', options);
+		expect(hidden.exitCode).toBe(1);
+		expect(hidden.output).toContain("Cannot resolve package entry");
+		expect(hidden.output).not.toContain("JS package environment fallback");
+	});
+
+	it("imports repository modules whose transitive graph uses import.meta during initialization", async () => {
+		using workspace = TempDir.createSync("@omp-js-repository-import-");
+		const filename = path.resolve(import.meta.dir, "../../src/tools/path-utils.ts");
+		const sessionId = `js-repository-import:${crypto.randomUUID()}`;
+		const session = makeSession(workspace.path(), sessionId);
+		const result = await executeJs(
+			`import { parseFindPattern } from ${JSON.stringify(filename)}; JSON.stringify(parseFindPattern("D:/IDA*/"));`,
+			executorOptions(session, sessionId),
+		);
+		expect(result.exitCode, result.output).toBe(0);
+		expect(JSON.parse(result.output.trim())).toEqual({ basePath: "D:/", globPattern: "IDA*/", hasGlob: true });
+	}, 30_000);
 });

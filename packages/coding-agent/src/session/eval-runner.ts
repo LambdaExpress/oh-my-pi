@@ -38,7 +38,7 @@ export class EvalRunner {
 	#activeExecutions = new Set<Promise<unknown>>();
 	#disposing = false;
 
-	constructor(host: EvalRunnerHost, options: { kernelOwnerId: string; parentSessionId: string | undefined }) {
+	constructor(host: EvalRunnerHost, options: { kernelOwnerId: string; parentSessionId?: string }) {
 		this.#host = host;
 		this.#kernelOwnerId = options.kernelOwnerId;
 		this.#parentSessionId = options.parentSessionId;
@@ -69,15 +69,9 @@ export class EvalRunner {
 					return hookResult.result;
 				}
 			}
-			const sessionId =
-				this.getSessionId() ??
-				defaultEvalSessionId({
-					cwd,
-					getSessionFile: () => this.#host.sessionManager.getSessionFile() ?? null,
-				});
 			const result = await executePythonCommand(code, {
 				cwd,
-				sessionId: namespacePythonSessionId(sessionId),
+				sessionId: namespacePythonSessionId(this.getSessionId()),
 				kernelOwnerId: this.#kernelOwnerId,
 				kernelMode: cfgPythonKernelMode.get(this.#host.settings),
 				interpreter: cfgPythonInterpreter.get(this.#host.settings)?.trim() || undefined,
@@ -154,9 +148,9 @@ export class EvalRunner {
 		return this.#kernelOwnerId;
 	}
 
-	/** Returns the eval session shared with the Python backend. */
-	getSessionId(): string | null {
-		if (this.#parentSessionId !== undefined) return this.#parentSessionId;
+	/** Returns this session's eval executor id, shared by the eval tool and user Python shortcuts. */
+	getSessionId(): string {
+		if (this.#parentSessionId) return this.#parentSessionId;
 		return defaultEvalSessionId({
 			cwd: this.#host.sessionManager.getCwd(),
 			getSessionFile: () => this.#host.sessionManager.getSessionFile() ?? null,

@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { disposeAllVmContexts } from "@oh-my-pi/pi-coding-agent/eval/js/context-manager";
 import { createBrowserPrelude } from "@oh-my-pi/pi-coding-agent/tools/browser";
+import { findFreeCdpPort } from "@oh-my-pi/pi-coding-agent/tools/browser/attach";
 import { releaseAllTabs } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { chromiumAvailable } from "./chromium-probe";
@@ -21,6 +22,7 @@ const session: ToolSession = {
 		"browser.enabled": true,
 		"browser.headless": true,
 		"browser.cmux": false,
+		"browser.tern": false,
 		"tools.maxTimeout": 0,
 	}),
 };
@@ -43,10 +45,10 @@ async function call(name: string, method: string, args: unknown[] = []): Promise
 	return valueFrom(await invoke({ action: "call", name, chain: [{ method, args }] }));
 }
 
-beforeAll(() => {
+beforeAll(async () => {
 	server = Bun.serve({
 		hostname: "127.0.0.1",
-		port: 0,
+		port: await findFreeCdpPort(),
 		fetch() {
 			return new Response("<!doctype html><title>storage fixture</title>", {
 				headers: { "Set-Cookie": "server_cookie=from_header; Path=/; HttpOnly; SameSite=Lax" },

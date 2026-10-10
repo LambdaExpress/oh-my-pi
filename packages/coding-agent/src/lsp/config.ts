@@ -12,7 +12,7 @@ import type { ServerConfig } from "./types";
 
 export interface LspConfig {
 	servers: Record<string, ServerConfig>;
-	/** Idle timeout in milliseconds. If set, LSP clients will be shutdown after this period of inactivity. Disabled by default. */
+	/** Idle shutdown timeout in milliseconds. Defaults to five minutes; nonpositive values disable it. */
 	idleTimeoutMs?: number;
 }
 
@@ -32,7 +32,8 @@ interface NormalizedConfig {
 	idleTimeoutMs?: number;
 }
 
-function parseConfigContent(content: string, filePath: string): unknown {
+/** Parse a config file as YAML (`.yaml`/`.yml`) or JSON. */
+export function parseConfigContent(content: string, filePath: string): unknown {
 	const extension = path.extname(filePath).toLowerCase();
 	if (extension === ".yaml" || extension === ".yml") {
 		return YAML.parse(content) as unknown;

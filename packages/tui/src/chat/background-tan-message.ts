@@ -27,10 +27,10 @@ export function createBackgroundTanDispatchBlock(message: CustomMessage<unknown>
 		new TranscriptStatusBlock([
 			{
 				parts: [
-					theme.fg("muted", `${theme.icon.output} ${t("Tangent dispatched")}`),
-					theme.fg("dim", "[task]"),
-					theme.fg("accent", jobId),
-					work ? theme.fg("dim", `${theme.format.dash} ${work}`) : undefined,
+					{ text: `${theme.icon.output} ${t("Tangent dispatched")}`, color: "muted" },
+					{ text: "[task]", color: "dim" },
+					{ text: jobId, color: "accent" },
+					work ? { text: `${theme.format.dash} ${work}`, color: "dim" } : undefined,
 				],
 			},
 		]),

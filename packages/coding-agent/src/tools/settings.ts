@@ -253,18 +253,6 @@ export const cfgReadSummarizeUnfoldLimit = register({
 	},
 });
 
-export const cfgReadToolResultPreview = register({
-	id: "read.toolResultPreview",
-	type: "boolean",
-	default: false,
-	ui: {
-		tab: "files",
-		group: "Reading",
-		label: "Inline Read Previews",
-		description: "Render read tool results inline in the transcript instead of summary rows",
-	},
-});
-
 // ────────────────────────────────────────────────────────────────────────
 // Tools
 // ────────────────────────────────────────────────────────────────────────
@@ -579,6 +567,18 @@ export const cfgComputerEnabled = register({
 		group: "Available Tools",
 		label: "Computer",
 		description: "Enable the scriptable host-desktop eval prelude (screenshots, input, accessibility)",
+	},
+});
+
+export const cfgRatchetEnabled = register({
+	id: "ratchet.enabled",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "tools",
+		group: "Available Tools",
+		label: "Ratchet",
+		description: "Enable the ratchet eval/hillclimb prelude; /ratchet turns it on for the current session",
 	},
 });
 

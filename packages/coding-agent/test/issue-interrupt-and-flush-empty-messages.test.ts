@@ -5,14 +5,16 @@ import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/typ
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 
 function createContext(options?: {
-	queuedMessageCount?: number;
+	hasRunnableQueuedMessages?: boolean;
+	hasInterruptibleInput?: boolean;
+	isStreaming?: boolean;
+	isRetrying?: boolean;
 	pendingImages?: ImageContent[];
 	pendingImageLinks?: (string | undefined)[];
 }) {
-	const queuedMessageCount = options?.queuedMessageCount ?? 1;
 	let editorText = "";
 	const abort = vi.fn(async () => {});
-	const prompt = vi.fn(async () => {});
+	const prompt = vi.fn(async () => true);
 	const updatePendingMessagesDisplay = vi.fn();
 	const requestRender = vi.fn();
 	const showError = vi.fn();
@@ -38,12 +40,13 @@ function createContext(options?: {
 		},
 		ui: { requestRender },
 		session: {
-			isStreaming: true,
+			isStreaming: options?.isStreaming ?? true,
+			isRetrying: options?.isRetrying ?? false,
 			isCompacting: false,
 			isBashRunning: false,
 			isEvalRunning: false,
-			queuedMessageCount,
-			hasRunnableQueuedMessages: queuedMessageCount > 0,
+			hasRunnableQueuedMessages: options?.hasRunnableQueuedMessages ?? options?.hasInterruptibleInput ?? true,
+			hasInterruptibleInput: options?.hasInterruptibleInput ?? true,
 			extensionRunner: undefined,
 			abort,
 			prompt,
@@ -51,6 +54,7 @@ function createContext(options?: {
 		get viewSession() {
 			return (this as typeof ctx).session;
 		},
+		sessionManager: { getSessionId: () => "interrupt-fixture" },
 		compactionQueuedMessages: [],
 		locallySubmittedUserSignatures: new Set<string>(),
 		isBashMode: false,
@@ -80,12 +84,42 @@ describe("empty submit with queued messages", () => {
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
+	it("interrupts live-steered input after it has left the runnable queue", async () => {
+		const { ctx, abort, prompt } = createContext({
+			hasRunnableQueuedMessages: false,
+			hasInterruptibleInput: true,
+		});
+		const controller = new InputController(ctx);
+		controller.setupEditorSubmitHandler();
+
+		await ctx.editor.onSubmit?.("");
+
+		expect(abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL, forceFlush: true });
+		expect(prompt).not.toHaveBeenCalled();
+	});
+
+	it("releases queued input during retry backoff without starting an eager prompt", async () => {
+		const { ctx, abort, prompt } = createContext({
+			hasRunnableQueuedMessages: true,
+			hasInterruptibleInput: false,
+			isStreaming: false,
+			isRetrying: true,
+		});
+		const controller = new InputController(ctx);
+		controller.setupEditorSubmitHandler();
+
+		await ctx.editor.onSubmit?.("");
+
+		expect(abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL, forceFlush: true });
+		expect(prompt).not.toHaveBeenCalled();
+	});
+
 	it("queues an image-only steer while streaming", async () => {
 		// An image-only draft is a bare marker: the composer always stages the
 		// chip token, which expands to `[Image #1]` at submit time.
 		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
 		const { ctx, abort, prompt, updatePendingMessagesDisplay, requestRender } = createContext({
-			queuedMessageCount: 0,
+			hasInterruptibleInput: false,
 			pendingImages: [image],
 		});
 		const controller = new InputController(ctx);
@@ -104,7 +138,7 @@ describe("empty submit with queued messages", () => {
 	it("restores an image-only steer when streaming dispatch rejects", async () => {
 		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
 		const { ctx, abort, prompt, showError, updatePendingMessagesDisplay, requestRender } = createContext({
-			queuedMessageCount: 0,
+			hasInterruptibleInput: false,
 			pendingImages: [image],
 			pendingImageLinks: ["local://draft.png"],
 		});
@@ -126,15 +160,15 @@ describe("empty submit with queued messages", () => {
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
-	it("queues an image-only steer instead of aborting when messages are already queued", async () => {
+	it("queues an image-only steer and releases already pending input", async () => {
 		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
-		const { ctx, abort, prompt } = createContext({ queuedMessageCount: 1, pendingImages: [image] });
+		const { ctx, abort, prompt } = createContext({ hasInterruptibleInput: true, pendingImages: [image] });
 		const controller = new InputController(ctx);
 		controller.setupEditorSubmitHandler();
 
 		await ctx.editor.onSubmit?.("[Image #1]");
 
-		expect(abort).not.toHaveBeenCalled();
+		expect(abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL, forceFlush: true });
 		expect(prompt).toHaveBeenCalledWith("[Image #1]", { streamingBehavior: "steer", images: [image] });
 	});
 
@@ -142,7 +176,7 @@ describe("empty submit with queued messages", () => {
 		// Deleting the chip token removes the attachment: an empty submit with a
 		// token-less pending image behaves like a plain empty submit (abort path).
 		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
-		const { ctx, abort, prompt } = createContext({ queuedMessageCount: 1, pendingImages: [image] });
+		const { ctx, abort, prompt } = createContext({ hasInterruptibleInput: true, pendingImages: [image] });
 		const controller = new InputController(ctx);
 		controller.setupEditorSubmitHandler();
 

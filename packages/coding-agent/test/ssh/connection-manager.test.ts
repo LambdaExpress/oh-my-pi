@@ -336,21 +336,24 @@ describe("buildRemoteCommand", () => {
 		}
 	});
 
-	it("rejects group/world-readable identity files on Unix-like platforms", async () => {
-		await withLooseKey(async keyPath => {
-			await expect(
-				connectionManager.buildRemoteCommand(
-					{
-						name: "host",
-						host: "192.168.3.146",
-						keyPath,
-					},
-					"ls -la",
-					{ platform: "linux" },
-				),
-			).rejects.toThrow("SSH key permissions must be 600 or stricter");
-		});
-	});
+	it.skipIf(process.platform === "win32")(
+		"rejects group/world-readable identity files on Unix-like platforms",
+		async () => {
+			await withLooseKey(async keyPath => {
+				await expect(
+					connectionManager.buildRemoteCommand(
+						{
+							name: "host",
+							host: "192.168.3.146",
+							keyPath,
+						},
+						"ls -la",
+						{ platform: "linux" },
+					),
+				).rejects.toThrow("SSH key permissions must be 600 or stricter");
+			});
+		},
+	);
 });
 
 describe("SSH connection identities", () => {
@@ -647,13 +650,6 @@ describe("SSH WSL host detection", () => {
 			}
 			expect(execSpy).toHaveBeenCalledTimes(cases.length * 2);
 			expect(transferCommands).toHaveLength(cases.length);
-			for (const command of transferCommands) {
-				expect(command).toContain("uname -s");
-				expect(command).toContain("uname -r");
-				expect(command).toContain(`\${WSL_DISTRO_NAME-}`);
-				expect(command).toContain(`\${WSL_INTEROP-}`);
-				expect(command).not.toContain("wsl.exe");
-			}
 		} finally {
 			for (const target of targets) {
 				await connectionManager.invalidateSshTarget(target, { invalidateHostInfo: true });

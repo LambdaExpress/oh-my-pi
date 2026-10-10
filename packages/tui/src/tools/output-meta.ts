@@ -58,7 +58,8 @@ export interface DiagnosticMeta {
  */
 export interface LimitsMeta {
 	matchLimit?: { reached: number; suggestion: number };
-	resultLimit?: { reached: number; suggestion: number };
+	/** `suggestion` is omitted when the tool is already at its hard cap, so no larger usable limit exists to advise. */
+	resultLimit?: { reached: number; suggestion?: number };
 	headLimit?: { reached: number; suggestion: number };
 	/** `unit` may be absent in sessions persisted before it was recorded. */
 	columnTruncated?: { maxColumn: number; unit?: "bytes" | "chars"; artifactId?: string };
@@ -131,7 +132,7 @@ export function formatGroupedDiagnosticMessages(messages: string[]): string {
 
 /** Format a recoverable output artifact link. */
 export function formatFullOutputReference(artifactId: string): string {
-	return `Read artifact://${artifactId} for full output`;
+	return `Read artifact://${artifactId} for full output; use artifact://${artifactId}:raw:1-3000 for bounded verbatim chunks`;
 }
 
 /** Strip the last literal notice or a matching final line; optionally preserve surrounding whitespace. */
@@ -187,7 +188,7 @@ function isGeneratedOutputNoticeLine(line: string): boolean {
 	return (
 		body.startsWith("Showing ") ||
 		/^\d+ matches limit reached\. Use limit=\d+ for more/u.test(body) ||
-		/^\d+ results limit reached\. Use limit=\d+ for more/u.test(body) ||
+		/^\d+ results limit reached(?:\.|$)/u.test(body) ||
 		body.startsWith("Some lines truncated to ")
 	);
 }
@@ -204,7 +205,7 @@ export function formatTruncationMetaNotice(truncation: TruncationMeta, source?: 
 		truncation.artifactId == null
 			? undefined
 			: source?.type === "report"
-				? `Read artifact://${truncation.artifactId} for full report (${source.value})`
+				? `${formatFullOutputReference(truncation.artifactId)} (report: ${source.value})`
 				: formatFullOutputReference(truncation.artifactId);
 
 	if (truncation.direction === "middle") {
@@ -300,7 +301,14 @@ export function formatOutputNotice(meta: OutputMeta | undefined): string {
 	}
 	if (meta.limits?.resultLimit) {
 		const l = meta.limits.resultLimit;
-		parts.push(`${l.reached} results limit reached. Use limit=${l.suggestion} for more`);
+		// At the tool's hard cap there is no larger usable limit, so the
+		// "Use limit=" advice would name a value that gets clamped right
+		// back — emit the bare reached notice instead (#13263).
+		parts.push(
+			l.suggestion === undefined
+				? `${l.reached} results limit reached`
+				: `${l.reached} results limit reached. Use limit=${l.suggestion} for more`,
+		);
 	}
 	if (meta.limits?.headLimit) {
 		const l = meta.limits.headLimit;

@@ -2,10 +2,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
-import { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
-import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { createInteractiveModeContext } from "../../helpers/interactive-mode-context";
 
 function makeAssistantMessage(overrides: Partial<AssistantMessage> = {}): AssistantMessage {
 	return {
@@ -23,7 +23,7 @@ function makeAssistantMessage(overrides: Partial<AssistantMessage> = {}): Assist
 			totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
-		timestamp: Date.now(),
+		timestamp: 1_000,
 		...overrides,
 	};
 }
@@ -33,50 +33,26 @@ function createFixture(opts: {
 	isTtsrAbortPending?: boolean;
 	retryAttempt?: number;
 }) {
-	const updateContent = vi.fn();
-	const setComplete = vi.fn();
-	const setLinkTargets = vi.fn();
-	const markTranscriptBlockFinalized = vi.fn();
-	const setHideThinkingBlock = vi.fn();
-	const streamingComponent = {
-		updateContent,
-		setComplete,
-		setLinkTargets,
-		isTranscriptBlockFinalized: vi.fn(() => false),
-		markTranscriptBlockFinalized,
-		setHideThinkingBlock,
-		setCacheInvalidation: vi.fn(),
-		setServedModelMismatch: vi.fn(),
-	};
+	const streamingComponent = new AssistantMessageComponent();
+	streamingComponent.updateContent(opts.streamingMessage);
 	const requestRender = vi.fn();
-	const requestComponentRender = vi.fn();
-	const addChild = vi.fn();
 
-	const sessionMock = {
-		isTtsrAbortPending: opts.isTtsrAbortPending ?? false,
-		retryAttempt: opts.retryAttempt ?? 0,
-	};
-	const ctx = {
-		isInitialized: true,
-		init: vi.fn(async () => {}),
+	const ctx = createInteractiveModeContext({
 		settings,
-		ui: { requestRender, requestComponentRender },
-		statusLine: { invalidate: vi.fn() },
-		updateEditorTopBorder: vi.fn(),
-		updateEditorBorderColor: vi.fn(),
+		ui: { requestRender },
 		streamingComponent,
 		streamingMessage: opts.streamingMessage,
-		servedModelTracker: new ServedModelTracker(),
-		transcriptMessageComponents: new WeakMap(),
-		chatContainer: { addChild, children: [] },
-		pendingTools: new Map(),
-		noteDisplayableThinkingContent: vi.fn(() => false),
-		effectiveHideThinkingBlock: false,
-		showPinnedError: vi.fn(),
-		clearTransientSessionUi: vi.fn(),
-		session: sessionMock,
-		viewSession: sessionMock,
-	} as unknown as InteractiveModeContext;
+		session: {
+			isTtsrAbortPending: opts.isTtsrAbortPending ?? false,
+			retryAttempt: opts.retryAttempt ?? 0,
+			getAsyncJobSnapshot: () => null,
+		},
+	});
+	ctx.chatContainer.addChild(streamingComponent);
+	const renderedFrames: string[] = [];
+	requestRender.mockImplementation(() => {
+		renderedFrames.push(Bun.stripANSI(ctx.chatContainer.render(120).join("\n")));
+	});
 
 	const controller = new EventController(ctx);
 	return {
@@ -84,7 +60,7 @@ function createFixture(opts: {
 		ctx,
 		streamingComponent,
 		requestRender,
-		addChild,
+		renderedFrames,
 	};
 }
 
@@ -111,11 +87,13 @@ describe("EventController message_end final refresh", () => {
 
 	it("requests a render after finalizing the assistant component", async () => {
 		const message = makeAssistantMessage();
-		const { controller, streamingComponent, requestRender } = createFixture({ streamingMessage: message });
+		const { controller, ctx, streamingComponent, requestRender } = createFixture({ streamingMessage: message });
+		expect(streamingComponent.isTranscriptBlockFinalized()).toBe(false);
 
 		await dispatchMessageEnd(controller, message);
 
-		expect(streamingComponent.markTranscriptBlockFinalized).toHaveBeenCalledTimes(1);
+		expect(streamingComponent.isTranscriptBlockFinalized()).toBe(true);
+		expect(Bun.stripANSI(ctx.chatContainer.render(120).join("\n"))).toContain("final answer");
 		expect(requestRender).toHaveBeenCalledWith();
 	});
 
@@ -133,11 +111,14 @@ describe("EventController message_end final refresh", () => {
 			duration: 1200,
 			ttft: 150,
 		});
-		const { controller, requestRender, addChild } = createFixture({ streamingMessage: message });
+		const { controller, ctx, renderedFrames } = createFixture({ streamingMessage: message });
+		expect(Bun.stripANSI(ctx.chatContainer.render(120).join("\n"))).not.toContain(`${theme.icon.output} 42`);
 
 		await dispatchMessageEnd(controller, message);
 
-		expect(addChild).toHaveBeenCalledTimes(1);
-		expect(requestRender).toHaveBeenCalledWith();
+		const rendered = Bun.stripANSI(ctx.chatContainer.render(120).join("\n"));
+		expect(rendered).toContain("final answer");
+		expect(rendered).toContain(`${theme.icon.output} 42`);
+		expect(renderedFrames.some(frame => frame.includes(`${theme.icon.output} 42`))).toBe(true);
 	});
 });

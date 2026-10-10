@@ -78,6 +78,7 @@ function createHarness(summaryChoice = "No summary"): TreeSummaryHarness {
 			getTree: () => [root],
 			getLeafId: () => null,
 			appendLabelChange: vi.fn(),
+			getSessionName: () => undefined,
 		},
 		ui: {
 			terminal: { rows: 40 },
@@ -102,6 +103,7 @@ function createHarness(summaryChoice = "No summary"): TreeSummaryHarness {
 		showStatus: vi.fn(),
 		showError: vi.fn(),
 		showHookSelector,
+		keybindings: { getKeys: () => ["escape"] },
 		showHookEditor: vi.fn(),
 		chatContainer: { addChild: vi.fn() },
 		statusContainer: {

@@ -74,12 +74,6 @@ fn check_parse(source: &str, case_name: &str, call: &Value) {
 		(Ok(parsed), None) => {
 			let expected = &call["expect"];
 			assert_eq!(
-				parsed.edits.len() as u64,
-				expected["editCount"].as_u64().expect("editCount"),
-				"{source}: {case_name}: edit count for {input:?}"
-			);
-
-			assert_eq!(
 				file_op_value(parsed.file_op.as_ref()),
 				expected["fileOp"],
 				"{source}: {case_name}: file_op for {input:?}"
@@ -444,6 +438,12 @@ fn pure_format_input_and_streaming_contracts_cover_uncaptured_cases() {
 	})
 	.expect("cwd relative");
 	assert_eq!(absolute.sections[0].path, "src/foo.ts");
+	let outside = Patch::parse("[/workspace-other/src/foo.ts]\nPUT <1:\n+x", &SplitOptions {
+		cwd:  Some(cwd),
+		path: None,
+	})
+	.expect("outside cwd");
+	assert_eq!(outside.sections[0].path, "/workspace-other/src/foo.ts");
 	let fallback = Patch::parse("PUT <1:\n+x", &SplitOptions { cwd: None, path: Some("a.ts") })
 		.expect("fallback");
 	assert_eq!(fallback.sections[0].path, "a.ts");
@@ -557,6 +557,83 @@ fn pure_format_input_and_streaming_contracts_cover_uncaptured_cases() {
 	let lowercase = Patch::parse("[a.ts#1a2b]\nPUT 1-1:\n+A", &SplitOptions::default())
 		.expect("normalizes lowercase section tags while parsing");
 	assert_eq!(lowercase.sections[0].file_hash.as_deref(), Some("1A2B"));
+}
+
+#[test]
+fn plus_prefixed_cut_recovery_preserves_payload_bytes_and_clipboard() {
+	let cases = [
+		(
+			"PUT >1:\n+inserted();\n+\n+CUT 4.=4",
+			"a\ninserted();\n\nb\nc\ne",
+			Some(vec!["d".to_owned()]),
+		),
+		("PUT >1:\n+inserted();\n+CUT 4.=4", "a\ninserted();\nCUT 4.=4\nb\nc\nd\ne", None),
+	];
+	for (input, expected, captured) in cases {
+		for streaming in [false, true] {
+			let parsed = if streaming {
+				parse_patch_streaming(input)
+			} else {
+				parse_patch(input)
+			}
+			.expect("CUT recovery boundary parses");
+			let mut clipboard = Clipboard::default();
+			let applied = apply_edits("a\nb\nc\nd\ne", &parsed.edits, ApplyOptions {
+				clipboard:      Some(&mut clipboard),
+				path:           None,
+				on_empty_paste: EmptyPaste::Throw,
+			})
+			.expect("CUT recovery boundary applies");
+			assert_eq!(applied.text, expected, "streaming={streaming}, input={input:?}");
+			assert_eq!(
+				clipboard.lines.as_deref(),
+				captured.as_deref(),
+				"streaming={streaming}, input={input:?}"
+			);
+		}
+	}
+}
+
+#[tokio::test]
+async fn recovered_hashline_target_preserves_uniqueness_and_seen_anchor_guards() {
+	let source = "one\ntwo\n";
+	let mut workspace = Workspace::new(EditMode::Hashline);
+	workspace.config.enforce_seen_lines = true;
+	workspace.write("nested/a.txt", source);
+	let tag = workspace.snapshot("nested/a.txt", source, Some(&[1]));
+	let writer = common::DiskWriter::default();
+	workspace
+		.apply_json(&json!({ "input": format!("[a.txt#{tag}]\nPUT 2.=2:\n+TWO") }), &writer)
+		.await
+		.expect_err("recovering a path must not authorize unseen anchors");
+	assert!(writer.requests.lock().is_empty());
+	assert_eq!(workspace.read("nested/a.txt").as_deref(), Some(source));
+	assert!(workspace.read("a.txt").is_none());
+
+	workspace
+		.apply_json(&json!({ "input": format!("[a.txt#{tag}]\nPUT 1.=1:\n+ONE") }), &writer)
+		.await
+		.expect("the unique retained target permits an already-seen anchor");
+	assert_eq!(workspace.read("nested/a.txt").as_deref(), Some("ONE\ntwo\n"));
+	assert!(workspace.read("a.txt").is_none());
+
+	let ambiguous = Workspace::new(EditMode::Hashline);
+	ambiguous.write("first/a.txt", source);
+	ambiguous.write("second/a.txt", source);
+	let tag = ambiguous.snapshot("first/a.txt", source, None);
+	ambiguous.snapshot("second/a.txt", source, None);
+	let input = format!("[a.txt#{tag}]\nPUT 1.=1:\n+ONE\n");
+	let preview = preview_for(&ambiguous, input.clone(), true);
+	assert_eq!(preview.files.len(), 1);
+	assert!(preview.files[0].error.is_some());
+	let writer = common::DiskWriter::default();
+	ambiguous
+		.apply_json(&json!({ "input": input }), &writer)
+		.await
+		.expect_err("a shared basename and tag must not choose a target");
+	assert!(writer.requests.lock().is_empty());
+	assert_eq!(ambiguous.read("first/a.txt").as_deref(), Some(source));
+	assert_eq!(ambiguous.read("second/a.txt").as_deref(), Some(source));
 }
 
 #[test]

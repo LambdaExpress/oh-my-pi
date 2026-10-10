@@ -1,12 +1,13 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { type CompletedRunCollapse, collapseCompletedRuns } from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
 import { Text } from "@oh-my-pi/pi-tui";
+import { createInteractiveModeContext } from "../../helpers/interactive-mode-context";
 
 const usage = {
 	input: 1,
@@ -47,62 +48,45 @@ function fixture(
 	const session = {
 		isStreaming: false,
 		queuedUserMessageCount: 0,
-		// The merged controller seeds held tool completions from the agent on
-		// agent_start and anchor resets; these tests run without pending results.
-		agent: { getPendingToolResults: () => [] },
-		waitForMessagePersistence,
 		// Set by the Enter force-flush path (input-controller) before aborting the
 		// active run; survives the queue drain so the interrupted run's span can be
 		// parked instead of destroyed when the queue is already empty by the time
 		// the stale agent_end reaches the controller.
 		forceFlushPending: false,
-		clearForceFlushPending: () => {
-			session.forceFlushPending = false;
-		},
 	};
-	const ctx = {
-		isInitialized: true,
+	const ctx = createInteractiveModeContext({
 		settings,
-		session,
-		viewSession: session,
-		statusLine: { markActivityStart: vi.fn(), markActivityEnd: vi.fn(), invalidate: vi.fn() },
+		session: {
+			get isStreaming() {
+				return session.isStreaming;
+			},
+			get queuedUserMessageCount() {
+				return session.queuedUserMessageCount;
+			},
+			get forceFlushPending() {
+				return session.forceFlushPending;
+			},
+			clearForceFlushPending: () => {
+				session.forceFlushPending = false;
+			},
+			waitForMessagePersistence,
+			getAsyncJobSnapshot: () => null,
+		},
 		ui: { requestRender, requestComponentRender: vi.fn(), resetDisplay },
 		chatContainer,
-		statusContainer: { disposeChildren: vi.fn() },
-		pendingTools: new Map(),
-		clearPinnedError: vi.fn(),
-		ensureLoadingAnimation: vi.fn(),
-		flushPendingModelSwitch: vi.fn(async () => {}),
-		flushPendingCommandOutput: vi.fn(),
+		showJobsSheet: vi.fn(),
 		recordCompletedRunCollapse,
 		recoverCompletedRunCollapses,
 		rebuildChatFromMessages,
-		getUserMessageText: (message: AgentMessage) =>
-			message.role === "user" && typeof message.content === "string" ? message.content : "",
 		addMessageToChat: vi.fn((message: AgentMessage) => {
-			if (message.role !== "user") return [];
-			const component = new Text("user");
+			if (message.role !== "user" && message.role !== "custom") return [];
+			const component = new Text(typeof message.content === "string" ? message.content : "user");
 			chatContainer.addChild(component);
 			return [component];
 		}),
-		presentInjectNotice: vi.fn(),
-		flushDeferredInjectNotice: vi.fn(),
-		locallySubmittedUserSignatures: new Set(),
-		optimisticUserMessageSignature: undefined,
-		clearOptimisticUserMessage: vi.fn(),
-		replaceOptimisticUserMessage: vi.fn(),
-		editor: { setText: vi.fn(), getText: () => "" },
-		updatePendingMessagesDisplay: vi.fn(),
-		syncRetryHintRow: vi.fn(),
-		setWorkingMessage: vi.fn(),
-		showPinnedError: vi.fn(),
-		noteDisplayableThinkingContent: vi.fn(() => false),
-		effectiveHideThinkingBlock: false,
-		toolOutputExpanded: false,
-		sessionManager: { getCwd: () => process.cwd(), getSessionName: () => undefined },
-	};
+	});
 	return {
-		controller: new EventController(ctx as never),
+		controller: new EventController(ctx),
 		session,
 		chatContainer,
 		recordCompletedRunCollapse,
@@ -113,17 +97,16 @@ function fixture(
 	};
 }
 
-beforeAll(async () => {
+beforeEach(async () => {
 	await Settings.init({ inMemory: true, cwd: process.cwd() });
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+	vi.restoreAllMocks();
+	resetSettingsForTest();
+});
 
 describe("completed run collapse", () => {
-	it("is disabled by default", () => {
-		expect(Settings.isolated().get("display.collapseCompletedRuns")).toBe(false);
-	});
-
 	it("does not install a transcript gate while disabled", async () => {
 		const { controller, chatContainer } = fixture(false);
 		const initial = { role: "user", content: "build it", timestamp: 0 } as AgentMessage;

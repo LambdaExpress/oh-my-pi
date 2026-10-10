@@ -43,11 +43,12 @@ describe("extension/hook loader process.exit guard (#3680)", () => {
 			stderr: "pipe",
 		});
 		// Real process signals cannot use fake timers; this only bounds a wedged child.
+		// 2 s SIGKILLed healthy children (exit 137) on loaded CI runners.
 		const watchdog = setTimeout(() => {
 			try {
 				proc.kill("SIGKILL");
 			} catch {}
-		}, 2000);
+		}, 20_000);
 		try {
 			const [exitCode, stdout, stderr] = await Promise.all([
 				proc.exited,
@@ -61,9 +62,14 @@ describe("extension/hook loader process.exit guard (#3680)", () => {
 	};
 
 	const runGuardedShutdownProbe = (trigger: "sigint" | "fatal") => {
+		// Windows process.kill cannot deliver a catchable POSIX self-signal.
+		// Dispatch its real registered handler in the child; retain OS delivery
+		// on platforms where kill delivers the signal instead of terminating it.
 		const action =
 			trigger === "sigint"
-				? 'process.kill(process.pid, "SIGINT");'
+				? process.platform === "win32"
+					? 'process.emit("SIGINT");'
+					: 'process.kill(process.pid, "SIGINT");'
 				: 'void Promise.reject(new Error("probe fatal"));';
 		return runProbe(`
 import { postmortem } from "@oh-my-pi/pi-utils";
@@ -152,24 +158,25 @@ void withHostGuard(async () => {
 	it("keeps postmortem.quit behind the extension exit guard", async () => {
 		const { exitCode, stdout, stderr } = await runProbe(`
 import { postmortem } from "@oh-my-pi/pi-utils";
-import { withHostGuard } from "@oh-my-pi/pi-coding-agent/extensibility/utils";
+import { ExtensionExitError, withHostGuard } from "@oh-my-pi/pi-coding-agent/extensibility/utils";
 
 try {
 	await withHostGuard(() => postmortem.quit(37));
 } catch (err) {
-	process.stdout.write(\`\${err instanceof Error ? err.name : "UnknownError"}:\${String(err)}\\n\`);
+	if (!(err instanceof ExtensionExitError)) throw err;
+	process.stdout.write(JSON.stringify({ code: err.code, alias: err.alias }));
 }
 `);
 
-		expect(exitCode).toBe(0);
-		expect(stdout).toContain("ExtensionExitError:ExtensionExitError: Module called process.exit(37)");
+		expect(exitCode, stderr).toBe(0);
+		expect(JSON.parse(stdout)).toEqual({ code: 37, alias: "process.exit" });
 		expect(stderr).toBe("");
 	});
 
 	it("lets host SIGINT exit once while a guarded callback remains pending", async () => {
 		const { exitCode, stdout, stderr } = await runGuardedShutdownProbe("sigint");
 
-		expect(exitCode).toBe(130);
+		expect(exitCode, stderr).toBe(130);
 		expect(stdout).toBe("guard-active\ncleanup:sigint\n");
 		expect(stderr).not.toContain("[Unhandled Rejection]");
 		expect(stderr).not.toContain("ExtensionExitError");
@@ -179,7 +186,7 @@ try {
 		const { exitCode, stdout, stderr } = await runGuardedShutdownProbe("fatal");
 
 		expect(exitCode).toBe(1);
-		expect(stdout).toBe("guard-active\ncleanup:unhandled_rejection\n");
+		expect(stdout, stderr).toBe("guard-active\ncleanup:unhandled_rejection\n");
 		expect(stderr.match(/\[Unhandled Rejection\]/g)).toHaveLength(1);
 		expect(stderr).toContain("Error: probe fatal");
 		expect(stderr).not.toContain("ExtensionExitError");
@@ -204,7 +211,7 @@ import { postmortem } from "@oh-my-pi/pi-utils";
 postmortem.register("probe", reason => process.stdout.write(\`cleanup:\${reason}\\n\`));
 process.reallyExit = globalThis.__ompNativeReallyExit;
 process.stdout.write("armed\\n");
-process.kill(process.pid, "SIGHUP");
+${process.platform === "win32" ? 'process.emit("SIGHUP");' : 'process.kill(process.pid, "SIGHUP");'}
 // Keep the real child event loop alive so the platform can deliver SIGHUP;
 // real signal delivery cannot be driven by fake timers.
 await Bun.sleep(10_000);
@@ -212,7 +219,7 @@ await Bun.sleep(10_000);
 			[preload],
 		);
 
-		expect(exitCode).toBe(129);
+		expect(exitCode, stderr).toBe(129);
 		expect(stdout).toBe("armed\ncleanup:sighup\n");
 		expect(stderr).not.toContain("ExtensionExitError");
 		expect(stderr).not.toContain("Unhandled Rejection");

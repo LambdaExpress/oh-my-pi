@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AuthStorage } from "@oh-my-pi/pi-ai";
 import type { OAuthLoginCallbacks, OAuthProviderId } from "@oh-my-pi/pi-ai/oauth/types";
-import { SignInTab } from "@oh-my-pi/pi-tui/setup/scenes/sign-in";
+import { SignInScene } from "@oh-my-pi/pi-tui/setup/scenes/sign-in";
 import type { SetupSceneHost } from "@oh-my-pi/pi-tui/setup/scenes/types";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { Component } from "@oh-my-pi/pi-tui";
@@ -20,7 +20,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe("SignInTab", () => {
+describe("SignInScene", () => {
 	it("masks secret input and keeps the OSC8 login link and manual-code prompt above clipped rows", async () => {
 		const url = `https://example.com/oauth/authorize?client_id=omp&redirect_uri=http%3A%2F%2Flocalhost%3A45454%2Fcallback&state=${"a".repeat(96)}`;
 		const loginGate = Promise.withResolvers<void>();
@@ -64,7 +64,7 @@ describe("SignInTab", () => {
 			restoreFocus(): void {},
 		} as unknown as SetupSceneHost;
 
-		const tab = new SignInTab(host);
+		const tab = new SignInScene(host);
 		try {
 			for (const char of "anthropic") {
 				tab.handleInput(char);
@@ -137,7 +137,7 @@ describe("SignInTab", () => {
 			restoreFocus(): void {},
 		} as unknown as SetupSceneHost;
 
-		const tab = new SignInTab(host);
+		const tab = new SignInScene(host);
 		try {
 			for (const char of "anthropic") tab.handleInput(char);
 			tab.handleInput("\n");
@@ -180,7 +180,7 @@ describe("SignInTab", () => {
 			restoreFocus(): void {},
 		} as unknown as SetupSceneHost;
 
-		const tab = new SignInTab(host);
+		const tab = new SignInScene(host);
 		try {
 			for (const char of "anthropic") {
 				tab.handleInput(char);

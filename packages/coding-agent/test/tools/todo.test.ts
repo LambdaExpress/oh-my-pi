@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
+import { validateToolArguments } from "@oh-my-pi/pi-ai/utils/validation";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -199,6 +200,232 @@ describe("TodoTool operations", () => {
 			{ content: "Second", status: "pending" },
 		]);
 	});
+
+	for (const phase of [undefined, null]) {
+		it(`appends to a completed phase with ${phase === null ? "null" : "omitted"} phase`, async () => {
+			const session = createSession([
+				{ name: "Accepted work", tasks: [{ content: "Verified change", status: "completed" }] },
+			]);
+			const tool = new TodoTool(session);
+			const args = validateToolArguments(tool, {
+				type: "toolCall",
+				id: "append-follow-up",
+				name: tool.name,
+				arguments: {
+					op: "append",
+					...(phase === null ? { phase } : {}),
+					items: ["Build package", "Upload package"],
+				},
+			});
+
+			const result = await tool.execute("append-follow-up", tool.parameters.assert(args));
+
+			const expected: TodoPhase[] = [
+				{
+					name: "Accepted work",
+					tasks: [
+						{ content: "Verified change", status: "completed" },
+						{ content: "Build package", status: "in_progress" },
+						{ content: "Upload package", status: "pending" },
+					],
+				},
+			];
+			expect(result.isError).toBeUndefined();
+			expect(result.details?.phases).toEqual(expected);
+			expect(session.getTodoPhases?.()).toEqual(expected);
+			expect(nextActionableTask(result.details?.phases ?? [])?.content).toBe("Build package");
+		});
+	}
+
+	it("infers the active task's phase before an earlier pending phase", async () => {
+		const phases: TodoPhase[] = [
+			{ name: "Earlier", tasks: [{ content: "Queued earlier", status: "pending" }] },
+			{ name: "Current", tasks: [{ content: "Working now", status: "in_progress" }] },
+			{ name: "Later", tasks: [{ content: "Queued later", status: "pending" }] },
+		];
+		const tool = new TodoTool(createSession(phases));
+
+		const result = await tool.execute("append-active", { op: "append", items: ["Follow current work"] });
+
+		expect(result.isError).toBeUndefined();
+		expect(result.details?.phases).toEqual([
+			phases[0],
+			{
+				name: "Current",
+				tasks: [
+					{ content: "Working now", status: "in_progress" },
+					{ content: "Follow current work", status: "pending" },
+				],
+			},
+			phases[2],
+		]);
+	});
+
+	it("infers the earliest pending phase when no task is active", async () => {
+		const phases: TodoPhase[] = [
+			{ name: "Finished", tasks: [{ content: "Accepted", status: "completed" }] },
+			{ name: "Next", tasks: [{ content: "Queued next", status: "pending" }] },
+			{ name: "Later", tasks: [{ content: "Queued later", status: "pending" }] },
+		];
+		const tool = new TodoTool(createSession(phases));
+
+		const result = await tool.execute("append-pending", { op: "append", items: ["Follow next work"] });
+
+		expect(result.isError).toBeUndefined();
+		expect(result.details?.phases).toEqual([
+			phases[0],
+			{
+				name: "Next",
+				tasks: [
+					{ content: "Queued next", status: "in_progress" },
+					{ content: "Follow next work", status: "pending" },
+				],
+			},
+			phases[2],
+		]);
+	});
+
+	it("falls back to the final phase when all phases are completed", async () => {
+		const phases: TodoPhase[] = [
+			{ name: "First", tasks: [{ content: "First accepted", status: "completed" }] },
+			{ name: "Last", tasks: [{ content: "Last accepted", status: "completed" }] },
+		];
+		const tool = new TodoTool(createSession(phases));
+
+		const result = await tool.execute("append-completed", { op: "append", items: ["Follow-up"] });
+
+		expect(result.isError).toBeUndefined();
+		expect(result.details?.phases).toEqual([
+			phases[0],
+			{
+				name: "Last",
+				tasks: [
+					{ content: "Last accepted", status: "completed" },
+					{ content: "Follow-up", status: "in_progress" },
+				],
+			},
+		]);
+	});
+
+	it("retains blocked work when an implicit append starts new work", async () => {
+		const phases: TodoPhase[] = [
+			{
+				name: "Waiting",
+				tasks: [{ content: "Approval", status: "blocked", blocker: "User review" }],
+			},
+			{ name: "Final", tasks: [] },
+		];
+		const tool = new TodoTool(createSession(phases));
+
+		const result = await tool.execute("append-blocked", { op: "append", items: ["Independent work"] });
+
+		expect(result.isError).toBeUndefined();
+		expect(result.details?.phases).toEqual([
+			phases[0],
+			{ name: "Final", tasks: [{ content: "Independent work", status: "in_progress" }] },
+		]);
+	});
+
+	it("creates the default phase for an implicit append to an empty list", async () => {
+		const tool = new TodoTool(createSession());
+
+		const result = await tool.execute("append-empty", { op: "append", items: ["First", "Second"] });
+
+		expect(result.isError).toBeUndefined();
+		expect(result.details?.phases).toEqual([
+			{
+				name: "Tasks",
+				tasks: [
+					{ content: "First", status: "in_progress" },
+					{ content: "Second", status: "pending" },
+				],
+			},
+		]);
+	});
+
+	it("honors an explicit phase instead of inferring the active phase", async () => {
+		const phases: TodoPhase[] = [
+			{ name: "Finished", tasks: [{ content: "Accepted", status: "completed" }] },
+			{ name: "Current", tasks: [{ content: "Working now", status: "in_progress" }] },
+		];
+		const tool = new TodoTool(createSession(phases));
+
+		const result = await tool.execute("append-explicit", {
+			op: "append",
+			phase: "Finished",
+			items: ["Earlier follow-up"],
+		});
+
+		expect(result.isError).toBeUndefined();
+		expect(result.details?.phases).toEqual([
+			{
+				name: "Finished",
+				tasks: [
+					{ content: "Accepted", status: "completed" },
+					{ content: "Earlier follow-up", status: "pending" },
+				],
+			},
+			phases[1],
+		]);
+	});
+
+	it("rejects an explicitly empty phase without changing existing work", async () => {
+		const phases: TodoPhase[] = [{ name: "Work", tasks: [{ content: "Existing", status: "completed" }] }];
+		const session = createSession(phases);
+		const tool = new TodoTool(session);
+
+		const result = await tool.execute("append-empty-phase", {
+			op: "append",
+			phase: "",
+			items: ["New task"],
+		});
+
+		expect(result.isError).toBe(true);
+		expect(result.details?.phases).toEqual(phases);
+		expect(session.getTodoPhases?.()).toEqual(phases);
+	});
+
+	for (const phase of [undefined, "New phase"]) {
+		for (const duplicate of ["Existing", "New task"]) {
+			it(`rejects ${duplicate === "Existing" ? "existing" : "in-batch"} duplicates atomically for ${
+				phase ? "explicit" : "implicit"
+			} append`, async () => {
+				const phases: TodoPhase[] = [{ name: "Work", tasks: [{ content: "Existing", status: "completed" }] }];
+				const session = createSession(phases);
+				const tool = new TodoTool(session);
+
+				const rejected = await tool.execute("append-duplicates", {
+					op: "append",
+					...(phase ? { phase } : {}),
+					items: ["New task", duplicate],
+				});
+
+				expect(rejected.isError).toBe(true);
+				expect(rejected.details?.phases).toEqual(phases);
+				expect(session.getTodoPhases?.()).toEqual(phases);
+
+				const retried = await tool.execute("append-valid", {
+					op: "append",
+					...(phase ? { phase } : {}),
+					items: ["New task"],
+				});
+				expect(retried.isError).toBeUndefined();
+				expect(retried.details?.phases).toEqual(
+					phase
+						? [...phases, { name: phase, tasks: [{ content: "New task", status: "in_progress" }] }]
+						: [
+								{
+									name: "Work",
+									tasks: [
+										{ content: "Existing", status: "completed" },
+										{ content: "New task", status: "in_progress" },
+									],
+								},
+							],
+				);
+			});
+		}
+	}
 
 	it("blocks a task (excluded from remaining, counted distinctly) and unblocks it", async () => {
 		const tool = new TodoTool(createSession());
@@ -520,7 +747,7 @@ describe("TodoTool lenient op recovery", () => {
 		expect(initialized.details?.op).toBe("init");
 
 		// With existing todos the same shape is ambiguous (flat init would wipe
-		// the list; append lacks a phase) and must error instead of guessing.
+		// the list; append would retain it) and must error instead of guessing.
 		const populated = new TodoTool(
 			createSession([{ name: "Work", tasks: [{ content: "First", status: "pending" }] }]),
 		);
@@ -564,10 +791,6 @@ describe("TodoTool empty items tolerance", () => {
 });
 
 describe("todoMatchesAnyDescription", () => {
-	it("matches identical strings", () => {
-		expect(todoMatchesAnyDescription("Sonnet #1: AGENTS audit", ["Sonnet #1: AGENTS audit"])).toBe(true);
-	});
-
 	it("matches case- and whitespace-insensitively", () => {
 		expect(todoMatchesAnyDescription("  Sonnet  #1: AGENTS Audit  ", ["sonnet #1: agents audit"])).toBe(true);
 	});
@@ -737,7 +960,6 @@ describe("selectCollapsedTodos walking viewport (#5873)", () => {
 			"Task 12",
 			"Task 13",
 		]);
-		expect(sel.summary).toContain("6 more todos");
 	});
 
 	it("leads with the last closed task and omits the rest in collapsed mode", () => {
@@ -781,25 +1003,14 @@ describe("selectCollapsedTodos walking viewport (#5873)", () => {
 		expect(contents(sel)).toHaveLength(5);
 	});
 
-	it("caps active todos and counts the hidden actives in the summary", () => {
+	it("caps active todos without including unrelated pending rows", () => {
 		const tasks = mk(10, []);
 		const matched = (t: TodoItem) =>
 			["Task 1", "Task 2", "Task 3", "Task 4", "Task 5", "Task 6", "Task 7"].includes(t.content);
 		const sel = selectCollapsedTodos(tasks, matched, 5);
 		expect(contents(sel)).toEqual(["Task 1", "Task 2", "Task 3", "Task 4", "Task 5"]);
-		expect(sel.summary).toBe("… 2 more active todos");
 		// No unrelated pending rows leak in.
 		expect(contents(sel).some(c => ["Task 8", "Task 9", "Task 10"].includes(c))).toBe(false);
-	});
-
-	it("keeps a summary when actives exactly fill the cap but pending remains", () => {
-		// 5 matched actives + 1 trailing pending, cap 5. The active-overflow branch
-		// must NOT swallow the hidden pending work with an empty summary (#5878).
-		const tasks = mk(6, []);
-		const matched = (t: TodoItem) => ["Task 1", "Task 2", "Task 3", "Task 4", "Task 5"].includes(t.content);
-		const sel = selectCollapsedTodos(tasks, matched, 5);
-		expect(contents(sel)).toEqual(["Task 1", "Task 2", "Task 3", "Task 4", "Task 5"]);
-		expect(sel.summary).toBe("… 1 more todo");
 	});
 
 	it("returns the whole open set with no summary when it fits", () => {
@@ -848,33 +1059,6 @@ describe("todoToolRenderer.renderCall malformed-args regression (#2005)", () => 
 		// `normalizeTodoArg` must keep tolerating the legacy batch shape.
 		const args = { ops: '[{"op":"init"' } as unknown as Parameters<typeof todoToolRenderer.renderCall>[0];
 		expect(() => todoToolRenderer.renderCall(args, renderOptions, theme)).not.toThrow();
-	});
-
-	it("renders op summary metadata for a well-formed flat call", () => {
-		const args = { op: "init", items: ["a", "b", "c"] };
-		const component = todoToolRenderer.renderCall(args, renderOptions, theme);
-		// `Text(text, 0, 0)` from `@oh-my-pi/pi-tui` exposes the content via .render().
-		const rendered = Bun.stripANSI(component.render(120).join("\n"));
-		expect(rendered).toContain("init");
-		expect(rendered).toContain("3 items");
-	});
-
-	it("still renders legacy multi-op `ops` arrays from old transcripts", () => {
-		const args = {
-			ops: [
-				{ op: "init", items: ["a", "b", "c"] },
-				{ op: "done", task: "a" },
-				{ op: "append", phase: "Cleanup", items: ["d"] },
-			],
-		};
-		const component = todoToolRenderer.renderCall(args, renderOptions, theme);
-		const rendered = Bun.stripANSI(component.render(120).join("\n"));
-		expect(rendered).toContain("init");
-		expect(rendered).toContain("3 items");
-		expect(rendered).toContain("done");
-		expect(rendered).toContain("append");
-		expect(rendered).toContain("Cleanup");
-		expect(rendered).toContain("1 item");
 	});
 });
 

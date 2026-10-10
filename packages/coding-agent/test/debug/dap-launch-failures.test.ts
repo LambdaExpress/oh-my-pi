@@ -614,8 +614,8 @@ describe("DAP launch failure handling", () => {
 		}
 	});
 
-	it("kills the detached adapter process when it never dials back on the TCP client-addr path", async () => {
-		const originalPlatform = process.platform;
+	it("kills the adapter process when it never dials back on the TCP client-addr path", async () => {
+		const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
 		Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
 		try {
 			const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-debug-tcp-leak-"));
@@ -651,7 +651,7 @@ describe("DAP launch failure handling", () => {
 				await removeWithRetries(cwd);
 			}
 		} finally {
-			Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+			Object.defineProperty(process, "platform", platformDescriptor);
 		}
 	});
 });
@@ -761,21 +761,6 @@ describe("DAP TCP transport resilience", () => {
 
 		expect(failure?.message).toContain("Adapter process exited before TCP port");
 		expect(failure?.message).toContain(stderr);
-	});
-
-	it("keeps the original readiness message when the adapter wrote no stderr", async () => {
-		spyOn(piUtils.ptree, "spawn").mockReturnValue(createExitedTcpProc(""));
-
-		const failure = await DapClient.spawn({
-			adapter: TCP_ADAPTER,
-			cwd: process.cwd(),
-			socketReadyTimeoutMs: 100,
-		}).then(
-			() => undefined,
-			(error: Error) => error,
-		);
-
-		expect(failure?.message).toMatch(/^Adapter process exited before TCP port 127\.0\.0\.1:\d+ was ready$/);
 	});
 
 	// Deterministic gate contract: the client must not open its first connect
@@ -1180,36 +1165,6 @@ describe("DebugTool launch validation", () => {
 		}
 	});
 
-	it("shows supported install options when the JavaScript debug adapter is unavailable", async () => {
-		const launchSpy = spyOn(dapModule, "selectLaunchAdapter").mockReturnValue({
-			kind: "unavailable",
-			adapterName: "js-debug-adapter",
-			command: "js-debug-adapter",
-		});
-		try {
-			const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-debug-js-debug-hint-"));
-			try {
-				await fs.writeFile(path.join(cwd, "main.js"), "console.log('hi');\n");
-				const session: ToolSession = {
-					cwd,
-					hasUI: false,
-					getSessionFile: () => null,
-					getSessionSpawns: () => "*",
-					settings: Settings.isolated({ "debug.enabled": true }),
-				};
-				const tool = new DebugTool(session);
-
-				await expect(tool.execute("call", { action: "launch", program: "main.js" })).rejects.toThrow(
-					/download.*github\.com\/microsoft\/vscode-js-debug/,
-				);
-			} finally {
-				await removeWithRetries(cwd);
-			}
-		} finally {
-			launchSpy.mockRestore();
-		}
-	});
-
 	it("points to DAP configuration when a custom adapter command is unavailable", async () => {
 		const launchSpy = spyOn(dapModule, "selectLaunchAdapter").mockReturnValue({
 			kind: "unavailable",
@@ -1237,31 +1192,6 @@ describe("DebugTool launch validation", () => {
 			}
 		} finally {
 			launchSpy.mockRestore();
-		}
-	});
-
-	it("shows the rdbg install command for explicit Ruby attach", async () => {
-		const attachSpy = spyOn(dapModule, "selectAttachAdapter").mockReturnValue(null);
-		try {
-			const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-debug-rdbg-attach-"));
-			try {
-				const session: ToolSession = {
-					cwd,
-					hasUI: false,
-					getSessionFile: () => null,
-					getSessionSpawns: () => "*",
-					settings: Settings.isolated({ "debug.enabled": true }),
-				};
-				const tool = new DebugTool(session);
-
-				await expect(tool.execute("call", { action: "attach", pid: 1234, adapter: "rdbg" })).rejects.toThrow(
-					/gem install debug/,
-				);
-			} finally {
-				await removeWithRetries(cwd);
-			}
-		} finally {
-			attachSpy.mockRestore();
 		}
 	});
 

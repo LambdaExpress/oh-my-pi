@@ -126,6 +126,8 @@ async function createGitRepo(name: string): Promise<{ repoRoot: string; initialS
 	await runGit(repoRoot, ["init", "-q", "-b", "main"]);
 	await runGit(repoRoot, ["config", "user.email", "test@example.com"]);
 	await runGit(repoRoot, ["config", "user.name", "Test User"]);
+	await runGit(repoRoot, ["config", "core.autocrlf", "false"]);
+	await runGit(repoRoot, ["config", "core.eol", "lf"]);
 	await fs.mkdir(path.join(repoRoot, "packages", "agent"), { recursive: true });
 	await fs.writeFile(path.join(repoRoot, "README.md"), "base\n", "utf8");
 	await fs.writeFile(path.join(repoRoot, "packages", "agent", "index.ts"), "export const value = 1;\n", "utf8");
@@ -139,6 +141,10 @@ async function createRecursiveSubmoduleFixture(name: string): Promise<RecursiveS
 	await runGit(leafRepoRoot, ["init", "-q", "-b", "main"]);
 	await runGit(leafRepoRoot, ["config", "user.email", "test@example.com"]);
 	await runGit(leafRepoRoot, ["config", "user.name", "Test User"]);
+	await runGit(leafRepoRoot, ["config", "core.autocrlf", "false"]);
+	await runGit(leafRepoRoot, ["config", "core.eol", "lf"]);
+	// Attributes travel with cloned submodules; local Git config does not.
+	await fs.writeFile(path.join(leafRepoRoot, ".gitattributes"), "* -text\n", "utf8");
 	await fs.writeFile(path.join(leafRepoRoot, "leaf.txt"), "leaf base\n", "utf8");
 	await runGit(leafRepoRoot, ["add", "."]);
 	await runGit(leafRepoRoot, ["commit", "-q", "-m", "leaf base"]);
@@ -148,6 +154,9 @@ async function createRecursiveSubmoduleFixture(name: string): Promise<RecursiveS
 	await runGit(childRepoRoot, ["init", "-q", "-b", "main"]);
 	await runGit(childRepoRoot, ["config", "user.email", "test@example.com"]);
 	await runGit(childRepoRoot, ["config", "user.name", "Test User"]);
+	await runGit(childRepoRoot, ["config", "core.autocrlf", "false"]);
+	await runGit(childRepoRoot, ["config", "core.eol", "lf"]);
+	await fs.writeFile(path.join(childRepoRoot, ".gitattributes"), "* -text\n", "utf8");
 	await fs.writeFile(path.join(childRepoRoot, "child.txt"), "child base\n", "utf8");
 	await runGit(childRepoRoot, ["add", "."]);
 	await runGit(childRepoRoot, ["commit", "-q", "-m", "child base"]);
@@ -159,6 +168,9 @@ async function createRecursiveSubmoduleFixture(name: string): Promise<RecursiveS
 	await runGit(superRepoRoot, ["init", "-q", "-b", "main"]);
 	await runGit(superRepoRoot, ["config", "user.email", "test@example.com"]);
 	await runGit(superRepoRoot, ["config", "user.name", "Test User"]);
+	await runGit(superRepoRoot, ["config", "core.autocrlf", "false"]);
+	await runGit(superRepoRoot, ["config", "core.eol", "lf"]);
+	await fs.writeFile(path.join(superRepoRoot, ".gitattributes"), "* -text\n", "utf8");
 	await fs.writeFile(path.join(superRepoRoot, "root.txt"), "root base\n", "utf8");
 	await runGit(superRepoRoot, ["add", "."]);
 	await runGit(superRepoRoot, ["commit", "-q", "-m", "root base"]);

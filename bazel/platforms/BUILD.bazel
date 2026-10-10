@@ -68,3 +68,11 @@ platform(
         "//bazel/variants:modern",
     ],
 )
+
+platform(
+    name = "win32-arm64",
+    constraint_values = [
+        "@platforms//os:windows",
+        "@platforms//cpu:aarch64",
+    ],
+)

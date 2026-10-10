@@ -122,14 +122,24 @@ describe("Composer session metadata and controls", () => {
 		expect(html).not.toContain("<select");
 	});
 
-	it("keeps read-only and waiting composer states disabled with accurate placeholders", () => {
-		const readOnly = renderComposer({ readOnly: true });
-		const waiting = renderComposer({ phase: "waiting" });
+	it("disables prompt entry and sending in read-only and waiting sessions", () => {
+		for (const overrides of [{ readOnly: true }, { phase: "waiting" as const }]) {
+			const controls = { input: false, send: false };
+			new HTMLRewriter()
+				.on("textarea.sh-composer-input", {
+					element(el) {
+						controls.input = el.hasAttribute("disabled");
+					},
+				})
+				.on("button.sh-composer-send", {
+					element(el) {
+						controls.send = el.hasAttribute("disabled");
+					},
+				})
+				.transform(renderComposer(overrides));
 
-		expect(readOnly).toContain("read-only session — watching only");
-		expect(readOnly).toContain('disabled=""');
-		expect(waiting).toContain("waiting for session…");
-		expect(waiting).toContain('disabled=""');
+			expect(controls).toEqual({ input: true, send: true });
+		}
 	});
 
 	it("keeps queue and abort controls observable while the host is working", () => {

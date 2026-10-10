@@ -151,9 +151,19 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 			const formatScopePath = (targetPath: string): string => formatPathRelativeToCwd(targetPath, this.session.cwd);
 			const scopedPaths = toPathList(pathInput);
 			const effectivePaths = scopedPaths.length > 0 ? scopedPaths : ["."];
+			const internalRouter = InternalUrlRouter.instance();
+			// Delimiter probes and native walks share the session mapping and
+			// approval tier; a mixed URL/workspace union must not escape either.
+			const urlFilesystem = new InternalUrlFilesystem({
+				context: sessionResolveContext(this.session, { signal }),
+				tier: resolveToolTier(this, params),
+			});
 			const rawPatternInputs = this.#customOps
 				? effectivePaths
-				: await expandDelimitedPathEntries(effectivePaths, this.session.cwd, { splitter: parseFindPattern });
+				: await expandDelimitedPathEntries(effectivePaths, this.session.cwd, {
+						splitter: parseFindPattern,
+						filesystem: urlFilesystem,
+					});
 			const rawPatterns = rawPatternInputs.map(input => normalizePathLikeInput(input).replace(/\\/g, "/"));
 			const aliasResolvedPatterns = this.#rootPathAlias
 				? rawPatterns.map(pattern => (/^\/+$/.test(pattern) ? "." : pattern))
@@ -161,12 +171,6 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 			if (aliasResolvedPatterns.some(pattern => /^\/+$/.test(pattern))) {
 				throw new ToolError("Searching from root directory '/' is not allowed");
 			}
-			const internalRouter = InternalUrlRouter.instance();
-			// Internal URLs resolve inside the native walk, bounded by the tier this call was approved at.
-			const urlFilesystem = new InternalUrlFilesystem({
-				context: sessionResolveContext(this.session, { signal }),
-				tier: resolveToolTier(this, params),
-			});
 			const normalizedPatterns = aliasResolvedPatterns.map(pattern => internalRouter.normalize(pattern));
 			if (normalizedPatterns.some(pattern => pattern.length === 0)) {
 				throw new ToolError("`path` must contain non-empty globs or paths");
@@ -223,6 +227,12 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 				throw new ToolError("Limit must be a positive number");
 			}
 			const effectiveLimit = Math.min(MAX_LIMIT, Math.max(1, Math.floor(requestedLimit)));
+			// Disclose requests above the hard cap rather than implying the
+			// clamped response exhausted the scope (#13263).
+			const clampNotice =
+				requestedLimit > MAX_LIMIT
+					? `Requested limit ${requestedLimit} clamped to the max of ${MAX_LIMIT}`
+					: undefined;
 			const includeHidden = hidden ?? true;
 			const useGitignore = gitignore ?? true;
 			const timeoutMs = this.#timeoutMs;
@@ -258,6 +268,7 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 					// to a timeout notice (the two statements contradict each other).
 					const parts = opts?.timedOut ? [] : ["No files found matching pattern"];
 					if (notice) parts.push(notice);
+					if (clampNotice) parts.push(clampNotice);
 					if (missingPathsNote) parts.push(missingPathsNote);
 					// Zero results is useless regardless of notices: the follow-up
 					// call has already corrected course by the time compaction runs.
@@ -270,6 +281,7 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 				const baseOutput = formatGroupedPaths(limited);
 				const trailingNotes: string[] = [];
 				if (notice) trailingNotes.push(notice);
+				if (clampNotice) trailingNotes.push(clampNotice);
 				if (missingPathsNote) trailingNotes.push(missingPathsNote);
 				const rawOutput = trailingNotes.length > 0 ? `${baseOutput}\n\n${trailingNotes.join("\n")}` : baseOutput;
 				const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
@@ -285,12 +297,21 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 					missingPaths: missingPaths.length > 0 ? missingPaths : undefined,
 				};
 
+				// Cap the doubled suggestion at MAX_LIMIT; once the reached count
+				// is already the cap there is no larger usable limit, so suppress
+				// the advice rather than recommend a value that clamps back (#13263).
+				const reachedLimit = limitMeta.resultLimit;
+				const cappedSuggestion =
+					reachedLimit === undefined ? undefined : Math.min(reachedLimit.reached * 2, MAX_LIMIT);
+				const resultLimitInput =
+					reachedLimit === undefined
+						? undefined
+						: cappedSuggestion !== undefined && cappedSuggestion > reachedLimit.reached
+							? { reached: reachedLimit.reached, suggestion: cappedSuggestion }
+							: { reached: reachedLimit.reached, suggestion: null };
 				const resultBuilder = toolResult(details)
 					.text(truncation.content)
-					// Forward the full notice (including the suggestion capped at
-					// MAX_LIMIT) so the "Use limit=N for more" hint never exceeds what
-					// a follow-up call can actually deliver.
-					.limits({ resultLimit: limitMeta.resultLimit });
+					.limits({ resultLimit: resultLimitInput });
 				if (truncation.truncated) {
 					resultBuilder.truncation(truncation, { direction: "head" });
 				}
@@ -418,11 +439,13 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 			const runTarget = async (prepared: NativePreparedTarget): Promise<Array<{ path: string; mtime: number }>> => {
 				if (prepared.result) return prepared.result;
 				const { target } = prepared;
+				const directoriesOnly = target.globPattern.endsWith("/");
 				try {
 					const result = await this.#nativeGlob(
 						{
-							pattern: target.globPattern,
+							pattern: directoriesOnly ? target.globPattern.replace(/\/+$/, "") : target.globPattern,
 							path: target.searchPath,
+							fileType: directoriesOnly ? natives.FileType.Dir : undefined,
 							hidden: includeHidden,
 							maxResults: effectiveLimit,
 							sortByMtime: true,

@@ -3,7 +3,13 @@
  *
  * Subagents can call this tool incrementally or terminally depending on `type`.
  */
-import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import type {
+	AgentMessage,
+	AgentTool,
+	AgentToolContext,
+	AgentToolResult,
+	AgentToolUpdateCallback,
+} from "@oh-my-pi/pi-agent-core";
 import type { TSchema } from "@oh-my-pi/pi-ai/types";
 import {
 	dereferenceJsonSchema,
@@ -17,9 +23,44 @@ import yieldDescription from "../prompts/tools/yield.md" with { type: "text" };
 import { subprocessToolRegistry } from "../task/subprocess-tool-registry";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { ToolSession } from ".";
-import { buildOutputValidator, formatAllValidationIssues } from "./output-schema-validator";
+import { buildOutputValidator, formatAllValidationIssues, type OutputValidator } from "./output-schema-validator";
 
 const YIELD_FORMAT_HINT = 'Submit success as {"data":<your output>} or failure as {"error":"message"}.';
+
+export function resolveYieldReportText(messages: readonly AgentMessage[], toolCallId: string): string | undefined {
+	const current = messages.at(-1);
+	if (current?.role !== "assistant" || ["error", "aborted", "length"].includes(current.stopReason)) return;
+	const calls = current.content.filter(block => block.type === "toolCall");
+	if (calls.length !== 1 || calls[0].name !== "yield" || calls[0].id !== toolCallId) return;
+	const currentText = current.content
+		.filter(block => block.type === "text")
+		.map(block => block.text)
+		.join("\n");
+	if (currentText.trim()) return currentText;
+	for (let index = messages.length - 2; index >= 0; index--) {
+		const previous = messages[index];
+		if (previous.role === "developer") {
+			const blocks =
+				typeof previous.content === "string" ? [{ type: "text", text: previous.content }] : previous.content;
+			if (
+				blocks.length &&
+				blocks.every(block => block.type === "text" && block.text.startsWith("<system-reminder>"))
+			)
+				continue;
+		}
+		if (
+			previous.role !== "assistant" ||
+			previous.stopReason !== "stop" ||
+			previous.content.some(block => block.type === "toolCall")
+		)
+			return;
+		const text = previous.content
+			.filter(block => block.type === "text")
+			.map(block => block.text)
+			.join("\n");
+		return text.trim() ? text : undefined;
+	}
+}
 
 export interface YieldDetails {
 	/** Successful result payload, or omitted when `useLastTurn` requests last-turn extraction. */
@@ -78,17 +119,120 @@ function hasUnresolvedRefs(schema: unknown): boolean {
 	return false;
 }
 
-const yieldTypeSchema: Record<string, unknown> = {
-	anyOf: [
-		{ type: "string" },
-		{
-			type: "array",
-			minItems: 1,
-			items: { type: "string" },
-		},
-	],
-	description: "Optional result type. A non-empty string array is incremental; a string is terminal.",
-};
+const INCREMENTAL_PAYLOAD_HINT =
+	"One label: data is that field's value (one element for an array field), not the full output object. " +
+	"Multiple labels: each receives the SAME data, which must satisfy every selected field; keyed objects are not split. " +
+	"Different field shapes require separate single-label calls.";
+
+interface IncrementalYieldContract {
+	labels: string;
+	payloadSchemas?: string;
+	examples: readonly string[];
+	typeSchema: Record<string, unknown>;
+}
+
+function hasSectionLabelPatterns(schema: Record<string, unknown>): boolean {
+	if (isPlainRecord(schema.patternProperties) && Object.keys(schema.patternProperties).length > 0) return true;
+	for (const key of ["allOf", "anyOf", "oneOf"] as const) {
+		const branches = schema[key];
+		if (
+			Array.isArray(branches) &&
+			branches.some(branch => isPlainRecord(branch) && hasSectionLabelPatterns(branch))
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function buildIncrementalYieldContract(
+	validator?: OutputValidator,
+	schema?: Record<string, unknown>,
+): IncrementalYieldContract {
+	const labels = [
+		...new Set([...(validator?.knownSectionLabels ?? []), ...(validator?.validateSection.keys() ?? [])]),
+	].filter(label => validator?.isKnownSection(label) !== false);
+	const closed = validator?.rejectUnknownSections === true;
+	const patterned = schema !== undefined && hasSectionLabelPatterns(schema);
+	const labelList = labels.map(label => JSON.stringify(label)).join(", ");
+	const labelHint = closed
+		? patterned
+			? `Declared incremental labels: ${labelList || "none"}; labels matching the output schema's patternProperties are also accepted.`
+			: `Allowed incremental labels: ${labelList || "none"}.`
+		: `Incremental labels are caller-defined${labelList ? `; declared field labels: ${labelList}` : ""}.`;
+	const typeSchema = {
+		description:
+			`Optional result type. A non-empty string array is incremental; a string is terminal. ${labelHint} ` +
+			INCREMENTAL_PAYLOAD_HINT,
+		anyOf: [
+			{ type: "string" },
+			...(!closed || patterned || labels.length > 0
+				? [
+						{
+							type: "array",
+							minItems: 1,
+							items: {
+								type: "string",
+								...(closed && !patterned ? { enum: labels } : {}),
+							},
+						},
+					]
+				: []),
+		],
+	};
+	const rawProperties = schema?.properties;
+	const properties = isPlainRecord(rawProperties) ? rawProperties : {};
+	const payloadSchemas: Record<string, unknown> = Object.create(null);
+	for (const label of validator?.validateSection.keys() ?? []) {
+		const field = properties[label];
+		payloadSchemas[label] = isPlainRecord(field) && field.type === "array" ? (field.items ?? field) : field;
+	}
+	const examples: string[] = [];
+	let exampleData: unknown;
+	let exampleLabel: string | undefined;
+	for (const label of [
+		...(labels.includes("report") ? ["report"] : []),
+		...labels.filter(label => label !== "report"),
+	]) {
+		const validate = validator?.validateSection.get(label);
+		if (!validate) continue;
+		const field = payloadSchemas[label];
+		const candidates = isPlainRecord(field)
+			? [
+					...(Object.hasOwn(field, "const") ? [field.const] : []),
+					...(Array.isArray(field.enum) ? field.enum : []),
+					"Partial report",
+					0,
+					false,
+					{},
+				]
+			: ["Partial report"];
+		for (const data of candidates) {
+			if (data === undefined || data === null || !validate(data).success) continue;
+			exampleLabel = label;
+			exampleData = data;
+			examples.push(JSON.stringify({ type: [label], data }));
+			break;
+		}
+		if (exampleLabel !== undefined) break;
+	}
+	if (exampleLabel !== undefined) {
+		const otherLabel = labels.find(
+			label => label !== exampleLabel && validator?.validateSection.get(label)?.(exampleData).success,
+		);
+		if (otherLabel !== undefined) {
+			examples.push(JSON.stringify({ type: [exampleLabel, otherLabel], data: exampleData }));
+		}
+	} else if (!validator) {
+		examples.push(JSON.stringify({ type: ["notes"], data: { summary: "Partial report" } }));
+	}
+	return {
+		labels: labelHint,
+		payloadSchemas: Object.keys(payloadSchemas).length > 0 ? formatSchema(payloadSchemas) : undefined,
+		examples,
+		typeSchema,
+	};
+}
 
 function isYieldType(value: unknown): value is string | string[] {
 	return (
@@ -164,6 +308,7 @@ function withSectionVariants(dataSchema: Record<string, unknown>): Record<string
 	const branches: unknown[] = [];
 	const seen = new Set<string>();
 	const add = (schema: unknown): void => {
+		if (schema === true) schema = {};
 		if (schema === null || typeof schema !== "object") return;
 		const key = JSON.stringify(schema);
 		if (seen.has(key)) return;
@@ -209,7 +354,10 @@ function resolveWorkPoolYieldItem(items: readonly WorkPoolYieldItem[], value: un
 	throw new Error(`key must be one of: ${items.map(candidate => candidate.index).join(", ")}`);
 }
 
-function buildYieldParameters(dataSchema: Record<string, unknown>): Record<string, unknown> {
+function buildYieldParameters(
+	dataSchema: Record<string, unknown>,
+	typeSchema: Record<string, unknown>,
+): Record<string, unknown> {
 	// `data` xor `error`, and "omitted data requires a `type`", are enforced in
 	// `execute()` at runtime, NOT in this schema: a top-level combinator
 	// (`allOf`/`anyOf`/`oneOf`/...) makes OpenAI/Codex Responses reject the whole
@@ -220,7 +368,7 @@ function buildYieldParameters(dataSchema: Record<string, unknown>): Record<strin
 		additionalProperties: false,
 		description: "submit data or error",
 		properties: {
-			type: yieldTypeSchema,
+			type: typeSchema,
 			data: dataSchema,
 			error: { type: "string", description: "Failure reason; mutually exclusive with data" },
 		},
@@ -263,6 +411,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	#hasIncrementalSections = false;
 	readonly #session: ToolSession;
 	readonly #parameters: TSchema;
+	readonly #incrementalContract: IncrementalYieldContract;
 	#workPoolBatchKey = "";
 	readonly #submittedWorkPoolItems = new Set<string>();
 
@@ -274,6 +423,9 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		return prompt.render(yieldDescription, {
 			hasOutputSchema: this.#validate !== undefined,
 			workPoolItems: this.#workPoolItems().length > 0,
+			incrementalLabels: this.#incrementalContract.labels,
+			incrementalPayloadSchemas: this.#incrementalContract.payloadSchemas,
+			incrementalExamples: this.#incrementalContract.examples,
 		});
 	}
 
@@ -289,6 +441,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		let knownSectionLabels: readonly string[] = [];
 		let isKnownSection: ((label: string) => boolean) | undefined;
 		let parameters: TSchema;
+		let incrementalContract: IncrementalYieldContract | undefined;
 
 		try {
 			const {
@@ -304,11 +457,19 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				knownSectionLabels = validator.knownSectionLabels;
 				isKnownSection = label => validator.isKnownSection(label);
 			}
+			const sectionSchema = normalizedSchema === undefined ? undefined : dereferenceJsonSchema(normalizedSchema);
+			incrementalContract = buildIncrementalYieldContract(
+				validator,
+				isPlainRecord(sectionSchema) ? sectionSchema : undefined,
+			);
 
 			const schemaHint = formatSchema(normalizedSchema ?? session.outputSchema);
 			const schemaDescription = schemaError
 				? `Structured JSON output (output schema invalid; accepting unconstrained object): ${schemaError}`
-				: `Structured output matching the schema:\n${schemaHint}`;
+				: `Terminal data matching the full output schema:\n${schemaHint}\n${INCREMENTAL_PAYLOAD_HINT}` +
+					(incrementalContract.payloadSchemas
+						? `\nIncremental data schemas by label:\n${incrementalContract.payloadSchemas}`
+						: "");
 			let sanitizedSchema: Record<string, unknown> | undefined;
 			if (!schemaError && normalizedSchema !== undefined) {
 				const strictProbe = tryEnforceStrictSchema(normalizedSchema);
@@ -339,13 +500,15 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 					schemaError ? schemaDescription : "Structured JSON output (no schema specified)",
 				);
 			}
-			parameters = buildYieldParameters(dataSchema);
+			parameters = buildYieldParameters(dataSchema, incrementalContract.typeSchema);
 			JSON.stringify(parameters);
 			if (!isValidJsonSchema(parameters)) throw new Error("yield parameters schema is invalid");
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
+			incrementalContract ??= buildIncrementalYieldContract();
 			parameters = buildYieldParameters(
 				looseRecordSchema(`Structured JSON output (schema processing failed: ${errorMsg})`),
+				incrementalContract.typeSchema,
 			);
 			validate = undefined;
 			this.#schemaStrict = false;
@@ -358,6 +521,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		this.#knownSectionLabels = knownSectionLabels;
 		this.#isKnownSection = isKnownSection;
 		this.#parameters = parameters;
+		this.#incrementalContract = incrementalContract;
 	}
 
 	/**
@@ -387,7 +551,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	}
 
 	async execute(
-		_toolCallId: string,
+		toolCallId: string,
 		params: unknown,
 		_signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<YieldDetails>,
@@ -414,7 +578,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		} else {
 			yieldType = parseYieldType(raw.type);
 		}
-		const useLastTurn = errorMessage === undefined && data === undefined && yieldType !== undefined;
+		let useLastTurn = errorMessage === undefined && data === undefined && yieldType !== undefined;
 		// Incremental array-typed sections carry partial data (one finding, one
 		// field) that cannot satisfy the full output schema; the assembled result
 		// is validated as a whole at finalization (executor finalizeSubprocessOutput).
@@ -486,9 +650,10 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			status === "success" &&
 			useLastTurn &&
 			(isIncremental || !this.#hasIncrementalSections) &&
-			this.#session.getLastAssistantText !== undefined
+			(this.#session.getLastAssistantText !== undefined || this.#session.getYieldReportText !== undefined)
 		) {
-			const lastTurnText = this.#session.getLastAssistantText();
+			const resolveReport = !isIncremental && this.#session.getYieldReportText;
+			const lastTurnText = resolveReport ? resolveReport(toolCallId) : this.#session.getLastAssistantText?.();
 			if (lastTurnText === undefined || lastTurnText.trim().length === 0) {
 				this.#emptyResultFailures++;
 				if (this.#emptyResultFailures > MAX_EMPTY_RESULT_RETRIES) {
@@ -510,6 +675,10 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 					`yield used the last assistant turn as the result, but that turn contains no text (thinking only). ` +
 						`Put your result in \`data\`: ${YIELD_FORMAT_HINT} Empty last-turn result retries remaining before abort: ${remaining}.`,
 				);
+			}
+			if (resolveReport) {
+				data = lastTurnText;
+				useLastTurn = false;
 			}
 		}
 		if (status === "success" && !useLastTurn) {

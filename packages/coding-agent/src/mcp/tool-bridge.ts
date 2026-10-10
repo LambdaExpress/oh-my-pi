@@ -7,7 +7,7 @@ import { MCP_TOOL_NAME_PREFIX, type MCPToolDetails } from "@oh-my-pi/pi-tui/tool
 import type { AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent, TSchema } from "@oh-my-pi/pi-ai";
 import { normalizeSchemaForMCP } from "@oh-my-pi/pi-ai/utils/schema";
-import { logger, untilAborted } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, untilAborted } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { SourceMeta } from "../capability/types";
 import type {
@@ -23,7 +23,7 @@ import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { schemaDeclaresIntentField } from "../utils/tool-schema";
 import { callTool } from "./client";
 import { formatMCPToolFailure, MCPTransportError } from "./errors";
-import { renderMCPCall, renderMCPResult } from "@oh-my-pi/pi-tui/tools/mcp";
+import { describeMCPCall, describeMCPResult, renderMCPCall, renderMCPResult } from "@oh-my-pi/pi-tui/tools/mcp";
 import type {
 	MCPAuthChallenge,
 	MCPServerConnection,
@@ -229,6 +229,7 @@ function formatMCPContent(content: MCPContent[]): Array<TextContent | ImageConte
  * reaches the model through the standard content channel — and the eval
  * `tool.*` and subagent proxy bridges that read the same result. Subject to the
  * usual spill/byte-cap machinery like any other text block.
+ * Programmatic consumers use details.structuredContent instead of parsing this rendering.
  */
 function formatStructuredContent(structured: Record<string, unknown>): string {
 	let json: string;
@@ -261,6 +262,54 @@ function structuredContentAlreadyInText(structured: Record<string, unknown>, con
 	return false;
 }
 
+function isUndiagnosedFailureEnvelope(value: unknown): boolean {
+	return (
+		isRecord(value) &&
+		Object.hasOwn(value, "success") &&
+		Object.hasOwn(value, "message") &&
+		Object.hasOwn(value, "data") &&
+		Object.keys(value).length === 3 &&
+		value.success === false &&
+		value.message === null &&
+		value.data === null
+	);
+}
+
+/**
+ * A bare failure envelope does not prove an RPC failure or that execution
+ * stopped. Keep it as domain data, but expose the missing execution outcome.
+ * Additional fields or content may explain a business result and must not be
+ * mistaken for this undiagnosed envelope.
+ */
+function getUndiagnosedResultDiagnostic(result: MCPToolCallResult): MCPToolDetails["diagnostic"] {
+	let foundEnvelope = result.structuredContent !== undefined;
+	if (foundEnvelope && !isUndiagnosedFailureEnvelope(result.structuredContent)) return undefined;
+	for (const item of result.content) {
+		if (item.type !== "text") return undefined;
+		if (!item.text.trim()) continue;
+		try {
+			if (!isUndiagnosedFailureEnvelope(JSON.parse(item.text))) return undefined;
+		} catch {
+			return undefined;
+		}
+		foundEnvelope = true;
+	}
+	if (!foundEnvelope) return undefined;
+	return {
+		source: "client",
+		kind: "undiagnosed_server_result",
+		executionOutcome: "unknown",
+		automaticRetry: false,
+		message:
+			"The MCP server returned a failure envelope without a diagnostic message or result data. " +
+			"This response does not establish whether the operation ran, is still running, or failed.",
+		next:
+			"Inspect the MCP server and application logs, execution history, and any generated result files " +
+			"before considering a manual retry. Do not blindly reexecute an operation with side effects; " +
+			"the server must preserve its upstream error or execution result to diagnose this response.",
+	};
+}
+
 /** Build a CustomToolResult from a callTool response. */
 function buildResult(
 	result: MCPToolCallResult,
@@ -287,11 +336,20 @@ function buildResult(
 		}
 	}
 	const structured = result.structuredContent;
+	if (structured !== undefined) details.structuredContent = structured;
 	if (structured !== undefined && !structuredContentAlreadyInText(structured, result.content)) {
 		const rendered = formatStructuredContent(structured);
 		if (rendered.length > 0) {
 			content.push({ type: "text", text: rendered });
 		}
+	}
+	const diagnostic = getUndiagnosedResultDiagnostic(result);
+	if (diagnostic) {
+		details.diagnostic = diagnostic;
+		content.push({
+			type: "text",
+			text: `MCP client advisory\n${formatStructuredContent({ diagnostic })}`,
+		});
 	}
 	const toolResult: CustomToolResult<MCPToolDetails> = { content, details };
 	if (result.isError) {
@@ -717,6 +775,14 @@ export class MCPTool implements CustomTool<TSchema, MCPToolDetails> {
 		);
 	}
 
+	describeCall(args: unknown, _options: RenderResultOptions) {
+		return describeMCPCall(normalizeToolArgs(args), this.label);
+	}
+
+	describeResult(result: CustomToolResult<MCPToolDetails>, options: RenderResultOptions, args?: unknown) {
+		return describeMCPResult(result, options, normalizeToolArgs(args));
+	}
+
 	async execute(
 		_toolCallId: string,
 		params: unknown,
@@ -838,6 +904,14 @@ export class DeferredMCPTool implements CustomTool<TSchema, MCPToolDetails> {
 
 	renderResult(result: CustomToolResult<MCPToolDetails>, options: RenderResultOptions, theme: Theme, args?: unknown) {
 		return renderMCPResult(result, options, theme, normalizeToolArgs(args));
+	}
+
+	describeCall(args: unknown, _options: RenderResultOptions) {
+		return describeMCPCall(normalizeToolArgs(args), this.label);
+	}
+
+	describeResult(result: CustomToolResult<MCPToolDetails>, options: RenderResultOptions, args?: unknown) {
+		return describeMCPResult(result, options, normalizeToolArgs(args));
 	}
 
 	async execute(

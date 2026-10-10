@@ -268,9 +268,15 @@ mod tests {
 
 	#[test]
 	fn incomplete_utf8_at_eof_becomes_replacement() {
+		// This is the UTF-8-only EOF contract, not a host-dependent legacy
+		// code-page decode of an incomplete UTF-8 prefix.
+		#[cfg(windows)]
+		let mut decoder = OutputDecoder::with_fallback_codepage(CP_UTF8);
+		#[cfg(not(windows))]
 		let mut decoder = OutputDecoder::new();
 		assert_eq!(decoder.push(&[0xe4]), "");
 		assert_eq!(decoder.finish(), "\u{FFFD}");
+		assert_eq!(decoder.finish(), "");
 	}
 
 	#[cfg(windows)]
@@ -332,9 +338,13 @@ mod tests {
 	fn incomplete_utf8_at_eof_falls_back_to_acp() {
 		// CP1252 for é is also an incomplete three-byte UTF-8 prefix. EOF proves
 		// this stream is not valid UTF-8, so it must still trigger fallback.
-		let mut decoder = OutputDecoder::with_fallback_codepage(1252);
-		assert_eq!(decoder.push(&[0xe9]), "");
-		assert_eq!(decoder.finish(), "é");
+		// The same boundary applies to an explicitly selected OEM code page.
+		for (codepage, byte, expected) in [(1252, 0xe9, "é"), (437, 0xe4, "Σ")] {
+			let mut decoder = OutputDecoder::with_fallback_codepage(codepage);
+			assert_eq!(decoder.push(&[byte]), "");
+			assert_eq!(decoder.finish(), expected);
+			assert_eq!(decoder.finish(), "");
+		}
 	}
 
 	#[cfg(windows)]

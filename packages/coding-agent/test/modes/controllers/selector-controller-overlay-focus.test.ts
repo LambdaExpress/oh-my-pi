@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { SessionSelectorComponent } from "@oh-my-pi/pi-tui/overlays/session-selector";
@@ -8,7 +8,8 @@ import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/typ
 import type { SessionEntry, SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import type { SessionInfo } from "@oh-my-pi/pi-coding-agent/session/session-listing";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { type Component, type OverlayOptions, Text } from "@oh-my-pi/pi-tui";
+import { type Component, setKeybindings, Text } from "@oh-my-pi/pi-tui";
+import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -16,11 +17,16 @@ beforeAll(async () => {
 	await initTheme();
 });
 
+beforeEach(() => {
+	setKeybindings(KeybindingsManager.inMemory());
+});
+
 afterEach(() => {
 	vi.restoreAllMocks();
 });
 
 afterAll(() => {
+	setKeybindings(KeybindingsManager.inMemory());
 	resetSettingsForTest();
 });
 
@@ -115,13 +121,14 @@ describe("SelectorController.focusActiveEditorArea", () => {
 });
 
 describe("SelectorController.showTreeSelector", () => {
-	it("opens the tree picker as a fullscreen top-left overlay and focuses it", () => {
+	it("focuses the tree picker and restores a newly mounted approval prompt on cancel", () => {
 		const editor = { id: "editor" };
+		const approvalPrompt = { id: "approval-prompt" };
 		const slot = createEditorSlot(editor);
 		const root = createMessageNode("root", null, "Root prompt");
 		root.children.push(createMessageNode("child", "root", "Child prompt"));
 		const overlayHandle = { hide: vi.fn() };
-		const showOverlay = vi.fn((_component: Component, _options: OverlayOptions) => overlayHandle);
+		const showOverlay = vi.fn((_component: Component) => overlayHandle);
 		const setFocus = vi.fn();
 		const requestRender = vi.fn();
 		const ctx = {
@@ -136,6 +143,7 @@ describe("SelectorController.showTreeSelector", () => {
 			sessionManager: {
 				getTree: () => [root],
 				getLeafId: () => "root",
+				getSessionName: () => undefined,
 				appendLabelChange: vi.fn(),
 			},
 			showStatus: vi.fn(),
@@ -146,22 +154,25 @@ describe("SelectorController.showTreeSelector", () => {
 		expect(showOverlay).toHaveBeenCalledTimes(1);
 		const overlayCall = showOverlay.mock.calls[0];
 		expect(overlayCall).toBeDefined();
-		const [selector, options] = overlayCall!;
-		expect(options).toEqual({
-			anchor: "top-left",
-			width: "100%",
-			maxHeight: "100%",
-			margin: 0,
-			fullscreen: true,
-		});
+		const [selector] = overlayCall!;
 		expect(setFocus).toHaveBeenCalledWith(selector);
 		expect(requestRender).toHaveBeenCalled();
 		expect(slot.children).toEqual([editor]);
+		slot.clear();
+		slot.addChild(approvalPrompt);
+		if (!selector.handleInput) throw new Error("tree picker has no input handler");
+		selector.handleInput("\x1b");
+		expect(overlayHandle.hide).toHaveBeenCalledTimes(1);
+		expect(setFocus).toHaveBeenLastCalledWith(approvalPrompt);
+		expect(slot.children).toEqual([approvalPrompt]);
 	});
 });
 
 describe("SelectorController.showCopySelector", () => {
-	it("opens the copy picker as a fullscreen top-left overlay and focuses it", () => {
+	it("focuses the copy picker and restores a newly mounted approval prompt on cancel", () => {
+		const editor = { id: "editor" };
+		const approvalPrompt = { id: "approval-prompt" };
+		const slot = createEditorSlot(editor);
 		const message = {
 			role: "assistant",
 			content: [{ type: "text", text: "Copy this response" }],
@@ -187,10 +198,12 @@ describe("SelectorController.showCopySelector", () => {
 			message,
 		} as unknown as SessionEntry;
 		const overlayHandle = { hide: vi.fn() };
-		const showOverlay = vi.fn((_component: Component, _options: OverlayOptions) => overlayHandle);
+		const showOverlay = vi.fn((_component: Component) => overlayHandle);
 		const setFocus = vi.fn();
 		const requestRender = vi.fn();
 		const ctx = {
+			editor,
+			editorContainer: slot,
 			sessionManager: {
 				getBranch: () => [entry],
 				getCwd: () => process.cwd(),
@@ -218,16 +231,16 @@ describe("SelectorController.showCopySelector", () => {
 		expect(showOverlay).toHaveBeenCalledTimes(1);
 		const overlayCall = showOverlay.mock.calls[0];
 		expect(overlayCall).toBeDefined();
-		const [selector, options] = overlayCall!;
-		expect(options).toEqual({
-			anchor: "top-left",
-			width: "100%",
-			maxHeight: "100%",
-			margin: 0,
-			fullscreen: true,
-		});
+		const [selector] = overlayCall!;
 		expect(setFocus).toHaveBeenCalledWith(selector);
 		expect(requestRender).toHaveBeenCalled();
+		slot.clear();
+		slot.addChild(approvalPrompt);
+		if (!selector.handleInput) throw new Error("copy picker has no input handler");
+		selector.handleInput("\x1b");
+		expect(overlayHandle.hide).toHaveBeenCalledTimes(1);
+		expect(setFocus).toHaveBeenLastCalledWith(approvalPrompt);
+		expect(slot.children).toEqual([approvalPrompt]);
 	});
 });
 

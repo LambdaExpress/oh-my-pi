@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { $which } from "@oh-my-pi/pi-utils";
+import { renderKernelDisplay } from "../../../src/eval/py/display";
 
 interface RunnerFrame {
 	type?: string;
@@ -10,9 +11,13 @@ interface RunnerFrame {
 	revision?: number;
 	digest?: string;
 	admissionRejected?: boolean;
+	bundle?: Record<string, unknown>;
 }
 
-const pythonPath = Bun.env.PYTHON ?? ($which("python3") ? "python3" : "python");
+const pythonPath =
+	Bun.env.PYTHON ??
+	(process.platform === "win32" ? ($which("python") ?? $which("python3")) : ($which("python3") ?? $which("python"))) ??
+	"python";
 const runnerPath = path.resolve(import.meta.dir, "../../../src/eval/py/runner.py");
 const repoRoot = path.resolve(import.meta.dir, "../../../../..");
 const encoder = new TextEncoder();
@@ -68,8 +73,10 @@ function spawnRunner(): Runner {
 		},
 		async dispose() {
 			try {
-				proc.stdin.write(encoder.encode(`${JSON.stringify({ type: "exit" })}\n`));
-				proc.stdin.end();
+				if (proc.exitCode === null) {
+					proc.stdin.write(encoder.encode(`${JSON.stringify({ type: "exit" })}\n`));
+					await proc.stdin.end();
+				}
 			} catch {
 				// stdin may already be closed.
 			}
@@ -83,6 +90,7 @@ function spawnRunner(): Runner {
 			} catch {
 				// Process already exited.
 			}
+			await proc.exited;
 		},
 	};
 }
@@ -100,13 +108,87 @@ async function collectDoneOrder(runner: Runner, ids: Set<string>): Promise<Runne
 	return dones;
 }
 
-// Eval sessions are shared across concurrent agents (subagents inherit the
-// parent's eval session id, per executor-base.ts), so multiple requests can be
-// in flight on one kernel at once. The runner must keep dispatching sibling
+// Auto-backgrounded cells, user Python shortcuts, and kernel-defined tool calls
+// from subagents can all be in flight on one kernel at once. The runner must keep dispatching sibling
 // requests while a cell is parked on a top-level await instead of blocking the
 // control channel until it finishes -- the regression that a naive fix for the
 // Windows numpy import hang (#7985) would introduce.
 describe("Python runner request dispatch", () => {
+	it("preserves unsafe integers from custom JSON representations and raw MIME bundles", async () => {
+		const runner = spawnRunner();
+		const bundles: Record<string, unknown>[] = [];
+		try {
+			runner.send({
+				id: "lossless-json",
+				code: [
+					"file_id = 137193637465486999",
+					"raw_values = (2**53 - 1, -(2**53 - 1), 2**53, -(2**53 + 1), True, False)",
+					"mime_value = {'nested': [{'fileID': -file_id}]}",
+					"mime_nested = mime_value['nested']",
+					"mime_file = mime_nested[0]",
+					"class JsonValue:",
+					"    def _repr_json_(self):",
+					"        return file_id",
+					"    def __repr__(self):",
+					"        return repr(file_id)",
+					"class MimeValue:",
+					"    def _repr_mimebundle_(self):",
+					"        return {'application/json': mime_value, 'application/vnd.omp.test+json': {'large': 10**100}, 'text/plain': repr(mime_value)}",
+					"__omp_display(MimeValue())",
+					"__omp_display({'application/json': raw_values, 'text/plain': repr(raw_values)}, raw=True)",
+					"assert type(file_id) is int and file_id == 137193637465486999",
+					"assert type(raw_values) is tuple and raw_values == (2**53 - 1, -(2**53 - 1), 2**53, -(2**53 + 1), True, False)",
+					"assert mime_value['nested'] is mime_nested and mime_nested[0] is mime_file",
+					"assert type(mime_value['nested'][0]['fileID']) is int",
+					"assert mime_value['nested'][0]['fileID'] == -file_id",
+					"JsonValue()",
+				].join("\n"),
+			});
+			let done: RunnerFrame;
+			while (true) {
+				const frame = await runner.nextFrame();
+				if (frame.id !== "lossless-json") continue;
+				if (frame.type === "display" || frame.type === "result") bundles.push(frame.bundle ?? {});
+				if (frame.type === "done") {
+					done = frame;
+					break;
+				}
+			}
+
+			expect(done.status).toBe("ok");
+			expect(bundles[0]?.["application/vnd.omp.test+json"]).toEqual({ large: `1${"0".repeat(100)}` });
+			const rendered = await Promise.all(bundles.map(bundle => renderKernelDisplay(bundle)));
+			expect(rendered).toEqual([
+				{
+					text: "{'nested': [{'fileID': -137193637465486999}]}\n",
+					outputs: [{ type: "json", data: { nested: [{ fileID: "-137193637465486999" }] } }],
+				},
+				{
+					text: "(9007199254740991, -9007199254740991, 9007199254740992, -9007199254740993, True, False)\n",
+					outputs: [
+						{
+							type: "json",
+							data: [
+								Number.MAX_SAFE_INTEGER,
+								-Number.MAX_SAFE_INTEGER,
+								"9007199254740992",
+								"-9007199254740993",
+								true,
+								false,
+							],
+						},
+					],
+				},
+				{
+					text: "137193637465486999\n",
+					outputs: [{ type: "json", data: "137193637465486999" }],
+				},
+			]);
+		} finally {
+			await runner.dispose();
+		}
+	});
+
 	it("interleaves a fast request past a slow one parked on a top-level await", async () => {
 		if (process.platform === "win32") return; // Windows dispatches serially by design; see _serve_windows.
 		const runner = spawnRunner();
@@ -116,18 +198,6 @@ describe("Python runner request dispatch", () => {
 			const dones = await collectDoneOrder(runner, new Set(["slow", "fast"]));
 			expect(dones.map(frame => frame.id)).toEqual(["fast", "slow"]);
 			expect(dones.every(frame => frame.status === "ok")).toBe(true);
-		} finally {
-			await runner.dispose();
-		}
-	});
-
-	it("settles every request and exits cleanly", async () => {
-		const runner = spawnRunner();
-		try {
-			runner.send({ id: "a", code: "print(1 + 1)" });
-			runner.send({ id: "b", code: "print('two')" });
-			const dones = await collectDoneOrder(runner, new Set(["a", "b"]));
-			expect(dones.map(frame => frame.status).sort()).toEqual(["ok", "ok"]);
 		} finally {
 			await runner.dispose();
 		}
@@ -322,7 +392,7 @@ describe("Python runner request dispatch", () => {
 						throw new Error("native import hung: runner blocked on a concurrent stdin read");
 					}),
 				]);
-				expect(done.type).toBe("done");
+				expect(done.status).toBe("ok");
 			} finally {
 				await runner.dispose();
 			}

@@ -1,7 +1,15 @@
 import { ArrowLeft, LogOut, PanelRight, Settings } from "lucide-react";
 import type { ReactNode, RefObject } from "react";
-import type { GuestSnapshot } from "../../lib/client";
+import type { ConnectionPhase, GuestSnapshot } from "../../lib/client";
 import { shortenPath } from "../../lib/format";
+
+const PHASE_LABEL: Record<ConnectionPhase, string> = {
+	connecting: "Connecting",
+	waiting: "Joining",
+	live: "Live",
+	reconnecting: "Reconnecting",
+	ended: "Ended",
+};
 
 export interface HeaderBarProps {
 	snapshot: GuestSnapshot;
@@ -54,13 +62,20 @@ export function HeaderBar({
 				)}
 			</div>
 			<div className="sh-header-bar-right">
+				<span
+					className={`sh-status sh-status-${phase}`}
+					title={`connection: ${phase}`}
+					aria-label={`Connection: ${PHASE_LABEL[phase]}`}
+				>
+					<span className={`sh-dot sh-dot-${phase}`} aria-hidden="true" />
+					{PHASE_LABEL[phase]}
+				</span>
 				{readOnly && (
 					<span className="sh-chip" title="you joined with a read-only link — watching only">
 						read-only
 					</span>
 				)}
 				{state?.thinkingLevel && <span className="sh-chip sh-chip-meta">{state.thinkingLevel}</span>}
-				<span className={`sh-dot sh-dot-${phase}`} title={phase} />
 				<button
 					type="button"
 					className={settingsOpen ? "sh-header-bar-action sh-header-bar-action-on" : "sh-header-bar-action"}

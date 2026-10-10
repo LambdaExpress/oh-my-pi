@@ -822,12 +822,15 @@ function normalizeOptionalNullsForSchema(
 	for (const [key, propertySchema] of Object.entries(properties)) {
 		if (!(key in nextValue)) continue;
 		const currentValue = nextValue[key];
+		// Explicit schema-valid null is data (for example, a patch clearing a
+		// field), not an omitted-value placeholder. Keep it even with a default.
+		if (currentValue === null && branchMatchesSchema(propertySchema, currentValue, root)) continue;
 		const isNullish = currentValue === null || currentValue === "null";
 		const isInvalidEmptyString =
 			currentValue === "" && !required.has(key) && !branchMatchesSchema(propertySchema, currentValue, root);
 
-		// Strip null/string "null" from optional fields, and strip empty
-		// strings only when the property schema would reject the explicit value.
+		// Strip rejected null and string "null" placeholders from optional fields,
+		// and strip empty strings only when the property schema rejects them.
 		// LLMs sometimes output these placeholders to mean "no value".
 		if ((isNullish || isInvalidEmptyString) && !required.has(key)) {
 			if (!changed) {
@@ -2013,10 +2016,10 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): ToolCall[
 	const ctx = getValidationContext(tool);
 	const { json } = ctx;
 
-	// Always normalize first — strip null/string "null" from optional fields,
-	// strip optional empty strings only when their property schema rejects the
-	// explicit value, and substitute defaults. Handles LLM outputting
-	// placeholders for "no value" even when validation would otherwise pass.
+	// Always normalize first — preserve schema-valid null, strip rejected null
+	// and string "null" placeholders from optional fields, strip optional empty
+	// strings only when their property schema rejects them, and substitute
+	// defaults. Handles LLM placeholders without discarding explicit null data.
 	let normalizedArgs: unknown = originalArgs;
 	let changed = false;
 

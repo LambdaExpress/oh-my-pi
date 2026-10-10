@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { disposeAllVmContexts } from "@oh-my-pi/pi-coding-agent/eval/js/context-manager";
 import { createBrowserPrelude } from "@oh-my-pi/pi-coding-agent/tools/browser";
+import { findFreeCdpPort } from "@oh-my-pi/pi-coding-agent/tools/browser/attach";
 import { releaseAllTabs } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { chromiumAvailable } from "./chromium-probe";
@@ -22,6 +23,7 @@ const session: ToolSession = {
 		"browser.enabled": true,
 		"browser.headless": true,
 		"browser.cmux": false,
+		"browser.tern": false,
 		"tools.maxTimeout": 0,
 	}),
 };
@@ -62,9 +64,10 @@ function findTreeNode(nodes: TreeNode[], name: string): TreeNode | undefined {
 
 let server: Server<undefined>;
 
-beforeAll(() => {
+beforeAll(async () => {
 	server = Bun.serve({
-		port: 0,
+		hostname: "127.0.0.1",
+		port: await findFreeCdpPort(),
 		fetch(request) {
 			const pathname = new URL(request.url).pathname;
 			if (pathname === "/react.js") {

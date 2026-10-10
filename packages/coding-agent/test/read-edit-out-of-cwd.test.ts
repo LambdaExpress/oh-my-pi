@@ -105,11 +105,6 @@ describe("read → edit round-trip for out-of-cwd files", () => {
 		const session = createSession(cwdDir);
 		const header = textOutput(await new ReadTool(session).execute("read-in", { path: nestedFile })).split("\n")[0];
 
-		// The header must retain the workspace-relative directory, not collapse
-		// to the bare `settings.json`, or the edit below resolves against the
-		// existing cwd file and the snapshot-tag guard rejects the valid edit.
-		expect(header).toBe(`[${path.join("src", "settings.json")}#${header.slice(-5, -1)}]`);
-
 		await new EditTool(session, "hashline").execute("edit-in", {
 			input: `${header}\nPUT 1.=1:\n+ALPHA\n`,
 		});

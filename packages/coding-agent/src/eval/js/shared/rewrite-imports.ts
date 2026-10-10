@@ -405,10 +405,15 @@ export async function rewriteImports(code: string): Promise<string> {
 	}
 	return result;
 }
-export async function collectModuleSourceSpecifiers(code: string): Promise<string[]> {
+export async function analyzeModuleSource(
+	code: string,
+): Promise<{ sources: string[]; bindings: Set<string>; firstStatementOffset: number }> {
 	const ast = await parseProgram(code);
-	if (!ast) return [];
 	const sources: string[] = [];
+	const bindings = new Set<string>();
+	if (!ast) return { sources, bindings, firstStatementOffset: 0 };
+	addDirectLexicalBindings(ast.program.body, bindings);
+	addFunctionScopedBindings(ast.program.body, bindings, false);
 	for (const node of ast.program.body) {
 		if (
 			(node.type === "ImportDeclaration" ||
@@ -419,7 +424,10 @@ export async function collectModuleSourceSpecifiers(code: string): Promise<strin
 			sources.push((node as BabelModuleSourceDeclaration).source!.value);
 		}
 	}
-	return sources;
+	// Babel stores directives and a hashbang separately from the statement body.
+	// A lexical runtime binding must follow that prologue rather than disable it.
+	const firstStatement = ast.program.body[0] as { start?: number } | undefined;
+	return { sources, bindings, firstStatementOffset: firstStatement?.start ?? code.length };
 }
 
 export async function rewriteModuleSourceSpecifiers(
@@ -599,7 +607,14 @@ function addDirectLexicalBindings(value: unknown, names: Set<string>): void {
 	if (!Array.isArray(value)) return;
 	for (const item of value) {
 		if (!item || typeof item !== "object") continue;
-		const node = item as Record<string, unknown>;
+		let node = item as Record<string, unknown>;
+		if (
+			(node.type === "ExportNamedDeclaration" || node.type === "ExportDefaultDeclaration") &&
+			node.declaration &&
+			typeof node.declaration === "object"
+		) {
+			node = node.declaration as Record<string, unknown>;
+		}
 		if (node.type === "VariableDeclaration" && node.kind !== "var" && Array.isArray(node.declarations)) {
 			for (const declaration of node.declarations) {
 				if (declaration && typeof declaration === "object" && "id" in declaration) {
@@ -612,6 +627,12 @@ function addDirectLexicalBindings(value: unknown, names: Set<string>): void {
 			typeof node.id === "object"
 		) {
 			addBindingNames(node.id, names);
+		} else if (node.type === "ImportDeclaration" && Array.isArray(node.specifiers)) {
+			for (const specifier of node.specifiers) {
+				if (specifier && typeof specifier === "object" && "local" in specifier) {
+					addBindingNames(specifier.local, names);
+				}
+			}
 		}
 	}
 }
@@ -622,17 +643,17 @@ function withLexicalShadows(shadowed: ReadonlySet<string>, value: unknown): Read
 	return names;
 }
 
-function addFunctionScopedBindings(value: unknown, names: Set<string>): void {
+function addFunctionScopedBindings(value: unknown, names: Set<string>, includeFunctions = true): void {
 	if (!value || typeof value !== "object") return;
 	if (Array.isArray(value)) {
-		for (const item of value) addFunctionScopedBindings(item, names);
+		for (const item of value) addFunctionScopedBindings(item, names, includeFunctions);
 		return;
 	}
 	const node = value as Record<string, unknown>;
 	const type = node.type;
 	if (typeof type !== "string") return;
 	if (isExecutionBoundary(type)) {
-		if (type === "FunctionDeclaration") addBindingNames(node.id, names);
+		if (includeFunctions && type === "FunctionDeclaration") addBindingNames(node.id, names);
 		return;
 	}
 	if (type === "VariableDeclaration" && node.kind === "var" && Array.isArray(node.declarations)) {
@@ -645,7 +666,7 @@ function addFunctionScopedBindings(value: unknown, names: Set<string>): void {
 	for (const key in node) {
 		if (key === "loc" || key === "extra" || key === "range") continue;
 		if (key === "leadingComments" || key === "trailingComments" || key === "innerComments") continue;
-		addFunctionScopedBindings(node[key], names);
+		addFunctionScopedBindings(node[key], names, includeFunctions);
 	}
 }
 

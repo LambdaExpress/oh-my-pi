@@ -6,6 +6,8 @@ import { Spacer } from "../../components/spacer";
 import { Text } from "../../components/text";
 import { WizardStep } from "../../components/wizard-step";
 import { Input } from "../../components/input";
+import { formatKeyHint } from "../../app-keybindings";
+import { editorKey } from "../../chrome/keybinding-hints";
 import { matchesKey } from "../../keys";
 import { type SgrMouseEvent } from "../../mouse";
 import { wrapTextWithAnsi } from "../../utils";
@@ -13,23 +15,28 @@ import { getAgentDbPath } from "@oh-my-pi/pi-utils";
 import { t } from "../../i18n";
 import { OAuthSelectorComponent } from "../../overlays/oauth-selector";
 import { theme } from "../../theme/theme";
-import type { SetupSceneHost, SetupTab } from "./types";
+import { col, node, span, text } from "../../native/describe";
+import type { NativeChild, NativeNode } from "../../native/node";
+import { Memo } from "../../native/memo";
+import type { SetupSceneController, SetupSceneHost, SetupTab, StyledLine } from "./types";
 
 function loginUrlLink(url: string): string {
 	return `\x1b]8;;${url}\x07${t("Open login URL")}\x1b]8;;\x07`;
 }
 
 function loginCopyHint(): string {
-	return theme.fg("dim", t("(clipboard copy attempted; Alt+C retries)"));
+	return theme.fg("dim", t("(clipboard copy attempted; {key} retries)", { key: formatKeyHint("alt+c") }));
 }
 
 class CopyablePromptInput implements Component, Focusable {
 	#input: Input;
 	#onCopy: () => void;
+	readonly #native: NativeNode;
 
 	constructor(input: Input, onCopy: () => void) {
 		this.#input = input;
 		this.#onCopy = onCopy;
+		this.#native = col([input]);
 	}
 
 	get focused(): boolean {
@@ -46,6 +53,11 @@ class CopyablePromptInput implements Component, Focusable {
 
 	render(width: number): readonly string[] {
 		return this.#input.render(width);
+	}
+
+	/** The wrapped field describes itself (`input`, caret while focused); alt+c stays a key here. */
+	describe(): NativeNode {
+		return this.#native;
 	}
 
 	handleInput(data: string): void {
@@ -68,17 +80,24 @@ interface PromptState {
 }
 
 /**
- * "Sign in" panel: lets the user authenticate one or more model providers via
- * OAuth. Unlike a standalone scene it never auto-advances the wizard — the user
- * may sign in to several providers and then continue with Esc.
+ * "Sign in" scene: lets the user authenticate one or more model providers via
+ * OAuth. It never auto-advances the wizard — the user may sign in to several
+ * providers and then continue with Esc.
  */
-export class SignInTab implements SetupTab {
+export class SignInScene implements SetupSceneController, SetupTab {
 	readonly id = "sign-in";
 	readonly label = t("Sign in");
+	readonly title = t("Sign in to your providers");
+	get subtitle(): string {
+		return t("Sign in to one or more providers. Press {key} when you're done.", {
+			key: editorKey("tui.select.cancel"),
+		});
+	}
 
 	#authStorage: AuthStorage;
 	#selector: OAuthSelectorComponent;
-	#statusLines: string[] = [];
+	/** Status copy under the selector or login flow; replaced (never mutated) on change. */
+	#statusLines: readonly StyledLine[] = [];
 	#authUrl: string | undefined;
 	#authLaunchUrl: string | undefined;
 	#prompt: PromptState | undefined;
@@ -89,6 +108,7 @@ export class SignInTab implements SetupTab {
 	#loggingInProvider: string | undefined;
 	#disposed = false;
 	#step: WizardStep | undefined;
+	#native = new Memo();
 
 	readonly #host: SetupSceneHost;
 
@@ -98,7 +118,7 @@ export class SignInTab implements SetupTab {
 		this.#selector = this.#createSelector();
 	}
 
-	/** Modal while an OAuth flow is running so the scene won't switch tabs or finish. */
+	/** OAuth and code prompts hold the provider tab until the flow completes or is cancelled. */
 	get modal(): boolean {
 		return this.#loggingInProvider !== undefined;
 	}
@@ -111,6 +131,7 @@ export class SignInTab implements SetupTab {
 	}
 
 	invalidate(): void {
+		this.#native.clear();
 		this.#step?.invalidate();
 		this.#selector.invalidate();
 		this.#prompt?.input.invalidate();
@@ -180,7 +201,7 @@ export class SignInTab implements SetupTab {
 			}
 		}
 		for (const line of this.#statusLines) {
-			for (const wrapped of wrapTextWithAnsi(line, width)) {
+			for (const wrapped of wrapTextWithAnsi(theme.fg(line.color, line.text), width)) {
 				tail.addChild(new Text(wrapped, 0, 0));
 			}
 		}
@@ -213,6 +234,98 @@ export class SignInTab implements SetupTab {
 		return this.#step.render(width);
 	}
 
+	/**
+	 * Picking: intro, the provider selector (describes itself) and the last
+	 * outcome. Signing in: a spinner heading, the login link (with the full
+	 * URL once, char-wrapped), any code prompt and the flow's progress lines.
+	 */
+	describe(): NativeNode {
+		const provider = this.#loggingInProvider;
+		const authUrl = this.#authUrl;
+		const launchUrl = this.#authLaunchUrl;
+		const prompt = this.#prompt;
+		const statusLines = this.#statusLines;
+		const copyKey = formatKeyHint("alt+c");
+		return this.#native.get([provider, authUrl, launchUrl, prompt, statusLines, this.#selector, copyKey], () => {
+			const tail: NativeChild[] = [];
+			if (authUrl) {
+				tail.push(
+					node(
+						"text",
+						{
+							spans: [
+								span(`${t("Browser login")}: `, "accent"),
+								span(t("Open login URL"), "accent link", { href: authUrl }),
+								span(` ${t("(clipboard copy attempted; {key} retries)", { key: copyKey })}`, "dim"),
+							],
+						},
+						undefined,
+						"login",
+					),
+					node(
+						"text",
+						{ spans: [span(authUrl, "dim link", { href: authUrl })], wrap: "char", actions: { menu: ["copy"] } },
+						undefined,
+						"url",
+					),
+				);
+				if (launchUrl) {
+					tail.push(
+						node(
+							"text",
+							{
+								spans: [
+									span(`${t("Local shortcut (this machine only)")}: `, "dim"),
+									span(launchUrl, "dim link", { href: launchUrl }),
+								],
+								wrap: "char",
+							},
+							undefined,
+							"launch",
+						),
+					);
+				}
+			}
+			if (prompt) {
+				const promptChildren: NativeChild[] = [text([span(prompt.message, "warning")])];
+				if (prompt.placeholder) promptChildren.push(text([span(prompt.placeholder, "dim")]));
+				promptChildren.push(prompt.input);
+				tail.push(node("col", {}, promptChildren, "prompt"));
+			}
+			statusLines.forEach((line, index) => {
+				tail.push(node("text", { spans: [span(line.text, line.color)] }, undefined, `status:${index}`));
+			});
+
+			if (provider) {
+				return col(
+					[
+						node(
+							"row",
+							{ gap: "sm", align: "center" },
+							[node("spinner", {}), text([span(t("Signing in to {provider}", { provider }), "strong")])],
+							"heading",
+						),
+						...tail,
+					],
+					{ gap: "sm", role: "omp.setup.sign-in", tone: "pending" },
+				);
+			}
+			return col(
+				[
+					node(
+						"text",
+						{ spans: [span(t("Pick a provider to sign in — you can connect more than one."), "muted")] },
+						undefined,
+						"intro",
+					),
+					this.#selector,
+					...tail,
+				],
+				{ gap: "sm", role: "omp.setup.sign-in" },
+			);
+		});
+	}
+
 	#createSelector(): OAuthSelectorComponent {
 		return new OAuthSelectorComponent(
 			"login",
@@ -230,7 +343,7 @@ export class SignInTab implements SetupTab {
 		const useManualInput = PASTE_CODE_LOGIN_PROVIDERS.has(providerId);
 		this.#selector.stopValidation();
 		this.#loggingInProvider = providerId;
-		this.#statusLines = [theme.fg("dim", `${t("Starting OAuth flow")}…`)];
+		this.#statusLines = [{ text: `${t("Starting OAuth flow")}…`, color: "dim" }];
 		this.#authUrl = undefined;
 		this.#authLaunchUrl = undefined;
 		this.#loginAbort = new AbortController();
@@ -252,20 +365,21 @@ export class SignInTab implements SetupTab {
 					// shortcut for wide-terminal local users.
 					this.#authUrl = info.url;
 					this.#authLaunchUrl = info.launchUrl && info.launchUrl !== info.url ? info.launchUrl : undefined;
-					this.#statusLines = [];
+					const statusLines: StyledLine[] = [];
 					if (info.instructions) {
-						this.#statusLines.push(theme.fg("warning", info.instructions));
+						statusLines.push({ text: info.instructions, color: "warning" });
 					}
 					if (useManualInput) {
-						this.#statusLines.push(theme.fg("dim", t("Paste the returned code or redirect URL when prompted.")));
+						statusLines.push({ text: t("Paste the returned code or redirect URL when prompted."), color: "dim" });
 					}
+					this.#statusLines = statusLines;
 					void this.#copyAuthUrl();
 					this.#host.ctx.openInBrowser(info.url);
 					this.#host.requestRender();
 				},
 				onPrompt: prompt => this.#showPrompt(prompt),
 				onProgress: message => {
-					this.#statusLines.push(theme.fg("dim", message));
+					this.#statusLines = [...this.#statusLines, { text: message, color: "dim" }];
 					this.#host.requestRender();
 				},
 				onManualCodeInput: signal =>
@@ -276,8 +390,11 @@ export class SignInTab implements SetupTab {
 			await this.#host.ctx.refreshProvider(providerId);
 			if (this.#disposed) return;
 			this.#statusLines = [
-				theme.fg("success", `${theme.status.success} ${t("Signed in to {provider}", { provider: providerId })}`),
-				theme.fg("dim", t("Credentials saved to {path}", { path: getAgentDbPath() })),
+				{
+					text: `${theme.status.success} ${t("Signed in to {provider}", { provider: providerId })}`,
+					color: "success",
+				},
+				{ text: t("Credentials saved to {path}", { path: getAgentDbPath() }), color: "dim" },
 			];
 			this.#authUrl = undefined;
 			this.#authLaunchUrl = undefined;
@@ -290,14 +407,19 @@ export class SignInTab implements SetupTab {
 		} catch (error) {
 			if (this.#disposed) return;
 			if (this.#loginAbort?.signal.aborted) {
-				this.#statusLines = [theme.fg("dim", t("Login cancelled."))];
+				this.#statusLines = [{ text: t("Login cancelled."), color: "dim" }];
 				this.#authUrl = undefined;
 				this.#authLaunchUrl = undefined;
 			} else {
 				const message = error instanceof Error ? error.message : String(error);
 				this.#statusLines = [
-					theme.fg("error", `${t("Login failed")}: ${message}`),
-					theme.fg("dim", t("Choose another provider or press Esc to continue.")),
+					{ text: `${t("Login failed")}: ${message}`, color: "error" },
+					{
+						text: t("Choose another provider or press {key} to continue.", {
+							key: editorKey("tui.select.cancel"),
+						}),
+						color: "dim",
+					},
 				];
 				this.#authUrl = undefined;
 				this.#authLaunchUrl = undefined;

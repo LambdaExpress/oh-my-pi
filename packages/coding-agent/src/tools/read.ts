@@ -45,7 +45,7 @@ import {
 	sessionResolveContext,
 } from "../internal-urls";
 import { parseInternalUrl } from "../internal-urls/parse";
-import type { InternalUrl } from "../internal-urls/types";
+import type { InternalUrl, ResolveContext } from "../internal-urls/types";
 import { isMarkdownPath } from "@oh-my-pi/pi-tui/lang-from-path";
 import readDescription from "../prompts/tools/read.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
@@ -685,7 +685,7 @@ interface LocatedRead {
 function formatLocatedFileNotice(url: string, backingPath: string, size: number, rawBlocked: boolean): string {
 	const workflows = `Use ${url}:raw:1-3000 for bounded verbatim chunks, ${url}:1-3000 for numbered exploration, and the backing file path for search/copy workflows`;
 	return rawBlocked
-		? `Unbounded raw read blocked for ${url} (${formatBytes(size)}). Reading the whole file verbatim can exhaust memory. ${workflows}: ${shortenPath(backingPath)}`
+		? `Unbounded raw read blocked for ${url} (${formatBytes(size)}); the whole-file raw inline limit is ${formatBytes(MAX_URL_RAW_INLINE_BYTES)}. ${workflows}: ${shortenPath(backingPath)}`
 		: `Backing file: ${shortenPath(backingPath)} (${formatBytes(size)}). ${workflows}.`;
 }
 
@@ -1647,9 +1647,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	}
 	/**
 	 * Render multiple non-contiguous ranges of a local file. ACP bridge takes
-	 * priority when present (editor buffer is source of truth); otherwise ranges
-	 * are sliced out of `buffered` when the caller already materialized the file,
-	 * and streamed independently with their own line/byte budget when it did not.
+	 * priority in the caller; disk ranges are sliced out of `buffered` when the
+	 * caller already materialized the file, and streamed independently with
+	 * their own line/byte budget when it did not.
 	 * Out-of-bounds ranges surface as inline notices rather than aborting the read.
 	 */
 	async #readLocalFileMultiRange(
@@ -1659,43 +1659,13 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		buffered: BufferedFileText | undefined,
 		parsed: ParsedSelector,
 		displayMode: { hashLines: boolean; lineNumbers: boolean },
-		suffixResolution: { from: string; to: string } | undefined,
 		signal: AbortSignal | undefined,
-		allowBridge = true,
 	): Promise<{
 		outputText: string;
 		columnTruncated: number;
 		displayContent?: { text: string; startLine: number; lineNumbers?: Array<number | null> };
-		bridgeResult?: AgentToolResult<ReadToolDetails>;
 	}> {
 		const rawSelector = isRawSelector(parsed);
-
-		// ACP bridge first — the editor's in-memory buffer is source of truth.
-		const bridgePromise = allowBridge ? routeReadThroughBridge(this.session, absolutePath) : undefined;
-		if (bridgePromise !== undefined) {
-			try {
-				const bridgeText = await bridgePromise;
-				const bridgeResult = buildInMemoryMultiRangeResult(this.session, bridgeText, ranges, {
-					details: markMarkdownContentType(
-						this.session,
-						{ resolvedPath: absolutePath, suffixResolution },
-						absolutePath,
-					),
-					sourcePath: absolutePath,
-					entityLabel: "file",
-					raw: rawSelector,
-				});
-				if (suffixResolution) {
-					const notice = `[Path '${suffixResolution.from}' not found; resolved to '${suffixResolution.to}' via suffix match]`;
-					const firstText = bridgeResult.content.find((c): c is TextContent => c.type === "text");
-					if (firstText) firstText.text = `${notice}\n${firstText.text}`;
-				}
-				return { outputText: "", columnTruncated: 0, bridgeResult };
-			} catch (error) {
-				logger.warn("ACP fs readTextFile failed; falling back to disk", { path: absolutePath, error });
-			}
-		}
-
 		const shouldAddHashLines = !rawSelector && displayMode.hashLines;
 		const shouldAddLineNumbers = rawSelector ? false : shouldAddHashLines ? false : displayMode.lineNumbers;
 		const maxColumns = resolveOutputMaxColumns(this.session.settings);
@@ -1894,10 +1864,17 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					`Invalid selector ':${peeled.sel}' on '${peeled.path}'. Use :N, :N-M, :N+K, :N- (open-ended), :-N (last N lines), a comma-separated list of ranges, :raw, :img for SVG rendering, or a range combined with raw (e.g. :raw:50-100).`,
 				);
 			}
-			const target = await internalRouter.target(normalizedPath, sessionResolveContext(this.session, { signal }));
+			const sshHosts =
+				extractUriScheme(peeled.path) === "ssh" ? await this.session.getSessionSshHosts?.() : undefined;
+			const target = await internalRouter.target(
+				normalizedPath,
+				sessionResolveContext(this.session, { signal, sshHosts }),
+			);
 			if (target) {
 				const url = target.url.rawHref ?? target.url.href;
-				if (target.kind === "resource") return this.#handleInternalUrl(url, target.spec, parsed, question, signal);
+				if (target.kind === "resource") {
+					return this.#handleInternalUrl(url, target.spec, parsed, question, signal, sshHosts);
+				}
 				located = { url, path: target.path, sel: target.sel, spec: target.spec };
 			}
 		}
@@ -2365,6 +2342,31 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			}
 
 			if (!content) {
+				// Resolve selectors against the editor's full text, not the disk's
+				// line count: unsaved changes can move the tail or merge ranges.
+				const bridgePromise = located ? undefined : routeReadThroughBridge(this.session, absolutePath);
+				if (bridgePromise !== undefined) {
+					try {
+						const bridgeText = await bridgePromise;
+						const bridgeResult = buildInMemorySelectorResult(this.session, bridgeText, parsed, {
+							details: markMarkdownContentType(
+								this.session,
+								{ resolvedPath: absolutePath, suffixResolution },
+								absolutePath,
+							),
+							sourcePath: absolutePath,
+							entityLabel: "file",
+						});
+						if (suffixResolution) {
+							const notice = `[Path '${suffixResolution.from}' not found; resolved to '${suffixResolution.to}' via suffix match]`;
+							const firstText = bridgeResult.content.find((c): c is TextContent => c.type === "text");
+							if (firstText) firstText.text = `${notice}\n${firstText.text}`;
+						}
+						return bridgeResult;
+					} catch (error) {
+						logger.warn("ACP fs readTextFile failed; falling back to disk", { path: absolutePath, error });
+					}
+				}
 				const sel = await resolveFileTailSelector(parsed, absolutePath, buffered);
 				if (sel.kind === "lines" && sel.ranges.length > 1) {
 					const multiResult = await this.#readLocalFileMultiRange(
@@ -2374,11 +2376,8 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						buffered,
 						sel,
 						displayMode,
-						suffixResolution,
 						undefined, // plain-file read: deterministic and fast, never abort mid-read
-						!located, // located URLs read their backing file directly, as their handlers do
 					);
-					if (multiResult.bridgeResult) return multiResult.bridgeResult;
 					content = [{ type: "text", text: multiResult.outputText }];
 					sourcePath = absolutePath;
 					details = multiResult.displayContent ? { displayContent: multiResult.displayContent } : {};
@@ -2388,34 +2387,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				} else {
 					// Raw text or line-range mode
 					const { offset, limit } = selToOffsetLimit(sel);
-					// Try ACP bridge first — editor's in-memory buffer is source of truth.
-					// Request full text so local range rendering keeps line numbers and hashline anchors.
-					// Located URLs read their backing file directly, as their handlers do.
-					const bridgePromise = located ? undefined : routeReadThroughBridge(this.session, absolutePath);
-					if (bridgePromise !== undefined) {
-						try {
-							const bridgeText = await bridgePromise;
-							const bridgeResult = buildInMemoryTextResult(this.session, bridgeText, offset, limit, {
-								details: markMarkdownContentType(
-									this.session,
-									{ resolvedPath: absolutePath, suffixResolution },
-									absolutePath,
-								),
-								sourcePath: absolutePath,
-								entityLabel: "file",
-								raw: isRawSelector(sel),
-							});
-							if (suffixResolution) {
-								const notice = `[Path '${suffixResolution.from}' not found; resolved to '${suffixResolution.to}' via suffix match]`;
-								const firstText = bridgeResult.content.find((c): c is TextContent => c.type === "text");
-								if (firstText) firstText.text = `${notice}\n${firstText.text}`;
-							}
-							return bridgeResult;
-						} catch (error) {
-							logger.warn("ACP fs readTextFile failed; falling back to disk", { path: absolutePath, error });
-						}
-					}
-
 					// Explicit numeric selectors (`:N`, `:N-M`, `:N+K`, `:-N`) address
 					// an exact line set: no leading/trailing context, and no growth to
 					// an enclosing block (see `bracketContextFullLines` below).
@@ -2890,14 +2861,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	}
 
 	/**
-	 * Handle internal URLs (agent://, artifact://, memory://, skill://, rule://, local://, mcp://).
-	 * Supports pagination via offset/limit but rejects them when query extraction is used.
-
-	/**
 	 * Read a routed URL through its handler: virtual, remote, and device schemes,
 	 * plus located URLs whose target is a directory or has no local file.
-	 * Discrete values (`shape: "value"`) return as-is; documents page through
-	 * line selectors.
+	 * Unselected values return as-is; extracted text and documents page through
+	 * line selectors without creating editable snapshots for immutable sources.
 	 */
 	async #handleInternalUrl(
 		url: string,
@@ -2905,6 +2872,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		parsedSel: ParsedSelector,
 		question: string | undefined,
 		signal?: AbortSignal,
+		sshHosts?: ResolveContext["sshHosts"],
 	): Promise<AgentToolResult<ReadToolDetails>> {
 		if (parsedSel.kind === "image") throw new ToolError("The ':img' selector requires a file-backed path.");
 		const internalRouter = InternalUrlRouter.instance();
@@ -2917,7 +2885,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			throw new ToolError(e instanceof Error ? e.message : String(e));
 		}
 		const scheme = urlMeta.protocol.replace(/:$/, "").toLowerCase();
-		const resource = await internalRouter.resolve(url, sessionResolveContext(this.session, { signal }));
+		if (scheme === "ssh" && sshHosts === undefined) {
+			sshHosts = await this.session.getSessionSshHosts?.();
+		}
+		const resource = await internalRouter.resolve(url, sessionResolveContext(this.session, { signal, sshHosts }));
 		if (question !== undefined) throw new ToolError(IMAGE_QUESTION_SELECTOR_ERROR);
 		const resourceDetails: NonNullable<InternalResource["details"]> = resource.details ?? {};
 		const { display, ...render } = resourceDetails;
@@ -2935,10 +2906,15 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const snapshot = snapshotKey ? { key: snapshotKey, displayPath: urlMeta.href } : undefined;
 
 		if (resource.shape === "value") {
-			if (parsedSel.kind !== "none" && parsedSel.kind !== "raw") {
-				throw new ToolError("Cannot combine query extraction with line selectors");
+			if (parsedSel.kind === "none" || parsedSel.kind === "raw") {
+				return toolResult(details).text(resource.content).sourceInternal(url).done();
 			}
-			return toolResult(details).text(resource.content).sourceInternal(url).done();
+			if (parsedSel.kind !== "lines" && parsedSel.kind !== "tail") {
+				throw new ToolError("提取的字段只支持文本行选择器或 :raw。");
+			}
+			if (resource.contentType === "application/json") {
+				throw new ToolError("行选择器只能用于提取的文本字段；该字段是 JSON 值。请去掉行选择器读取完整值。");
+			}
 		}
 
 		const internalSummary = await this.#summarizeInternalResource(url, resource, scheme, parsedSel, snapshot, signal);

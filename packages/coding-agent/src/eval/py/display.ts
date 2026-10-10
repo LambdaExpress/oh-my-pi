@@ -12,6 +12,7 @@ export interface PythonStatusEvent {
 	[key: string]: unknown;
 }
 
+/** Structured Python integers outside JS's safe range are exact decimal strings. */
 export type KernelDisplayOutput =
 	| { type: "json"; data: unknown }
 	| { type: "image"; data: string; mimeType: string }

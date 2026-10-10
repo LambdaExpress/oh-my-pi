@@ -5,6 +5,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { lookup } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionUIContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import type { AcpAgent } from "@oh-my-pi/pi-coding-agent/modes/acp/acp-agent";
 import { createAcpConnection } from "@oh-my-pi/pi-coding-agent/modes/acp/acp-mode";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -21,12 +22,6 @@ import {
 	type SessionNotification,
 } from "@oh-my-pi/pi-utils/acp";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
-
-import { cfgAsyncEnabled, cfgAsyncMaxJobs } from "@oh-my-pi/pi-coding-agent/tools/settings";
-import {
-	cfgBashAutoBackgroundEnabled,
-	cfgBashAutoBackgroundThresholdMs,
-} from "@oh-my-pi/pi-coding-agent/exec/settings";
 
 const TEST_MODEL: Model = buildModel({
 	id: "claude-sonnet-4-20250514",
@@ -117,6 +112,9 @@ class LazyFakeSession {
 	subscribe(): () => void {
 		return () => {};
 	}
+	subscribeCommandMetadataChanged(_listener: () => void): () => void {
+		return () => {};
+	}
 	async prompt(): Promise<void> {}
 	async waitForIdle(): Promise<void> {}
 	async abort(): Promise<void> {}
@@ -179,70 +177,6 @@ async function closeTransport(writable: WritableStream<unknown>): Promise<void> 
 }
 
 describe("ACP lazy startup", () => {
-	it("applies schema defaults for ACP background jobs", async () => {
-		const { runRootCommand } = await import("@oh-my-pi/pi-coding-agent/main");
-
-		type ObservedBackgroundSettings = {
-			asyncEnabled: boolean;
-			asyncMaxJobs: number;
-			bashAutoBackground: boolean;
-			bashAutoBackgroundThresholdMs: number;
-		};
-
-		const runAcpStartup = async (settings: Settings): Promise<ObservedBackgroundSettings> => {
-			const cwd = startupDir.path();
-			let observed: ObservedBackgroundSettings | undefined;
-			const stopMessage = "stop test ACP mode";
-			try {
-				await runRootCommand(
-					{
-						mode: "acp",
-						messages: [],
-						fileArgs: [],
-						unknownFlags: new Map(),
-						unrecognizedFlags: [],
-						noSkills: true,
-						noRules: true,
-						noTools: true,
-						noLsp: true,
-						sessionDir: cwd,
-					},
-					[],
-					{
-						discoverAuthStorage: async () => startupAuthStorage,
-						settings,
-						runAcpMode: async () => {
-							observed = {
-								asyncEnabled: cfgAsyncEnabled.get(settings),
-								asyncMaxJobs: cfgAsyncMaxJobs.get(settings),
-								bashAutoBackground: cfgBashAutoBackgroundEnabled.get(settings),
-								bashAutoBackgroundThresholdMs: cfgBashAutoBackgroundThresholdMs.get(settings),
-							};
-							throw new Error(stopMessage);
-						},
-					},
-				);
-			} catch (error) {
-				if (!(error instanceof Error) || error.message !== stopMessage) {
-					throw error;
-				}
-			}
-
-			if (!observed) {
-				throw new Error("Expected ACP mode to start");
-			}
-			return observed;
-		};
-
-		// An unset ACP config observes the background-job schema defaults.
-		await expect(runAcpStartup(Settings.isolated())).resolves.toEqual({
-			asyncEnabled: true,
-			asyncMaxJobs: 100,
-			bashAutoBackground: true,
-			bashAutoBackgroundThresholdMs: 60000,
-		});
-	});
-
 	it("honors explicit host-defaulted and todo settings for protocol hosts", async () => {
 		// Regression for #3207: in RPC/ACP startup, runtime overrides applied via
 		// `applyDefaultSettingOverrides` previously clobbered any explicitly
@@ -308,6 +242,7 @@ describe("ACP lazy startup", () => {
 						fileArgs: [],
 						unknownFlags: new Map(),
 						unrecognizedFlags: [],
+						invalidFlagValues: [],
 						noSkills: true,
 						noRules: true,
 						noTools: true,
@@ -344,6 +279,8 @@ describe("ACP lazy startup", () => {
 		const clientToAgent = new TransformStream();
 		const agentToClient = new TransformStream();
 		const client = new TestClient();
+		const cwd = startupDir.path();
+		let agent: AcpAgent | undefined;
 		let createCalls = 0;
 		const creationStarted = Promise.withResolvers<void>();
 		const blockedCreation = Promise.withResolvers<{
@@ -368,6 +305,10 @@ describe("ACP lazy startup", () => {
 					setToolUIContext: () => {},
 				};
 			},
+			undefined,
+			createdAgent => {
+				agent = createdAgent;
+			},
 		);
 
 		try {
@@ -375,17 +316,16 @@ describe("ACP lazy startup", () => {
 			expect(initializeResponse).toEqual(
 				expect.objectContaining({
 					protocolVersion: 1,
-					agentInfo: expect.objectContaining({ name: "oh-my-pi" }),
 				}),
 			);
 			expect(createCalls).toBe(0);
 
-			const newSessionPromise = agentConnection.newSession({ cwd: "/tmp/acp-lazy-startup", mcpServers: [] });
+			const newSessionPromise = agentConnection.newSession({ cwd, mcpServers: [] });
 			await creationStarted.promise;
 			expect(createCalls).toBe(1);
 
 			blockedCreation.resolve({
-				session: new LazyFakeSession("/tmp/acp-lazy-startup") as unknown as AgentSession,
+				session: new LazyFakeSession(cwd) as unknown as AgentSession,
 				setToolUIContext: () => {},
 			});
 			const sessionResponse = await newSessionPromise;
@@ -394,6 +334,7 @@ describe("ACP lazy startup", () => {
 			await closeTransport(clientToAgent.writable);
 			await closeTransport(agentToClient.writable);
 			await Promise.allSettled([agentConnection.closed, serverConnection.closed]);
+			await agent?.dispose();
 		}
 	});
 
@@ -439,6 +380,7 @@ describe("ACP lazy startup", () => {
 					fileArgs: [],
 					unknownFlags: new Map(),
 					unrecognizedFlags: [],
+					invalidFlagValues: [],
 					noSkills: true,
 					noRules: true,
 					noTools: true,

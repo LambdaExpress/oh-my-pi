@@ -8,6 +8,10 @@
  */
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
+import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
 
 const PROBE_PATH = path.join(import.meta.dir, "fixtures", "bash-autobg-exit-probe.ts");
 const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
@@ -49,4 +53,57 @@ describe("bash auto-background threshold timer (#7235)", () => {
 			clearTimeout(watchdog);
 		}
 	}, 30_000);
+});
+
+describe("Bash 显式前台执行", () => {
+	it.each([
+		{ exitCode: 0, timeout: 600 },
+		{ exitCode: 7, timeout: 300 },
+	])("async=false 在自动后台阈值之后返回最终结果（退出码 $exitCode）", async ({ exitCode, timeout }) => {
+		const thresholdMs = 10;
+		const deliveries: string[] = [];
+		const manager = new AsyncJobManager({
+			onJobComplete: (_jobId, text) => {
+				deliveries.push(text);
+			},
+		});
+		const session = {
+			cwd: process.cwd(),
+			hasUI: false,
+			skills: [],
+			getSessionFile: () => null,
+			getSessionId: () => "foreground-autobg-regression",
+			asyncJobManager: manager,
+			settings: Settings.isolated({
+				"bash.autoBackground.enabled": true,
+				"bash.autoBackground.thresholdMs": thresholdMs,
+				"bashInterceptor.enabled": false,
+			}),
+			getClientBridge: () => undefined,
+		} as unknown as ToolSession;
+
+		try {
+			const result = await new BashTool(session).execute("foreground-call", {
+				command: `printf 'start\\n'; sleep 0.05; printf 'done\\n'; exit ${exitCode}`,
+				timeout,
+				pty: false,
+				async: false,
+			});
+			const text = result.content.find(block => block.type === "text")?.text ?? "";
+
+			expect(text).toContain("start\ndone");
+			expect(result.isError).toBe(exitCode === 0 ? undefined : true);
+			// Successful commands omit exit-code details; failures retain the final status.
+			expect(result.details?.exitCode).toBe(exitCode === 0 ? undefined : exitCode);
+			expect(result.details?.timeoutSeconds).toBe(timeout);
+			expect(result.details?.wallTimeMs).toBeGreaterThanOrEqual(thresholdMs);
+			expect(result.details?.async).toBeUndefined();
+			await manager.waitForAll();
+			await manager.drainDeliveries({ timeoutMs: 1 });
+			expect(manager.getAllJobs()).toEqual([]);
+			expect(deliveries).toEqual([]);
+		} finally {
+			await manager.dispose();
+		}
+	});
 });

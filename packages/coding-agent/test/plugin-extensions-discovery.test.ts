@@ -2,8 +2,26 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { initializeWithSettings } from "@oh-my-pi/pi-coding-agent/capability";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { discoverAndLoadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
-import { getAgentDir, getPluginsDir, removeSyncWithRetries, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
+import { closeLegacyPiExtensionCacheDb } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/legacy-pi-compat";
+import {
+	getLegacyPiExtensionCacheDbPath,
+	getPluginsDir,
+	logger,
+	removeSyncWithRetries,
+	removeWithRetries,
+	setAgentDir,
+	setProjectDir,
+	TempDir,
+} from "@oh-my-pi/pi-utils";
+import {
+	beginSettingsTest,
+	restoreEnvValue,
+	restoreSettingsTestState,
+	type SettingsTestState,
+} from "./helpers/settings-test-state";
 
 const currentPiCodingAgentPath = Bun.resolveSync("@oh-my-pi/pi-coding-agent", import.meta.dir);
 const currentPiExtensionsPath = Bun.resolveSync("@oh-my-pi/pi-coding-agent/extensibility/extensions", import.meta.dir);
@@ -11,11 +29,20 @@ const currentPiExtensionsPath = Bun.resolveSync("@oh-my-pi/pi-coding-agent/exten
 describe("plugin extension discovery", () => {
 	let projectDir: TempDir;
 	let tempHome = "";
-	const originalAgentDir = getAgentDir();
+	let cacheDbPath: string;
+	let settingsState: SettingsTestState | undefined;
+	let releaseCapabilitySettings: (() => void) | undefined;
+	let sideEffectMarker: PropertyDescriptor | undefined;
 	const xdgVars = ["XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"] as const;
-	const originalXdg = new Map<string, string | undefined>();
 
 	beforeEach(() => {
+		settingsState = beginSettingsTest();
+		sideEffectMarker = Object.getOwnPropertyDescriptor(globalThis, "__sideEffectMarker");
+		// The process-wide file logger retains its first directory's append fd.
+		// Discovery diagnostics must not make this removable home own that sink.
+		for (const level of ["debug", "info", "warn", "error"] as const) {
+			spyOn(logger, level).mockImplementation(() => {});
+		}
 		projectDir = TempDir.createSync("@pi-plugin-ext-");
 		// Redirect the whole config root to an isolated temp home so plugin discovery
 		// resolves into `<tempHome>/.omp/plugins` on every platform. Two things are needed:
@@ -27,11 +54,17 @@ describe("plugin extension discovery", () => {
 		//    XDG-migrated environment would otherwise still resolve the real plugins dir.
 		tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-plugin-home-"));
 		for (const key of xdgVars) {
-			originalXdg.set(key, process.env[key]);
-			delete process.env[key];
+			restoreEnvValue(key, undefined);
+		}
+		for (const key of ["HOME", "USERPROFILE"] as const) restoreEnvValue(key, tempHome);
+		for (const key of ["CLAUDE_CONFIG_DIR", "OMP_PROFILE", "PI_PROFILE", "WSL_DISTRO_NAME", "WSL_INTEROP"]) {
+			restoreEnvValue(key, undefined);
 		}
 		spyOn(os, "homedir").mockReturnValue(tempHome);
 		setAgentDir(path.join(tempHome, ".omp", "agent"));
+		setProjectDir(projectDir.path());
+		cacheDbPath = getLegacyPiExtensionCacheDbPath();
+		releaseCapabilitySettings = initializeWithSettings(Settings.isolated());
 
 		const pluginsDir = getPluginsDir();
 		// Safety gate: never write fixtures outside the temp home. This is the exact
@@ -72,16 +105,16 @@ describe("plugin extension discovery", () => {
 		);
 	});
 
-	afterEach(() => {
-		projectDir.removeSync();
-		spyOn(os, "homedir").mockRestore();
-		for (const [key, value] of originalXdg) {
-			if (value === undefined) delete process.env[key];
-			else process.env[key] = value;
-		}
-		originalXdg.clear();
-		setAgentDir(originalAgentDir);
-		removeSyncWithRetries(tempHome);
+	afterEach(async () => {
+		releaseCapabilitySettings?.();
+		releaseCapabilitySettings = undefined;
+		closeLegacyPiExtensionCacheDb(cacheDbPath);
+		restoreSettingsTestState(settingsState);
+		settingsState = undefined;
+		if (sideEffectMarker) Object.defineProperty(globalThis, "__sideEffectMarker", sideEffectMarker);
+		else delete (globalThis as { __sideEffectMarker?: unknown }).__sideEffectMarker;
+		await projectDir.remove();
+		await removeWithRetries(tempHome);
 	});
 
 	it("loads installed plugin extensions declared in package.json", async () => {
@@ -522,7 +555,6 @@ describe("plugin extension discovery", () => {
 			ok: true,
 			runs: 2,
 		});
-		delete (globalThis as { __sideEffectMarker?: unknown }).__sideEffectMarker;
 	});
 
 	it("loads installed plugin extensions whose manifest entry points at a directory with index.ts", async () => {

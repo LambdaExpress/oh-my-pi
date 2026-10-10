@@ -9,6 +9,12 @@ import {
 } from "../index";
 import { t } from "../i18n";
 import { type ThemeColor, theme } from "../theme/theme";
+import { formatKeyHint } from "../app-keybindings";
+import type { TspSpan } from "@oh-my-pi/pi-wire";
+import type { NativeNode, NativeUiEvent } from "../native/node";
+import { col, node, span, text } from "../native/describe";
+import { actionBar, actionButton } from "../native/overlay";
+import { isNativeRendering } from "../native/state";
 
 const FRAME_INTERVAL_MS = 85;
 const FRAME_COUNT = 34;
@@ -177,14 +183,16 @@ function drawBanner(
 	const innerWidth = panelWidth - 2;
 	const titleText =
 		event.kind === "unscheduled-weekly-reset" ? " O P E N A I   R E S E T " : " S A V E D   R E S E T ";
+	const esc = formatKeyHint("escape");
 	const subtitleText =
 		event.kind === "unscheduled-weekly-reset"
-			? t("Weekly usage cleared early · ESC to return")
+			? t("Weekly usage cleared early · {key} to return", { key: esc })
 			: event.added === 1
-				? t("New reset banked · {count} available · ESC to return", { count: event.available })
-				: t("{added} resets banked · {available} available · ESC to return", {
+				? t("New reset banked · {count} available · {key} to return", { count: event.available, key: esc })
+				: t("{added} resets banked · {available} available · {key} to return", {
 						added: event.added,
 						available: event.available,
+						key: esc,
 					});
 	const title = truncateToWidth(titleText, innerWidth, "");
 	const subtitle = truncateToWidth(subtitleText, innerWidth, "");
@@ -258,6 +266,40 @@ function drawBurst(
 	if (age <= 2) setCell(canvas, centerX, centerY, age === 0 ? "@" : "+", "white", 12);
 }
 
+/**
+ * The celebration for a TSP terminal: the banner's title as a terminal-clocked
+ * shimmer between pulsing sparks, over the event's subtitle. The particle sky
+ * is ANSI-only art.
+ */
+function describeCodexResetFireworks(event: CodexResetFireworksEvent): NativeNode {
+	const title = event.kind === "unscheduled-weekly-reset" ? t("OpenAI reset") : t("Saved reset");
+	const subtitle =
+		event.kind === "unscheduled-weekly-reset"
+			? t("Weekly usage cleared early")
+			: event.added === 1
+				? t("New reset banked · {count} available", { count: event.available })
+				: t("{added} resets banked · {available} available", { added: event.added, available: event.available });
+	const spark = (glyph: string, color: FireworkColor): TspSpan =>
+		span(glyph, FIREWORK_THEME_COLORS[color], { fx: "pulse" });
+	// The sheet is the frame (Tern bursts confetti from the pane's top edge for this role).
+	return col(
+		[
+			text([spark("✦ ", "pink"), spark("✧ ", "cyan"), spark("✦", "gold")]),
+			node("shimmer", {
+				text: title,
+				palette: {
+					low: FIREWORK_THEME_COLORS.violet,
+					mid: FIREWORK_THEME_COLORS.gold,
+					high: FIREWORK_THEME_COLORS.white,
+				},
+			}),
+			text([span(subtitle, FIREWORK_THEME_COLORS.cyan)]),
+			actionBar([null, actionButton(t("Close"), "close", { keys: "escape" })]),
+		],
+		{ align: "center", gap: "sm" },
+	);
+}
+
 function renderCanvas(canvas: Array<Array<CanvasCell | undefined>>): string[] {
 	return canvas.map(row => {
 		let output = "";
@@ -302,6 +344,7 @@ class CodexResetFireworksComponent implements Component {
 	#done = Promise.withResolvers<void>();
 	#frame = 0;
 	#disposed = false;
+	#native: NativeNode | undefined;
 
 	constructor(
 		readonly host: CodexResetFireworksHost,
@@ -309,11 +352,14 @@ class CodexResetFireworksComponent implements Component {
 	) {}
 
 	run(): Promise<void> {
-		this.#timer ??= setInterval(() => {
-			if (this.#disposed) return;
-			this.#frame = (this.#frame + 1) % FRAME_COUNT;
-			this.host.ui.requestRender();
-		}, FRAME_INTERVAL_MS);
+		// Frames only repaint the particle sky; a native terminal clocks the described shimmer.
+		if (!isNativeRendering()) {
+			this.#timer ??= setInterval(() => {
+				if (this.#disposed) return;
+				this.#frame = (this.#frame + 1) % FRAME_COUNT;
+				this.host.ui.requestRender();
+			}, FRAME_INTERVAL_MS);
+		}
 		this.host.ui.requestRender();
 		return this.#done.promise;
 	}
@@ -330,6 +376,23 @@ class CodexResetFireworksComponent implements Component {
 
 	handleInput(data: string): void {
 		if (matchesKey(data, "escape") || matchesKey(data, "esc")) this.#done.resolve();
+	}
+
+	/** Close runs what Esc runs. */
+	handleNativeEvent(event: NativeUiEvent): void {
+		if (event.type === "action" && event.act === "close") this.#done.resolve();
+	}
+
+	/** A glass sheet at the pane's top edge. */
+	readonly nativeOverlay = { role: "omp.overlay.fireworks", anchor: "top", size: "md" } as const;
+
+	invalidate(): void {
+		this.#native = undefined;
+	}
+
+	describe(): NativeNode {
+		this.#native ??= describeCodexResetFireworks(this.event);
+		return this.#native;
 	}
 
 	render(width: number): readonly string[] {

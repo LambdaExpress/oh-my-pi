@@ -80,6 +80,16 @@ describe("delimited path expansion", () => {
 		]);
 	});
 
+	it("keeps range-list commas inside each target when recovering a comma-delimited list", async () => {
+		for (const [first, second] of [
+			["apps/a.txt:1-2,-2", "packages/b.txt:1-2"],
+			["apps/a.txt:raw:1-2,-2", "packages/b.txt:1-2:raw"],
+			["apps/a.txt:1-2,-2:raw", "packages/b.txt:raw:1-2"],
+		]) {
+			expect(await splitDelimitedPathEntry(`${first},${second}`, tempDir)).toEqual([first, second]);
+		}
+	});
+
 	it("does not split backslash-escaped delimiters", async () => {
 		expect(await splitDelimitedPathEntry("apps/a.txt\\,packages/b.txt", tempDir)).toBeNull();
 		expect(await splitDelimitedPathEntry("apps/a.txt\\;packages/b.txt", tempDir)).toBeNull();
@@ -169,6 +179,12 @@ describe("delimited path expansion", () => {
 			globPattern: "**/*.ts",
 			hasGlob: true,
 		});
+	});
+
+	it("keeps drive-root globs absolute when resolving their search directory", () => {
+		const parsed = parseFindPattern("D:/entry*");
+		expect(parsed.globPattern).toBe("entry*");
+		expect(path.win32.resolve("D:/workspace/project", parsed.basePath)).toBe("D:\\");
 	});
 
 	it("normalizes Windows separators for search scope globs", async () => {

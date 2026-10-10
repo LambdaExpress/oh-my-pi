@@ -81,13 +81,8 @@ import {
 	transformRequestBody,
 } from "./openai-codex/request-transformer";
 import { applyCodexAccessPrograms, dropRejectedCodexAccessPrograms } from "./openai-codex/access-programs";
-import {
-	type CodexAcceptedSteer,
-	type CodexSteerAck,
-	CodexSteerPump,
-	planSteeredRequest,
-	toSteerInputItems,
-} from "./openai-codex/live-steering";
+import type { CodexAcceptedSteer, CodexSteerAck, CodexSteerOutcome } from "./openai-codex/live-steering";
+import { CodexSteerPump, planSteeredRequest, toSteerInputItems } from "./openai-codex/live-steering";
 import { CodexApiError } from "./openai-codex/response-handler";
 import { getCodexAttestationHeader } from "./openai-codex-attestation";
 export { createOpenAICodexCompactionRequestContext } from "./openai-codex-compaction";
@@ -272,6 +267,7 @@ const CODEX_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS = Number($env.PI_CODEX_WEBSOCKET_FI
 const CODEX_WEBSOCKET_RETRY_BUDGET = Number($env.PI_CODEX_WEBSOCKET_RETRY_BUDGET || CODEX_MAX_RETRIES);
 const CODEX_WEBSOCKET_RETRY_DELAY_MS = Number($env.PI_CODEX_WEBSOCKET_RETRY_DELAY_MS || CODEX_RETRY_DELAY_MS);
 const CODEX_WEBSOCKET_TRANSPORT_ERROR_PREFIX = "Codex websocket transport error";
+const CODEX_NATIVE_INFLIGHT_MESSAGE_CODE = "unsupported_native_inflight_message";
 const CODEX_RETRYABLE_EVENT_CODES = new Set(["model_error", "server_error", "internal_error"]);
 const CODEX_RETRYABLE_EVENT_MESSAGE =
 	/processing your request|retry your request|temporar(?:y|ily)|overloaded|service.?unavailable|internal error|server error/i;
@@ -302,6 +298,18 @@ function isCodexStreamProgressEvent(event: unknown): boolean {
 	if (!event || typeof event !== "object") return false;
 	const type = (event as { type?: unknown }).type;
 	return typeof type === "string" && CODEX_ADDITIONAL_PROGRESS_EVENT_TYPES.has(type);
+}
+
+function isCodexNativeInflightControlError(frame: Record<string, unknown>): boolean {
+	const error = asRecord(frame.error);
+	const code = typeof error?.code === "string" ? error.code : frame.code;
+	return (
+		frame.type === "error" &&
+		code === CODEX_NATIVE_INFLIGHT_MESSAGE_CODE &&
+		frame.response == null &&
+		frame.response_id == null &&
+		error?.response_id == null
+	);
 }
 
 function extractCodexFrameResponseId(frame: Record<string, unknown>): string | undefined {
@@ -436,6 +444,8 @@ type CodexWebSocketSessionState = {
 	 * pending tool output; see {@link planSteeredRequest}.
 	 */
 	acceptedSteering?: { connection: CodexWebSocketConnection; steers: CodexAcceptedSteer[] };
+	/** A native steer rejection requires an independent create after any accepted successor. */
+	independentCreateRequired?: CodexWebSocketConnection;
 	lastTransport?: CodexTransport;
 	fallbackCount: number;
 	lastFallbackAt?: number;
@@ -765,7 +775,10 @@ interface CodexRequestContext {
 
 interface CodexRequestSetup {
 	requestSignal: AbortSignal;
-	wrapCodexSseStream: (source: AsyncGenerator<Record<string, unknown>>) => AsyncGenerator<Record<string, unknown>>;
+	wrapCodexSseStream: (
+		source: AsyncGenerator<Record<string, unknown>>,
+		streamAbortController: AbortController,
+	) => AsyncGenerator<Record<string, unknown>>;
 	requestAbortController: AbortController;
 	firstEventTimeoutMs: number | undefined;
 	websocketIdleTimeoutMs: number | undefined;
@@ -1325,28 +1338,26 @@ function getCodexServiceTierCostMultiplier(
 	model: Pick<Model<"openai-codex-responses">, "serviceTierCost">,
 	serviceTier: ServiceTier | "default" | undefined,
 ): number {
+	// `ultrafast` has no published price (API preview, Codex credits), so it is
+	// shown at 1x rather than an invented multiplier.
 	if (serviceTier !== "flex" && serviceTier !== "priority") return 1;
 	return model.serviceTierCost?.[serviceTier] ?? 1;
 }
 
-function resolveCodexCostServiceTier(res: unknown, req?: unknown): ServiceTier | "default" | undefined {
-	switch (res) {
-		case "flex":
-			return "flex";
-		case "priority":
-			return "priority";
-		default:
-			if (req === "flex" || req === "priority") {
-				return req;
-			}
-			return "default";
-	}
+/**
+ * The tier a Codex response was billed at. The response echo is authoritative
+ * whenever it reports a tier (the backend may serve a requested priority/flex
+ * turn as `default`); the requested tier is used only when the echo is absent.
+ */
+function resolveCodexCostServiceTier(res: ServiceTier | undefined, req?: unknown): ServiceTier | "default" | undefined {
+	const served = res ?? req;
+	return served === "flex" || served === "priority" ? served : "default";
 }
 
 function applyCodexServiceTierPricing(
 	model: Pick<Model<"openai-codex-responses">, "serviceTierCost">,
 	usage: AssistantMessage["usage"],
-	resTier: unknown,
+	resTier: ServiceTier | undefined,
 	reqTier: unknown,
 ): void {
 	const resolvedTier = resolveCodexCostServiceTier(resTier, reqTier);
@@ -1384,15 +1395,16 @@ function createRequestSetup(options: OpenAICodexResponsesOptions | undefined): C
 	const websocketFirstEventTimeoutMs = options?.streamFirstEventTimeoutMs ?? CODEX_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS;
 	const wrapCodexSseStream = (
 		source: AsyncGenerator<Record<string, unknown>>,
+		streamAbortController: AbortController,
 	): AsyncGenerator<Record<string, unknown>> =>
 		iterateWithIdleTimeout(source, {
 			idleTimeoutMs,
 			firstItemTimeoutMs: firstEventTimeoutMs,
 			firstItemErrorMessage: "OpenAI Codex SSE stream timed out while waiting for the first event",
 			errorMessage: "OpenAI Codex SSE stream stalled while waiting for the next event",
-			onIdle: () => requestAbortController.abort(),
-			onFirstItemTimeout: () => requestAbortController.abort(),
-			abortSignal: options?.signal,
+			onIdle: () => streamAbortController.abort(),
+			onFirstItemTimeout: () => streamAbortController.abort(),
+			abortSignal: requestSignal,
 			isProgressItem: isCodexStreamProgressEvent,
 		});
 	return {
@@ -1812,6 +1824,18 @@ async function openCodexWebSocketTransport(
 }> {
 	const steered = websocketState.acceptedSteering;
 	websocketState.acceptedSteering = undefined;
+	const independentCreateRequired = websocketState.independentCreateRequired;
+	if (
+		independentCreateRequired &&
+		(websocketState.connection !== independentCreateRequired ||
+			!steered ||
+			steered.connection !== independentCreateRequired ||
+			!steered.steers.some(steer => !independentCreateRequired.hasFailedSteer([steer.id])))
+	) {
+		// The rejected input remains caller-owned. Do not touch the running turn;
+		// only its next normal request drops the stateful append baseline.
+		resetCodexWebSocketAppendState(websocketState);
+	}
 	const canAppendBeforeRequest = websocketState.canAppend === true;
 	let chainedBody = buildCodexChainedRequestBody(requestContext.transformedBody, websocketState);
 	const websocketHeaders = createCodexHeaders(
@@ -1978,6 +2002,10 @@ async function openCodexSseTransport(
 	const open = async (wireBody: RequestBody) => {
 		// Keep the 400 dump honest: record the body actually sent on the wire.
 		requestContext.rawRequestDump.body = wireBody;
+		// A stalled attempt must release its connection without cancelling the
+		// request-level signal that later retries and their backoff still need.
+		const streamAbortController = new AbortController();
+		const streamSignal = AbortSignal.any([requestSetup.requestSignal, streamAbortController.signal]);
 		return requestSetup.wrapCodexSseStream(
 			await openCodexSseEventStream(
 				requestContext.url,
@@ -1991,12 +2019,13 @@ async function openCodexSseTransport(
 				requestContext.responsesLite,
 				requestContext.codexClientVersion,
 				requestContext.requestMetadata,
-				requestSetup.requestSignal,
+				streamSignal,
 				requestSetup.firstEventTimeoutMs,
 				options?.codexSseMaxAttempts,
 				event => options?.onSseEvent?.(event, model),
 				options?.fetch,
 			),
+			streamAbortController,
 		);
 	};
 	const canAppendBeforeRequest = state?.canAppend === true;
@@ -2163,6 +2192,8 @@ class CodexStreamProcessor {
 	#steerConnection?: CodexWebSocketConnection;
 	/** A replaced attempt accepted steering its socket may still act on. */
 	#steerTainted = false;
+	/** One rejected, unstarted stateful create may be replaced by an independent create. */
+	#nativeContinuationRecovered = false;
 
 	constructor(init: {
 		runtime: CodexStreamRuntime;
@@ -2476,11 +2507,27 @@ class CodexStreamProcessor {
 
 	/** Stop steering an attempt that is being replaced; anything it delivered taints its socket. */
 	async #retireSteering(): Promise<void> {
-		const pump = this.#steerPump;
-		if (!pump) return;
-		this.#steerPump = undefined;
-		const outcome = await pump.finish();
+		const outcome = await this.#finishSteering();
+		if (!outcome) return;
 		if (outcome.accepted.length > 0 || outcome.uncertain) this.#steerTainted = true;
+	}
+
+	async #finishSteering(): Promise<CodexSteerOutcome | undefined> {
+		const pump = this.#steerPump;
+		this.#steerPump = undefined;
+		if (!pump) return undefined;
+		const outcome = await pump.finish();
+		const state = this.runtime.websocketState;
+		const connection = this.#steerConnection;
+		if (
+			outcome.rejectedCode === CODEX_NATIVE_INFLIGHT_MESSAGE_CODE &&
+			state &&
+			connection &&
+			state.connection === connection
+		) {
+			state.independentCreateRequired = connection;
+		}
+		return outcome;
 	}
 
 	/**
@@ -2490,9 +2537,7 @@ class CodexStreamProcessor {
 	 * into a later request.
 	 */
 	async #settleSteering(completed: boolean): Promise<void> {
-		const pump = this.#steerPump;
-		this.#steerPump = undefined;
-		const outcome = pump ? await pump.finish() : undefined;
+		const outcome = await this.#finishSteering();
 		const accepted = outcome?.accepted ?? [];
 		const tainted = this.#steerTainted || outcome?.uncertain === true;
 		const state = this.runtime.websocketState;
@@ -2724,6 +2769,32 @@ class CodexStreamProcessor {
 	}
 
 	async #recoverStreamError(error: unknown): Promise<boolean> {
+		if (error instanceof CodexProviderStreamError && error.code === CODEX_NATIVE_INFLIGHT_MESSAGE_CODE) {
+			const state = this.runtime.websocketState;
+			if (
+				error instanceof CodexNativeStatefulCreateError &&
+				state &&
+				!this.#nativeContinuationRecovered &&
+				this.output.content.length === 0 &&
+				this.runtime.canSafelyReplayWebsocketOverSse &&
+				!this.runtime.sawTerminalEvent &&
+				!this.requestSetup.requestSignal.aborted
+			) {
+				// The server rejected the command before admitting a response.
+				// Follow its independent-create instruction once, without replaying
+				// an active native response or any consumer-visible output.
+				this.#nativeContinuationRecovered = true;
+				resetCodexWebSocketAppendState(state);
+				this.runtime.resetAccumulators();
+				resetOutputState(this.output);
+				this.firstTokenTime = undefined;
+				await this.#reopenWebSocketStream(state);
+				return true;
+			}
+			// A native error not tied to that pending command is a real response
+			// failure, even if its human-readable message sounds retryable.
+			return false;
+		}
 		if (
 			error instanceof CodexSteerCommitError &&
 			this.runtime.websocketState &&
@@ -3376,6 +3447,7 @@ function resetCodexWebSocketAppendState(state: CodexWebSocketSessionState): void
 	state.lastRequest = undefined;
 	state.lastResponseId = undefined;
 	state.lastResponseItems = undefined;
+	state.independentCreateRequired = undefined;
 }
 
 function recordCodexWebSocketFailure(state: CodexWebSocketSessionState, activateFallback: boolean): void {
@@ -3530,6 +3602,7 @@ function parseCodexServiceTier(value: unknown): ServiceTier | undefined {
 		case "flex":
 		case "scale":
 		case "priority":
+		case "ultrafast":
 			return value;
 		default:
 			return undefined;
@@ -3749,12 +3822,18 @@ const CODEX_CHAIN_TOP_LEVEL_EXCLUDE_MAP = {
  * request schema has no `previous_response_id` (codex-rs carries it only on
  * websocket `response.create` frames) and strict gateway validators 400 it
  * with `{"detail":"Unsupported parameter: previous_response_id"}`.
+ *
+ * Entering or leaving `ultrafast` still breaks the chain: that tier is a
+ * separate serving path, and codex-rs sends a full `response.create` across
+ * such a switch rather than a `previous_response_id` delta.
  */
 function buildCodexChainedRequestBody(
 	requestBody: RequestBody,
 	state: CodexWebSocketSessionState | undefined,
 ): RequestBody {
-	const chainable = state?.canAppend === true;
+	const chainable =
+		state?.canAppend === true &&
+		(state.lastRequest?.service_tier === "ultrafast") === (requestBody.service_tier === "ultrafast");
 	const appendInput = chainable
 		? buildResponsesDeltaInput(
 				state.lastRequest,
@@ -3849,6 +3928,8 @@ class CodexWebSocketConnection {
 	 * previous (cleanly-completed) response that outlived the queue drain.
 	 */
 	#lastSeenResponseId?: string;
+	/** Current response identity for correlating idless native command errors. */
+	#activeResponseId?: string;
 	/** `response.steer` submissions awaiting acknowledgement, oldest first. */
 	#steerWaiters: CodexSteerWaiter[] = [];
 	/** Steering ids the server accepted on this socket. */
@@ -4037,6 +4118,7 @@ class CodexWebSocketConnection {
 					this.#handleSteerEvent(parsed);
 					return;
 				}
+				if (this.#handleNativeSteerRejection(parsed)) return;
 				this.#push(parsed);
 			} catch (error) {
 				notifyCodexWebSocketMalformed(this.#streamObserver, event.data, error);
@@ -4139,9 +4221,13 @@ class CodexWebSocketConnection {
 			let lastProgressEventType: string | undefined;
 			let lastEventAt = lastProgressAt;
 			let lastEventType: string | undefined;
+			// Only a command rejected before response admission can be sent again.
+			let pendingStatefulCreate =
+				"send" in exchange &&
+				typeof exchange.send.previous_response_id === "string" &&
+				exchange.send.previous_response_id.length > 0;
 			// Cross-request frame guard: lock onto this response's id and reject
 			// frames belonging to another response interleaved on the reused socket.
-			let activeResponseId: string | undefined;
 			let lastSequence: number | undefined;
 			const priorResponseId = this.#lastSeenResponseId;
 			while (true) {
@@ -4200,35 +4286,44 @@ class CodexWebSocketConnection {
 				// upstream rather than gating on `response.created`.
 				const frameResponseId = extractCodexFrameResponseId(next);
 				const frameSequence = extractCodexFrameSequenceNumber(next);
+				if (
+					pendingStatefulCreate &&
+					isCodexNativeInflightControlError(next) &&
+					(next.previous_response_id == null ||
+						("send" in exchange && next.previous_response_id === exchange.send.previous_response_id))
+				) {
+					throw new CodexNativeStatefulCreateError(createCodexProviderStreamError(next).message);
+				}
 				if (frameResponseId !== undefined) {
-					if (activeResponseId === undefined) {
+					if (this.#activeResponseId === undefined) {
 						if (priorResponseId !== undefined && frameResponseId === priorResponseId) {
 							// Trailing/duplicate frame of the previous response that
 							// outlived the drain. Drop without locking or advancing the
 							// first-event clocks so our own response can still start.
 							continue;
 						}
-						activeResponseId = frameResponseId;
-					} else if (frameResponseId !== activeResponseId) {
+						this.#activeResponseId = frameResponseId;
+					} else if (frameResponseId !== this.#activeResponseId) {
 						// A different response is interleaving on the socket; the idless
 						// deltas that follow are indistinguishable, so fail closed
 						// (retryable) instead of risking misattribution.
 						this.close("stale-frame");
 						throw new CodexWebSocketTransportError(
-							`websocket frame for response ${frameResponseId} interleaved into active response ${activeResponseId}`,
+							`websocket frame for response ${frameResponseId} interleaved into active response ${this.#activeResponseId}`,
 						);
 					}
 					this.#lastSeenResponseId = frameResponseId;
 				}
 				if (frameSequence !== undefined) {
-					if (activeResponseId !== undefined && lastSequence !== undefined && frameSequence < lastSequence) {
+					if (this.#activeResponseId !== undefined && lastSequence !== undefined && frameSequence < lastSequence) {
 						this.close("stale-frame");
 						throw new CodexWebSocketTransportError(
-							`websocket sequence_number ${frameSequence} regressed below ${lastSequence} within response ${activeResponseId}`,
+							`websocket sequence_number ${frameSequence} regressed below ${lastSequence} within response ${this.#activeResponseId}`,
 						);
 					}
 					lastSequence = frameSequence;
 				}
+				if (frameResponseId !== undefined || isCodexStreamProgressEvent(next)) pendingStatefulCreate = false;
 				sawFirstEvent = true;
 				lastEventAt = Date.now();
 				lastEventType = eventType || undefined;
@@ -4249,6 +4344,7 @@ class CodexWebSocketConnection {
 			}
 		} finally {
 			this.#activeRequest = false;
+			this.#activeResponseId = undefined;
 			this.#streamObserver = undefined;
 			this.#attachSteerIds = undefined;
 			if (signal) {
@@ -4291,6 +4387,27 @@ class CodexWebSocketConnection {
 	/** True when the server failed to commit any of the accepted steering `ids`. */
 	hasFailedSteer(ids: readonly string[]): boolean {
 		return ids.some(id => this.#failedSteers.has(id));
+	}
+
+	#handleNativeSteerRejection(event: Record<string, unknown>): boolean {
+		if (!isCodexNativeInflightControlError(event) || this.#steerWaiters.length !== 1) return false;
+		const waiter = this.#steerWaiters[0]!;
+		const responseId = this.#activeRequest ? this.#activeResponseId : this.#lastSeenResponseId;
+		if (
+			responseId !== waiter.previousResponseId ||
+			(event.previous_response_id != null && event.previous_response_id !== waiter.previousResponseId)
+		) {
+			return false;
+		}
+		this.#steerWaiters.shift();
+		const error = asRecord(event.error);
+		const message = typeof error?.message === "string" ? error.message : event.message;
+		waiter.resolve({
+			accepted: false,
+			code: CODEX_NATIVE_INFLIGHT_MESSAGE_CODE,
+			message: typeof message === "string" ? message : undefined,
+		});
+		return true;
 	}
 
 	#handleSteerEvent(event: Record<string, unknown>): void {
@@ -4738,8 +4855,14 @@ async function openCodexSseEventStream(
 	if (!response.body) {
 		throw new CodexProviderStreamError("No response body", false);
 	}
-	return readSseJson<Record<string, unknown>>(response.body, signal, event =>
-		onSseEvent?.({ event: event.event, data: event.data, raw: [...event.raw] }, undefined),
+	// Attach the observer only when a diagnostic listener exists: any observer
+	// turns on per-line raw capture in `readSseJson`.
+	return readSseJson<Record<string, unknown>>(
+		response.body,
+		signal,
+		onSseEvent
+			? event => onSseEvent({ event: event.event, data: event.data, raw: [...event.raw] }, undefined)
+			: undefined,
 	);
 }
 
@@ -5129,6 +5252,14 @@ class CodexProviderStreamError extends Error {
 		this.name = "CodexProviderStreamError";
 		this.retryable = retryable;
 		this.code = code;
+	}
+}
+
+/** The native lane rejected a stateful create before starting its response. */
+class CodexNativeStatefulCreateError extends CodexProviderStreamError {
+	constructor(message: string) {
+		super(message, false, CODEX_NATIVE_INFLIGHT_MESSAGE_CODE);
+		this.name = "CodexNativeStatefulCreateError";
 	}
 }
 

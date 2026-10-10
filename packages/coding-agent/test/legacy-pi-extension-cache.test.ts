@@ -10,8 +10,18 @@ const cjsProbePath = path.resolve(import.meta.dir, "fixtures", "legacy-pi-extens
 const tempDirs: TempDir[] = [];
 
 async function runProbe(cacheRoot: string, script: string = probePath, args: string[] = []): Promise<string> {
-	const env: Record<string, string | undefined> = { ...process.env, XDG_CACHE_HOME: cacheRoot };
-	for (const key of ["PI_CODING_AGENT_DIR", "OMP_PROFILE", "PI_PROFILE", "PI_CONFIG_DIR"]) {
+	// XDG_CACHE_HOME is intentionally ignored on Windows. Keep the default
+	// config root and the XDG cache root at the same isolated path on every OS.
+	const env: Record<string, string | undefined> = {
+		...process.env,
+		HOME: cacheRoot,
+		USERPROFILE: cacheRoot,
+		PI_CONFIG_DIR: "omp",
+		XDG_DATA_HOME: cacheRoot,
+		XDG_STATE_HOME: cacheRoot,
+		XDG_CACHE_HOME: cacheRoot,
+	};
+	for (const key of ["PI_CODING_AGENT_DIR", "OMP_PROFILE", "PI_PROFILE", "OMP_CONFIG_DIR"]) {
 		delete env[key];
 	}
 	const proc = Bun.spawn([process.execPath, script, ...args], {
@@ -76,11 +86,14 @@ test("legacy extension parse cache drops obsolete CommonJS export-analysis colum
 	await fs.mkdir(path.dirname(cachePath), { recursive: true });
 
 	const seed = new Database(cachePath, { create: true });
-	seed.run(
-		"CREATE TABLE extension_parse_cache (cache_key TEXT PRIMARY KEY, source_type TEXT NOT NULL, [references] TEXT NOT NULL, commonjs_named_exports TEXT NOT NULL, commonjs_reexport_specifiers TEXT NOT NULL)",
-	);
-	seed.run("PRAGMA user_version = 1");
-	seed.close();
+	try {
+		seed.run(
+			"CREATE TABLE extension_parse_cache (cache_key TEXT PRIMARY KEY, source_type TEXT NOT NULL, [references] TEXT NOT NULL, commonjs_named_exports TEXT NOT NULL, commonjs_reexport_specifiers TEXT NOT NULL)",
+		);
+		seed.run("PRAGMA user_version = 1");
+	} finally {
+		seed.close();
+	}
 
 	expect((await runProbe(cacheRoot, healthProbePath)).trim()).toBe("AVAILABLE");
 
@@ -129,12 +142,15 @@ test("oversized-cache eviction keeps the parse cache usable when a concurrent pr
 
 	// Seed a cache whose main db file exceeds the 8 MiB eviction cap.
 	const seed = new Database(cachePath, { create: true });
-	seed.run(
-		"CREATE TABLE extension_parse_cache (cache_key TEXT PRIMARY KEY, source_type TEXT NOT NULL, [references] TEXT NOT NULL, commonjs_syntax INTEGER NOT NULL)",
-	);
-	seed.run("PRAGMA user_version = 3");
-	seed.run("INSERT INTO extension_parse_cache VALUES ('big', 'module', ?, 0)", ["x".repeat(9 * 1024 * 1024)]);
-	seed.close();
+	try {
+		seed.run(
+			"CREATE TABLE extension_parse_cache (cache_key TEXT PRIMARY KEY, source_type TEXT NOT NULL, [references] TEXT NOT NULL, commonjs_syntax INTEGER NOT NULL)",
+		);
+		seed.run("PRAGMA user_version = 3");
+		seed.run("INSERT INTO extension_parse_cache VALUES ('big', 'module', ?, 0)", ["x".repeat(9 * 1024 * 1024)]);
+	} finally {
+		seed.close();
+	}
 
 	// A concurrent omp process holds the cache open in WAL mode with
 	// uncheckpointed frames in its `-wal` (as a concurrently-starting omp does

@@ -150,7 +150,7 @@ impl GitRepo {
 	/// Create a commit and return its object id.
 	pub fn commit_create(&self, message: &str, options: &CommitOptions) -> Result<String> {
 		let repo = self.gix()?;
-		run_commit_hook(self, &repo, "pre-commit", &[])?;
+		run_commit_hook(self, "pre-commit", &[])?;
 		let mut head = repo
 			.head()
 			.map_err(|err| Error::backend("git commit", err))?;
@@ -229,7 +229,7 @@ impl GitRepo {
 		};
 		let message_path = self.info().git_dir.join("COMMIT_EDITMSG");
 		fs::write(&message_path, message)?;
-		run_commit_hook(self, &repo, "commit-msg", &[message_path.as_os_str()])?;
+		run_commit_hook(self, "commit-msg", &[message_path.as_os_str()])?;
 		let message = fs::read_to_string(&message_path)
 			.map_err(|err| Error::backend("git commit read commit-msg result", err))?;
 		let commit = repo
@@ -262,7 +262,7 @@ impl GitRepo {
 				deref:  true,
 			})
 			.map_err(|err| Error::backend("git commit", err))?;
-		let _ = run_commit_hook(self, &repo, "post-commit", &[]);
+		let _ = run_commit_hook(self, "post-commit", &[]);
 		Ok(id.to_hex().to_string())
 	}
 
@@ -294,15 +294,18 @@ impl GitRepo {
 		} else {
 			gix::refs::transaction::PreviousValue::MustNotExist
 		};
-		update_reference(
-			&repo,
-			"git branch",
-			&full,
-			id,
-			constraint,
-			&format!("branch: Created from {start}"),
-			false,
-		)?;
+		// git's reflog tells a `-f` move apart from a creation.
+		let exists = force
+			&& repo
+				.try_find_reference(&full)
+				.map_err(|e| Error::backend("git branch", e))?
+				.is_some();
+		let message = if exists {
+			format!("branch: Reset to {start}")
+		} else {
+			format!("branch: Created from {start}")
+		};
+		update_reference(&repo, "git branch", &full, id, constraint, &message, false)?;
 		Ok(())
 	}
 
@@ -799,6 +802,23 @@ impl GitRepo {
 			.map_err(|err| Error::backend("git worktree add", err))
 	}
 
+	/// Resolve the executable hook `name` as git's `find_hook` does: under
+	/// `core.hooksPath` (a relative value resolves against the checkout root)
+	/// or else the shared `hooks` directory, which linked worktrees read from
+	/// the common dir. `None` when the hook is missing or not executable.
+	pub fn hook_path(&self, name: &str) -> Result<Option<PathBuf>> {
+		let dir = self
+			.gix()?
+			.config_snapshot()
+			.string("core.hooksPath")
+			.map_or_else(
+				|| self.info().common_dir.join("hooks"),
+				|value| self.root().join(value.to_str_lossy().as_ref()),
+			);
+		let hook = dir.join(name);
+		Ok(hook_is_executable(&hook).then_some(hook))
+	}
+
 	/// Remove a linked worktree, returning false when dirty and not forced.
 	pub fn worktree_remove(&self, path: &Path, force: bool) -> Result<bool> {
 		let Some(linked) = Self::discover(path)? else {
@@ -833,40 +853,50 @@ impl GitRepo {
 	}
 }
 
-fn run_commit_hook(
-	repository: &GitRepo,
-	repo: &gix::Repository,
-	name: &str,
-	args: &[&OsStr],
-) -> Result<()> {
-	let hooks_dir = repo
-		.config_snapshot()
-		.string("core.hooksPath")
-		.map(|value| PathBuf::from(value.to_str_lossy().into_owned()))
-		.map_or_else(
-			|| repository.info().git_dir.join("hooks"),
-			|path| {
-				if path.is_absolute() {
-					path
-				} else {
-					repository.root().join(path)
-				}
-			},
-		);
-	let hook = hooks_dir.join(name);
-	if !hook_is_executable(&hook) {
+fn run_commit_hook(repository: &GitRepo, name: &str, args: &[&OsStr]) -> Result<()> {
+	let Some(hook) = repository.hook_path(name)? else {
 		return Ok(());
-	}
-	// `std::process::Command` does not honor shebangs on Windows, while Git does.
-	// Use gitoxide's command preparation so extensionless hooks resolve their
-	// declared interpreter on Windows and remain direct executables elsewhere.
-	let mut command: Command = gix::command::prepare(hook.as_os_str())
+	};
+	#[cfg(windows)]
+	let mut command = {
+		use std::os::windows::process::CommandExt;
+		// Windows does not honor shebangs. Gitoxide parses them, but a POSIX
+		// path such as /bin/sh is not a native Windows interpreter path.
+		// Resolve those names through Git's installation, retaining native
+		// interpreter paths and the shebang's arguments.
+		let mut command = match gix::command::extract_interpreter(&hook) {
+			Some(shebang) => {
+				let mut command = if shebang.interpreter.has_root()
+					&& !shebang.interpreter.is_absolute()
+					&& let Some(name) = shebang.interpreter.file_name().and_then(OsStr::to_str)
+				{
+					if name == "sh" {
+						gix::path::env::shell_command()
+					} else {
+						Command::new(
+							gix::path::env::installation_program(name)
+								.unwrap_or_else(|| PathBuf::from(name)),
+						)
+					}
+				} else {
+					Command::new(&shebang.interpreter)
+				};
+				command.args(shebang.args).arg(&hook);
+				command
+			},
+			None => Command::new(&hook),
+		};
+		const CREATE_NO_WINDOW: u32 = 0x08000000;
+		command.creation_flags(CREATE_NO_WINDOW);
+		command
+	};
+	#[cfg(not(windows))]
+	let mut command: Command = gix::command::prepare(hook.as_os_str()).into();
+	let output = command
 		.args(args.iter().copied())
 		.stdin(Stdio::null())
 		.stdout(Stdio::piped())
 		.stderr(Stdio::piped())
-		.into();
-	let output = command
 		.current_dir(repository.root())
 		.env("GIT_DIR", &repository.info().git_dir)
 		.env("GIT_WORK_TREE", repository.root())
@@ -942,22 +972,7 @@ pub fn detach_git_dir(
 	let head = read_optional_file(&original.info().head_path)?;
 	let index = read_optional_file(&original.info().git_dir.join("index"))?;
 	let refs = snapshot_refs(&repo)?;
-	let config_values = [
-		"user.name",
-		"user.email",
-		"core.fileMode",
-		"core.splitIndex",
-		"core.sparseCheckout",
-		"core.sparseCheckoutCone",
-	]
-	.into_iter()
-	.filter_map(|key| {
-		repo
-			.config_snapshot()
-			.string(key)
-			.map(|v| (key, v.to_str_lossy().into_owned()))
-	})
-	.collect::<Vec<_>>();
+	let original_config = repo.config_snapshot();
 	let shared = copy_named_files(&original.info().git_dir, "sharedindex.")?;
 	let sparse = read_optional_file(&original.info().git_dir.join("info/sparse-checkout"))?;
 	let shallow = read_optional_file(&source_common.join("shallow"))?;
@@ -1005,9 +1020,42 @@ pub fn detach_git_dir(
 	if let Some(head) = head {
 		fs::write(git_entry.join("HEAD"), head)?;
 	}
-	for (key, value) in config_values {
-		set_config_file(&git_entry.join("config"), key, &value)?;
+	let config_path = git_entry.join("config");
+	let mut config =
+		gix::config::File::from_path_no_includes(config_path.clone(), gix::config::Source::Local)
+			.map_err(|err| Error::backend("git config", err))?;
+	for key in [
+		"user.name",
+		"user.email",
+		"core.fileMode",
+		"core.autocrlf",
+		"core.eol",
+		"core.splitIndex",
+		"core.sparseCheckout",
+		"core.sparseCheckoutCone",
+	] {
+		if let Some(value) = original_config.string(key) {
+			config
+				.set_raw_value(key, value.as_ref())
+				.map_err(|err| Error::backend("git config", err))?;
+		}
 	}
+	let mut config_bytes = Vec::new();
+	config.write_to(&mut config_bytes)?;
+	// Preserve driver sections in their original order, including process and
+	// required settings, without carrying unrelated repository configuration.
+	for section in original_config
+		.sections_by_name_and_filter("filter", gix::config::section::is_trusted)
+		.into_iter()
+		.flatten()
+		.filter(|section| section.header().subsection_name().is_some())
+	{
+		if !config_bytes.ends_with(b"\n") {
+			config_bytes.push(b'\n');
+		}
+		section.write_to(&mut config_bytes)?;
+	}
+	fs::write(config_path, config_bytes)?;
 	if let Some(bytes) = shallow {
 		fs::write(git_entry.join("shallow"), bytes)?;
 	}
@@ -1818,6 +1866,9 @@ mod tests {
 		git(temp.path(), &["config", "core.autocrlf", "false"]);
 		git(temp.path(), &["config", "user.name", "Test"]);
 		git(temp.path(), &["config", "user.email", "test@example.com"]);
+		// gix reads the developer's `~/.gitconfig`, where a global
+		// `core.hooksPath` would redirect hook lookup away from this fixture.
+		git(temp.path(), &["config", "core.hooksPath", ".git/hooks"]);
 		fs::write(temp.path().join("a"), "one\n").unwrap();
 		fs::write(temp.path().join("b"), "two\n").unwrap();
 		git(temp.path(), &["add", "."]);
@@ -2066,6 +2117,11 @@ mod tests {
 		fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
 	}
 
+	#[cfg(windows)]
+	fn write_hook(path: &Path, body: &str, _executable: bool) {
+		fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+	}
+
 	#[test]
 	fn stage_commit_survives_unadvanced_index_mtime() {
 		// Regression: a commit right after staging on the same cached handle used
@@ -2091,23 +2147,25 @@ mod tests {
 		assert_eq!(git(temp.path(), &["show", "HEAD:a"]), "changed");
 	}
 
-	#[cfg(unix)]
 	#[test]
 	fn commit_hooks_match_git_commit_behavior() {
 		let (temp, repo) = fixture();
 		let hooks = temp.path().join(".git/hooks");
 		let pre_commit = hooks.join("pre-commit");
-		write_hook(&pre_commit, "echo 'policy says no' >&2\nexit 1", true);
+		write_hook(&pre_commit, "echo 'policy says no' >&2\nexit 23", true);
 		fs::write(temp.path().join("a"), "blocked\n").unwrap();
 		repo.stage_files(&["a".into()]).unwrap();
 		let before = git(temp.path(), &["rev-parse", "HEAD"]);
 		let error = repo
 			.commit_create("blocked", &CommitOptions::default())
 			.unwrap_err();
-		assert!(matches!(
-			&error,
-			Error::Cli { stderr, .. } if stderr.contains("policy says no")
-		));
+		assert!(
+			matches!(
+				&error,
+				Error::Cli { exit_code: 23, stderr, .. } if stderr.contains("policy says no")
+			),
+			"{error:?}"
+		);
 		assert_eq!(git(temp.path(), &["rev-parse", "HEAD"]), before);
 
 		fs::remove_file(&pre_commit).unwrap();
@@ -2131,12 +2189,16 @@ mod tests {
 			.commit_create("missing hook is skipped", &CommitOptions::default())
 			.unwrap();
 
-		fs::write(temp.path().join("b"), "one more\n").unwrap();
-		repo.stage_files(&["b".into()]).unwrap();
-		write_hook(&pre_commit, "echo should-not-run >&2\nexit 1", false);
-		repo
-			.commit_create("non-executable hook is skipped", &CommitOptions::default())
-			.unwrap();
+		#[cfg(unix)]
+		{
+			fs::write(temp.path().join("b"), "one more\n").unwrap();
+			repo.stage_files(&["b".into()]).unwrap();
+			write_hook(&pre_commit, "echo should-not-run >&2\nexit 1", false);
+			repo
+				.commit_create("non-executable hook is skipped", &CommitOptions::default())
+				.unwrap();
+		}
+		#[cfg(unix)]
 		fs::remove_file(&pre_commit).unwrap();
 		repo
 			.commit_create("subject\n\nbody\n\n", &CommitOptions {
@@ -2649,10 +2711,85 @@ mod tests {
 	}
 
 	#[test]
+	fn detach_copied_worktree_preserves_eol_and_clean_smudge_filters() {
+		for (autocrlf, checkout_text, edited_text) in [
+			("false", b"one\r\nnext\r\n".as_slice(), b"two\r\nnext\r\n".as_slice()),
+			("input", b"one\nnext\n".as_slice(), b"two\nnext\n".as_slice()),
+		] {
+			let (temp, repo) = fixture();
+			git(temp.path(), &["config", "core.autocrlf", autocrlf]);
+			git(temp.path(), &["config", "core.eol", "crlf"]);
+			git(temp.path(), &["config", "filter.detach.round-trip.clean", "sed 's/^checkout://'"]);
+			git(temp.path(), &["config", "filter.detach.round-trip.smudge", "sed 's/^/checkout:/'"]);
+			git(temp.path(), &["config", "filter.detach.round-trip.required", "true"]);
+			fs::write(
+				temp.path().join(".gitattributes"),
+				"plain.txt text\nfiltered.txt -text filter=detach.round-trip\n",
+			)
+			.unwrap();
+			fs::write(temp.path().join("plain.txt"), checkout_text).unwrap();
+			fs::write(temp.path().join("filtered.txt"), b"checkout:one\ncheckout:next\n").unwrap();
+			repo
+				.stage_files(&[".gitattributes".into(), "plain.txt".into(), "filtered.txt".into()])
+				.unwrap();
+			let commit = repo
+				.commit_create("text and filter setup", &CommitOptions::default())
+				.unwrap();
+
+			let worktrees = tempfile::tempdir().unwrap();
+			let linked = worktrees.path().join("linked");
+			repo
+				.worktree_add(&linked, &commit, WorktreeAddOptions {
+					detach:       true,
+					clone:        WorktreeClone::Off,
+					keep_changes: false,
+				})
+				.unwrap();
+			assert_eq!(fs::read(linked.join("plain.txt")).unwrap(), checkout_text);
+			assert_eq!(
+				fs::read(linked.join("filtered.txt")).unwrap(),
+				b"checkout:one\ncheckout:next\n"
+			);
+			let copied = worktrees.path().join("copied");
+			fs::create_dir(&copied).unwrap();
+			for path in [".git", ".gitattributes", "a", "b", "plain.txt", "filtered.txt"] {
+				fs::copy(linked.join(path), copied.join(path)).unwrap();
+			}
+			assert_eq!(
+				detach_git_dir(&copied, &repo.info().common_dir).unwrap(),
+				DetachGitDirResult::Detached
+			);
+			let detached = GitRepo::require(&copied).unwrap();
+			fs::write(copied.join("plain.txt"), edited_text).unwrap();
+			fs::write(copied.join("filtered.txt"), b"checkout:two\ncheckout:next\n").unwrap();
+			detached
+				.stage_files(&["plain.txt".into(), "filtered.txt".into()])
+				.unwrap();
+			let detached_gix = detached.gix().unwrap();
+			let index = load_index_or_head(&detached_gix, "git add").unwrap();
+			for path in ["plain.txt", "filtered.txt"] {
+				let entry = index.entry_by_path(path.as_bytes().as_bstr()).unwrap();
+				let blob = detached_gix
+					.find_object(entry.id)
+					.unwrap()
+					.try_into_blob()
+					.unwrap();
+				assert_eq!(blob.data, b"two\nnext\n", "{path}");
+			}
+			detached.reset(ResetMode::Hard, None).unwrap();
+			assert_eq!(fs::read(copied.join("plain.txt")).unwrap(), checkout_text);
+			assert_eq!(
+				fs::read(copied.join("filtered.txt")).unwrap(),
+				b"checkout:one\ncheckout:next\n"
+			);
+		}
+	}
+
+	#[test]
 	fn mutate_worktree_and_detach() {
 		let (temp, repo) = fixture();
-		let linked = temp.path().join("../linked-mut");
-		let _ = fs::remove_dir_all(&linked);
+		let worktrees = tempfile::tempdir().unwrap();
+		let linked = worktrees.path().join("linked mut");
 		repo
 			.worktree_add(&linked, "main", WorktreeAddOptions {
 				detach:       true,
@@ -2660,14 +2797,15 @@ mod tests {
 				keep_changes: false,
 			})
 			.unwrap();
-		assert!(
-			git(temp.path(), &["worktree", "list", "--porcelain"])
-				.contains(linked.to_string_lossy().as_ref())
-		);
+		let listed = git(temp.path(), &["worktree", "list", "--porcelain"]);
+		let expected = format!("worktree {}", git_metadata_path(&linked));
+		assert!(listed.lines().any(|line| line == expected), "{listed}");
 		assert!(repo.worktree_remove(&linked, true).unwrap());
+		assert!(!linked.exists());
+		let listed = git(temp.path(), &["worktree", "list", "--porcelain"]);
+		assert!(!listed.lines().any(|line| line == expected), "{listed}");
 
-		let linked = temp.path().join("../linked-detach");
-		let _ = fs::remove_dir_all(&linked);
+		let linked = worktrees.path().join("linked detach");
 		repo
 			.worktree_add(&linked, "main", WorktreeAddOptions {
 				detach:       true,
@@ -2682,11 +2820,9 @@ mod tests {
 		assert!(alternates.contains(common.join("objects").to_string_lossy().as_ref()));
 		assert_eq!(git(&linked, &["rev-parse", "HEAD"]), git(temp.path(), &["rev-parse", "HEAD"]));
 		assert_eq!(git(temp.path(), &["rev-parse", "HEAD"]), source_head);
-		assert!(
-			!git(temp.path(), &["worktree", "list", "--porcelain"])
-				.contains(linked.to_string_lossy().as_ref())
-		);
+		let listed = git(temp.path(), &["worktree", "list", "--porcelain"]);
+		let expected = format!("worktree {}", git_metadata_path(&linked));
+		assert!(!listed.lines().any(|line| line == expected), "{listed}");
 		assert!(repo.worktree_prune().is_ok());
-		let _ = fs::remove_dir_all(linked);
 	}
 }

@@ -110,14 +110,21 @@ describe("folded tool rows", () => {
 		expect(visibleRows(card).join("\n")).toContain("Fix Advisor and SSH transcript folding");
 	});
 
-	it("keeps a live call's spinner on the folded row", () => {
-		const card = toolCard("eval", { language: "py", title: "still running", code: "sleep(1)" }, "Eval");
-		card.setExecutionStarted();
+	it("distinguishes argument generation from waiting even for a headerless tool", () => {
+		const card = toolCard("bash", { command: "sleep 5" }, "Bash");
 		card.setToolRowsFolded(true);
-
-		const row = visibleRows(card)[0] ?? "";
-		expect(row.trim().endsWith("Eval: still running")).toBe(true);
-		expect(row.trim()).not.toBe("Eval: still running");
+		try {
+			expect(visibleRows(card)[0]).toContain(`${theme.symbol("cmd.pencil")} Bash: sleep 5`);
+			card.setArgsComplete();
+			expect(visibleRows(card)[0]).toContain(`${theme.icon.time} Bash: sleep 5`);
+			card.setExecutionStarted();
+			card.updateResult({ content: [{ type: "text", text: "progress" }] }, true);
+			expect(visibleRows(card)[0]).toContain(`${theme.icon.time} Bash: sleep 5`);
+			settle(card);
+			expect(visibleRows(card)[0]?.trim()).toBe("Bash: sleep 5");
+		} finally {
+			card.dispose();
+		}
 	});
 
 	it("folds an edit to its path and green/red change counts", () => {
@@ -163,6 +170,62 @@ describe("folded tool rows", () => {
 		expect(grep.render(200)[0] ?? "").toContain(theme.fg("muted", "useState"));
 	});
 
+	it("keeps the grep scope visible when a long pattern truncates during streaming and after settlement", () => {
+		const scope = "MeowFT/Assets/AnimatorController/VRCFury FX.controller";
+		const pattern = "^--- !u!1101 &(1101517377532936435|1101578880696632637|1101102543447223915)$";
+		const card = toolCard("grep", { path: scope }, "Grep");
+		card.setToolRowsFolded(true);
+		try {
+			expect(card.render(200)[0]).toContain(theme.fg("accent", scope));
+			card.updateArgs({ pattern, path: scope });
+			const row = card.render(200)[0] ?? "";
+			expect(row).toContain(theme.fg("muted", pattern));
+			expect(row).toContain(theme.fg("accent", scope));
+			const streaming = visibleRows(card, 100)[0]!;
+			expect(streaming).toContain(scope);
+			expect(streaming).toContain("^--- !u!1101 &(");
+			expect(Bun.stringWidth(streaming)).toBeLessThanOrEqual(100);
+
+			settle(card);
+			const completed = visibleRows(card, 100)[0]!;
+			expect(completed).toContain(scope);
+			expect(completed).toContain("^--- !u!1101 &(");
+			expect(Bun.stringWidth(completed)).toBeLessThanOrEqual(100);
+		} finally {
+			card.dispose();
+		}
+	});
+
+	it("shows a glob selector in the muted search-pattern color", () => {
+		const pattern = "src/**/*.ts";
+		const card = settle(toolCard("glob", { path: pattern }, "Glob"));
+		card.setToolRowsFolded(true);
+		try {
+			const row = card.render(200)[0] ?? "";
+			expect(row).toContain(theme.fg("muted", pattern));
+			expect(row).not.toContain(theme.fg("accent", pattern));
+		} finally {
+			card.dispose();
+		}
+	});
+
+	it.each([
+		["grep", { pattern: "UploadAvatar\u0007\u001b[2J\t\nBuildBundle", path: ["src/app.ts", "test/app.ts"] }],
+		["glob", { path: ["UploadAvatar\u0007\u001b[2J\t\n*.cs", "test/**/*.cs"] }],
+	])("sanitizes folded %s searches and truncates them without wrapping", (name, args) => {
+		const card = settle(toolCard(name as string, args));
+		card.setToolRowsFolded(true);
+		try {
+			const rows = card.render(48);
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toContain("UploadAvatar");
+			expect(rows[0]).not.toMatch(/[\u0007\r\n\t]|\u001b\[2J/);
+			expect(Bun.stringWidth(stripVTControlCharacters(rows[0]!))).toBeLessThanOrEqual(48);
+		} finally {
+			card.dispose();
+		}
+	});
+
 	it("paints a read target the same way whether the card or the read group hosts it", () => {
 		// A `skill://` read can land in either component depending on when the
 		// streamed args first parsed, so both rows must agree on the target color.
@@ -175,6 +238,50 @@ describe("folded tool rows", () => {
 
 		expect(card.render(120)[0] ?? "").toContain(theme.fg("accent", uri));
 		expect(group.render(120)[0] ?? "").toContain(theme.fg("accent", uri));
+	});
+
+	it("shows the outgoing IRC recipient and keeps its message preview current while folded", () => {
+		const args = { path: "agent://ReviewPeer", content: "Confirm the constraints" };
+		const card = toolCard("write", args, "Write");
+		card.setToolRowsFolded(true);
+		try {
+			const pending = visibleRows(card)[0] ?? "";
+			expect(pending).toContain(`IRC ${theme.nav.selected} ReviewPeer: Confirm the constraints`);
+
+			card.updateArgs({
+				...args,
+				__partialJson: '{"path":"agent://ReviewPeer","content":"Confirm the constraints and check the render',
+			});
+			expect(visibleRows(card)[0]).toContain("Confirm the constraints and check the render");
+
+			card.updateArgs({ ...args, content: "Confirm the constraints and check the renderer." });
+			settle(card);
+			expect(visibleRows(card)[0]?.trim()).toBe(
+				`IRC ${theme.nav.selected} ReviewPeer: Confirm the constraints and check the renderer.`,
+			);
+		} finally {
+			card.dispose();
+		}
+	});
+
+	it("keeps a broadcast message visible on one safe, width-bounded IRC row", () => {
+		const card = settle(
+			toolCard(
+				"write",
+				{ path: "agent://all", content: `Review the search\u0007\u001b[2J\t\nscope ${"界".repeat(80)}` },
+				"Write",
+			),
+		);
+		card.setToolRowsFolded(true);
+		try {
+			const rows = card.render(60);
+			expect(rows).toHaveLength(1);
+			expect(stripVTControlCharacters(rows[0]!)).toContain(`IRC ${theme.nav.selected} all: Review the search`);
+			expect(rows[0]).not.toMatch(/[\u0007\r\n\t]|\u001b\[2J/);
+			expect(Bun.stringWidth(stripVTControlCharacters(rows[0]!))).toBeLessThanOrEqual(60);
+		} finally {
+			card.dispose();
+		}
 	});
 
 	it("folds a device write to the operation it ran, not the device URL", () => {
@@ -303,7 +410,7 @@ describe("folded tool rows", () => {
 		expect(visibleRows(late)[0]?.trim()).not.toBe("Read: src/index.ts");
 	});
 
-	it("folds a read group into a single row listing every target", () => {
+	it("keeps a read group writing until every pending call finishes its arguments", () => {
 		const group = new ReadToolGroupComponent();
 		group.updateArgs({ path: "src/alpha.ts" }, "read-1");
 		group.updateArgs({ path: "src/beta.ts" }, "read-2");
@@ -314,6 +421,15 @@ describe("folded tool rows", () => {
 		expect(rows).toHaveLength(1);
 		expect(rows[0]).toContain("src/alpha.ts");
 		expect(rows[0]).toContain("src/beta.ts");
+		expect(rows[0]).toContain(theme.symbol("cmd.pencil"));
+		group.setExecutionStarted("read-1");
+		expect(visibleRows(group)[0]).toContain(theme.symbol("cmd.pencil"));
+		group.setArgsComplete("read-2");
+		expect(visibleRows(group)[0]).toContain(theme.icon.time);
+		group.updateResult({ content: [{ type: "text", text: "alpha" }] }, false, "read-1");
+		expect(visibleRows(group)[0]).toContain(theme.icon.time);
+		group.seal();
+		expect(visibleRows(group)[0]?.trim()).toBe("Read: src/alpha.ts, src/beta.ts");
 	});
 
 	it("drops the block gap between folded rows and keeps it around prose", () => {

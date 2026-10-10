@@ -75,6 +75,7 @@ export class HistoryStorage {
 	#db: Database;
 	static #instance?: HistoryStorage;
 	#sessionResolver?: () => string | undefined;
+	#addListener?: () => void;
 
 	// Prepared statements
 	#upsertRowStmt: Statement;
@@ -153,9 +154,10 @@ ON CONFLICT(prompt) DO UPDATE SET
 		);
 	}
 
-	/** Checkpoints and closes the process-wide database, and permits reopening it. */
-	static close(): void {
+	/** Checkpoints and closes the database, optionally only for an owned path. */
+	static close(expectedDbPath?: string): void {
 		const instance = HistoryStorage.#instance;
+		if (expectedDbPath !== undefined && (!instance || instance.#db.filename !== expectedDbPath)) return;
 		HistoryStorage.#instance = undefined;
 		cancelExitCleanup?.();
 		cancelExitCleanup = undefined;
@@ -169,7 +171,7 @@ ON CONFLICT(prompt) DO UPDATE SET
 		this.#upsertRowStmt.finalize();
 		this.#recentStmt.finalize();
 		this.#searchStmt.finalize();
-		this.#db.close();
+		this.#db.close(true);
 	}
 
 	#insertBatch(rows: Array<Pick<HistoryEntry, "prompt" | "cwd" | "sessionId">>): void {
@@ -189,6 +191,11 @@ ON CONFLICT(prompt) DO UPDATE SET
 		this.#sessionResolver = resolver;
 	}
 
+	/** Register a callback run after each successful {@link add}, once the row is durable. */
+	setAddListener(listener: () => void): void {
+		this.#addListener = listener;
+	}
+
 	/**
 	 * Stores a prompt, replaces its provenance with the latest submission, and
 	 * bumps its use count on resubmission.
@@ -204,7 +211,9 @@ ON CONFLICT(prompt) DO UPDATE SET
 			this.#insertBatch([{ prompt: trimmed, cwd: cwd ?? undefined, sessionId: session || undefined }]);
 		} catch (error) {
 			logger.error("HistoryStorage add failed", { error: String(error) });
+			return Promise.resolve();
 		}
+		this.#addListener?.();
 		return Promise.resolve();
 	}
 

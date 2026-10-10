@@ -1,4 +1,7 @@
-import { logger } from "@oh-my-pi/pi-utils";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { getFastembedCacheDir, logger } from "@oh-my-pi/pi-utils";
+import { trackDownload } from "../downloads/activity";
 import {
 	createUnavailableWorker,
 	createWorkerHandle,
@@ -25,7 +28,7 @@ import type { MnemopiEmbedModelId, MnemopiEmbedWorkerInbound, MnemopiEmbedWorker
 export type MnemopiEmbedWorkerHandle = RefCountedWorkerHandle<MnemopiEmbedWorkerInbound, MnemopiEmbedWorkerOutbound>;
 
 type PendingRequest =
-	| { kind: "init"; model: MnemopiEmbedModelId; resolve: (ok: boolean) => void }
+	| { kind: "init"; model: MnemopiEmbedModelId; resolve: (error: string | undefined) => void }
 	| { kind: "embed"; model: MnemopiEmbedModelId; resolve: (vectors: number[][] | Error) => void };
 
 /**
@@ -121,6 +124,9 @@ export interface MnemopiSubprocessEmbeddingModel {
  */
 const EMBED_REQUEST_TIMEOUT_MS = 120_000;
 
+/** Retain a warm model only briefly after its last request, rather than for the lifetime of an idle session. */
+const EMBED_WORKER_IDLE_TIMEOUT_MS = 5 * 60 * 1_000;
+
 /** Race marker for {@link MnemopiEmbedClient.#awaitRequest}. */
 const REQUEST_TIMED_OUT = Symbol("mnemopi.embed.timedOut");
 
@@ -133,13 +139,17 @@ export class MnemopiEmbedClient {
 	#refed = false;
 	#spawnWorker: () => MnemopiEmbedWorkerHandle;
 	#requestTimeoutMs: number;
+	#idleTimeoutMs: number;
+	#idleTimer: NodeJS.Timeout | undefined;
 
 	constructor(
 		spawnWorker: () => MnemopiEmbedWorkerHandle = spawnMnemopiEmbedWorker,
 		requestTimeoutMs: number = EMBED_REQUEST_TIMEOUT_MS,
+		idleTimeoutMs: number = EMBED_WORKER_IDLE_TIMEOUT_MS,
 	) {
 		this.#spawnWorker = spawnWorker;
 		this.#requestTimeoutMs = requestTimeoutMs;
+		this.#idleTimeoutMs = idleTimeoutMs;
 	}
 
 	/**
@@ -154,19 +164,31 @@ export class MnemopiEmbedClient {
 		model: MnemopiEmbedModelId,
 		cacheDir: string | undefined,
 	): Promise<MnemopiSubprocessEmbeddingModel | null> {
+		// fastembed unpacks each model into `<cacheDir>/<model>` and exposes no byte
+		// progress; a missing directory means this init downloads the archive.
+		const cached = await fs.access(path.join(cacheDir ?? getFastembedCacheDir(), model)).then(
+			() => true,
+			() => false,
+		);
+		const tracker = cached ? undefined : trackDownload(model.replace(/^fast-/, ""), { detail: "downloading" });
 		try {
 			const worker = this.#ensureWorker();
 			const id = String(++this.#nextRequestId);
-			const { promise, resolve } = Promise.withResolvers<boolean>();
+			const { promise, resolve } = Promise.withResolvers<string | undefined>();
 			this.#addPending(id, { kind: "init", model, resolve });
 			try {
 				worker.send({ type: "init", id, model, cacheDir });
-				const ok = await promise;
-				if (!ok) return null;
+				const error = await promise;
+				if (error !== undefined) {
+					tracker?.fail(error);
+					return null;
+				}
+				tracker?.done();
 			} finally {
 				this.#deletePending(id);
 			}
 		} catch (error) {
+			tracker?.fail(error);
 			logger.debug("mnemopi-embed: init failed", {
 				model,
 				error: error instanceof Error ? error.message : String(error),
@@ -177,6 +199,7 @@ export class MnemopiEmbedClient {
 	}
 
 	async terminate(): Promise<void> {
+		this.#clearIdleTimer();
 		const worker = this.#worker;
 		this.#worker = null;
 		this.#unsubscribeMessage?.();
@@ -184,7 +207,7 @@ export class MnemopiEmbedClient {
 		this.#unsubscribeError?.();
 		this.#unsubscribeError = null;
 		for (const pending of this.#pending.values()) {
-			if (pending.kind === "init") pending.resolve(false);
+			if (pending.kind === "init") pending.resolve("mnemopi embed worker terminated");
 			else pending.resolve(new Error("mnemopi embed worker terminated"));
 		}
 		this.#pending.clear();
@@ -281,16 +304,37 @@ export class MnemopiEmbedClient {
 		if (this.#pending.delete(id)) this.#syncWorkerRef();
 	}
 
+	#clearIdleTimer(): void {
+		const timer = this.#idleTimer;
+		this.#idleTimer = undefined;
+		if (timer) clearTimeout(timer);
+	}
+
 	/**
 	 * The embeddings subprocess is spawned unref'd so an idle interactive or
 	 * daemon session never blocks exit. Keep it referenced only while a request
 	 * is pending so short-lived print-mode commands cannot exit before recall
-	 * receives the worker response (issue #12067).
+	 * receives the worker response (issue #12067). Once all requests settle,
+	 * release the idle subprocess after a warm reuse window; the cached model
+	 * wrapper can transparently reload it on its next embed.
 	 */
 	#syncWorkerRef(): void {
 		const worker = this.#worker;
 		if (!worker) return;
 		const shouldRef = this.#pending.size > 0;
+		if (shouldRef) {
+			this.#clearIdleTimer();
+		} else if (!this.#idleTimer) {
+			const timer = setTimeout(() => {
+				// A cleared callback may already be queued. Never let an old
+				// worker's timer clear a newer timer or terminate a replacement.
+				if (this.#idleTimer !== timer) return;
+				this.#idleTimer = undefined;
+				if (this.#worker === worker && this.#pending.size === 0) void this.terminate();
+			}, this.#idleTimeoutMs);
+			this.#idleTimer = timer;
+			timer.unref();
+		}
 		if (shouldRef === this.#refed) return;
 		this.#refed = shouldRef;
 		if (shouldRef) worker.ref();
@@ -308,7 +352,7 @@ export class MnemopiEmbedClient {
 		if (!pending) return;
 		this.#deletePending(message.id);
 		if (message.type === "ready") {
-			if (pending.kind === "init") pending.resolve(true);
+			if (pending.kind === "init") pending.resolve(undefined);
 			return;
 		}
 		if (message.type === "vectors") {
@@ -316,14 +360,14 @@ export class MnemopiEmbedClient {
 			return;
 		}
 		logger.debug("mnemopi-embed: worker returned error", { error: message.error });
-		if (pending.kind === "init") pending.resolve(false);
+		if (pending.kind === "init") pending.resolve(message.error);
 		else pending.resolve(new Error(message.error));
 	}
 
 	#handleWorkerError(error: Error): void {
 		logger.warn("mnemopi-embed: worker error", { error: error.message });
 		for (const pending of this.#pending.values()) {
-			if (pending.kind === "init") pending.resolve(false);
+			if (pending.kind === "init") pending.resolve(error.message);
 			else pending.resolve(error);
 		}
 		this.#pending.clear();
@@ -332,10 +376,6 @@ export class MnemopiEmbedClient {
 }
 
 export const mnemopiEmbedClient = new MnemopiEmbedClient();
-
-export async function shutdownMnemopiEmbedClient(): Promise<void> {
-	await mnemopiEmbedClient.terminate();
-}
 
 export async function smokeTestMnemopiEmbedWorker({
 	timeoutMs = SMOKE_TEST_TIMEOUT_MS,

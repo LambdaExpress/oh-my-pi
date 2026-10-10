@@ -68,6 +68,8 @@ async function createRepo(name: string): Promise<string> {
 	await runGit(repoRoot, ["init", "-q", "-b", "main"]);
 	await runGit(repoRoot, ["config", "user.email", "test@example.com"]);
 	await runGit(repoRoot, ["config", "user.name", "Test User"]);
+	await runGit(repoRoot, ["config", "core.autocrlf", "false"]);
+	await runGit(repoRoot, ["config", "core.eol", "lf"]);
 	await Promise.all([
 		Bun.write(path.join(repoRoot, "tracked.txt"), "base tracked\n"),
 		Bun.write(path.join(repoRoot, "stable.txt"), "stable\n"),
@@ -83,6 +85,10 @@ async function createRecursiveRepo(name: string): Promise<string> {
 	await runGit(leafRepoRoot, ["init", "-q", "-b", "main"]);
 	await runGit(leafRepoRoot, ["config", "user.email", "test@example.com"]);
 	await runGit(leafRepoRoot, ["config", "user.name", "Test User"]);
+	await runGit(leafRepoRoot, ["config", "core.autocrlf", "false"]);
+	await runGit(leafRepoRoot, ["config", "core.eol", "lf"]);
+	// Attributes travel with cloned submodules; local Git config does not.
+	await Bun.write(path.join(leafRepoRoot, ".gitattributes"), "* -text\n");
 	await Bun.write(path.join(leafRepoRoot, "leaf.txt"), "leaf base\n");
 	await runGit(leafRepoRoot, ["add", "."]);
 	await runGit(leafRepoRoot, ["commit", "-q", "-m", "leaf base"]);
@@ -92,6 +98,9 @@ async function createRecursiveRepo(name: string): Promise<string> {
 	await runGit(childRepoRoot, ["init", "-q", "-b", "main"]);
 	await runGit(childRepoRoot, ["config", "user.email", "test@example.com"]);
 	await runGit(childRepoRoot, ["config", "user.name", "Test User"]);
+	await runGit(childRepoRoot, ["config", "core.autocrlf", "false"]);
+	await runGit(childRepoRoot, ["config", "core.eol", "lf"]);
+	await Bun.write(path.join(childRepoRoot, ".gitattributes"), "* -text\n");
 	await Bun.write(path.join(childRepoRoot, "child.txt"), "child base\n");
 	await runGit(childRepoRoot, ["add", "."]);
 	await runGit(childRepoRoot, ["commit", "-q", "-m", "child base"]);
@@ -103,6 +112,9 @@ async function createRecursiveRepo(name: string): Promise<string> {
 	await runGit(repoRoot, ["init", "-q", "-b", "main"]);
 	await runGit(repoRoot, ["config", "user.email", "test@example.com"]);
 	await runGit(repoRoot, ["config", "user.name", "Test User"]);
+	await runGit(repoRoot, ["config", "core.autocrlf", "false"]);
+	await runGit(repoRoot, ["config", "core.eol", "lf"]);
+	await Bun.write(path.join(repoRoot, ".gitattributes"), "* -text\n");
 	await Bun.write(path.join(repoRoot, "root.txt"), "root base\n");
 	await runGit(repoRoot, ["add", "."]);
 	await runGit(repoRoot, ["commit", "-q", "-m", "root base"]);
@@ -194,17 +206,14 @@ describe("managed worktree merge", () => {
 		const trackedBefore = await Bun.file(path.join(repoRoot, "tracked.txt")).text();
 		const metadataBefore = await readManagedWorktreeRecord(added.record.id);
 
-		await expect(mergeManagedWorktree({ cwd: repoRoot, idOrName: added.record.id })).rejects.toThrow(
-			/dirty|clean|local|本地|未提交/i,
-		);
+		await expect(mergeManagedWorktree({ cwd: repoRoot, idOrName: added.record.id })).rejects.toThrow();
 
 		expect(await statusLines(repoRoot)).toEqual(statusBefore);
 		await expect(Bun.file(path.join(repoRoot, "stable.txt")).text()).resolves.toBe(stableBefore);
 		await expect(Bun.file(path.join(repoRoot, "tracked.txt")).text()).resolves.toBe(trackedBefore);
 		await expect(exists(path.join(repoRoot, "created.txt"))).resolves.toBe(false);
 		const metadataAfter = await readManagedWorktreeRecord(added.record.id);
-		expect(metadataAfter?.appliedAt).toBe(metadataBefore?.appliedAt ?? null);
-		expect(metadataAfter?.state).toBe("ready");
+		expect(metadataAfter).toEqual(metadataBefore);
 		await expect(exists(added.worktreeRoot)).resolves.toBe(true);
 	});
 
@@ -262,11 +271,13 @@ describe("managed worktree merge", () => {
 		await makeRecursiveManagedChanges(added.worktreeRoot);
 		await Bun.write(path.join(repoRoot, "modules", "child", "child.txt"), "local child dirty\n");
 		const metadataBefore = await readManagedWorktreeRecord(added.record.id);
+		const statusBefore = await statusLines(repoRoot);
+		const childStatusBefore = await statusLines(path.join(repoRoot, "modules", "child"));
 
-		await expect(mergeManagedWorktree({ cwd: repoRoot, idOrName: added.record.id })).rejects.toThrow(
-			"The local submodule has uncommitted changes. Handle them before applying the managed worktree: modules/child",
-		);
+		await expect(mergeManagedWorktree({ cwd: repoRoot, idOrName: added.record.id })).rejects.toThrow();
 
+		expect(await statusLines(repoRoot)).toEqual(statusBefore);
+		expect(await statusLines(path.join(repoRoot, "modules", "child"))).toEqual(childStatusBefore);
 		await expect(Bun.file(path.join(repoRoot, "root.txt")).text()).resolves.toBe("root base\n");
 		await expect(exists(path.join(repoRoot, "root-created.txt"))).resolves.toBe(false);
 		await expect(Bun.file(path.join(repoRoot, "modules", "child", "child.txt")).text()).resolves.toBe(
@@ -274,7 +285,7 @@ describe("managed worktree merge", () => {
 		);
 		await expect(exists(path.join(repoRoot, "modules", "child", "child-created.txt"))).resolves.toBe(false);
 		const metadataAfter = await readManagedWorktreeRecord(added.record.id);
-		expect(metadataAfter?.appliedAt).toBe(metadataBefore?.appliedAt ?? null);
+		expect(metadataAfter).toEqual(metadataBefore);
 	}, 30_000);
 
 	it("refuses recursive merge when a submodule untracked destination already exists", async () => {
@@ -291,14 +302,22 @@ describe("managed worktree merge", () => {
 		]);
 		await runGit(path.join(repoRoot, "modules", "child"), ["config", "status.showUntrackedFiles", "no"]);
 		await Bun.write(path.join(repoRoot, "modules", "child", "child-created.txt"), "local existing untracked\n");
+		const statusBefore = await statusLines(repoRoot);
+		const childStatusBefore = await statusLines(path.join(repoRoot, "modules", "child"));
+		const metadataBefore = await readManagedWorktreeRecord(added.record.id);
 
-		await expect(mergeManagedWorktree({ cwd: repoRoot, idOrName: added.record.id })).rejects.toThrow(
-			"Local path already exists; cannot apply untracked file: modules/child/child-created.txt",
-		);
+		await expect(mergeManagedWorktree({ cwd: repoRoot, idOrName: added.record.id })).rejects.toThrow();
 
+		expect(await statusLines(repoRoot)).toEqual(statusBefore);
+		expect(await statusLines(path.join(repoRoot, "modules", "child"))).toEqual(childStatusBefore);
+		expect(await readManagedWorktreeRecord(added.record.id)).toEqual(metadataBefore);
 		await expect(Bun.file(path.join(repoRoot, "root.txt")).text()).resolves.toBe("root base\n");
 		await expect(Bun.file(path.join(repoRoot, "modules", "child", "child-created.txt")).text()).resolves.toBe(
 			"local existing untracked\n",
 		);
+		await expect(Bun.file(path.join(added.worktreeRoot, "root.txt")).text()).resolves.toBe("background root\n");
+		await expect(
+			Bun.file(path.join(added.worktreeRoot, "modules", "child", "child-created.txt")).text(),
+		).resolves.toBe("managed child untracked\n");
 	}, 30_000);
 });

@@ -7,7 +7,7 @@ import type {
 	AgentToolUpdateCallback,
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
-import { isEnoent, isFsError, logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { isEnoent, isFsError, logger, normalizePathForComparison, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import lspDescription from "../prompts/tools/lsp.md" with { type: "text" };
 import type { ToolSession } from "../tools";
@@ -28,9 +28,11 @@ import {
 	isRustAnalyzerClient,
 	type LspServerStatus,
 	notifyClientWatchedFiles,
+	prepareFileForRequest,
+	prepareTypeScriptProject,
 	reconcileFileFromDisk,
 	reconcileIdleChecker,
-	refreshFile,
+	recordTypeScriptProjectFailure,
 	sendNotification,
 	sendRequest,
 	shutdownStaleClients,
@@ -39,7 +41,6 @@ import {
 import { getLinterClient } from "./clients";
 import { configCache, getConfig, getServersForFile } from "./config";
 import {
-	BATCH_DIAGNOSTICS_WAIT_TIMEOUT_MS,
 	formatLocationWithContext,
 	hasRustWorkspaceAncestor,
 	MAX_GLOB_DIAGNOSTIC_TARGETS,
@@ -102,7 +103,6 @@ import {
 	formatLocation,
 	formatSymbolInformation,
 	formatWorkspaceEdit,
-	hasGlobPattern,
 	resolveDiagnosticTargets,
 	resolveSymbolPosition,
 	sortDiagnostics,
@@ -116,16 +116,12 @@ import { cfgToolsMaxTimeout } from "../tools/settings";
 
 const MAX_RENAME_PAIRS = 1000;
 const DIAGNOSTICS_UNAVAILABLE_SUMMARY = "Diagnostics unavailable";
-/** File actions whose position must be resolved against the text announced to the server. */
-const POSITIONAL_ACTIONS: ReadonlySet<string> = new Set([
-	"definition",
-	"type_definition",
-	"implementation",
-	"references",
-	"hover",
-	"code_actions",
-	"rename",
-]);
+const LOCATION_REQUEST_METHODS: Readonly<Record<string, true>> = {
+	"textDocument/definition": true,
+	"textDocument/typeDefinition": true,
+	"textDocument/implementation": true,
+	"textDocument/references": true,
+};
 
 function formatDiagnosticsUnavailableMessage(relPath: string, serverNames: string[]): string {
 	const servers = serverNames.length === 1 ? serverNames[0] : serverNames.join(", ");
@@ -138,36 +134,16 @@ interface FileRenamePair {
 }
 
 /**
- * Keep glob queries in the session workspace, but let a concrete file select
- * the nearest project recognized by this server. Relative paths are concrete
- * files too: pinning them to the session root can route a monorepo child file
- * through an unrelated sibling project's language-server installation.
+ * Route each resolved concrete target through its nearest server project.
+ * A glob only chooses targets; it must not change their workspace or select
+ * an unrelated sibling project's language-server installation.
  */
-function getFileClientCwd(
-	fileArgument: string,
-	resolvedFile: string,
-	serverConfig: ServerConfig,
-	sessionCwd: string,
-): string {
-	if (hasGlobPattern(fileArgument)) return sessionCwd;
+function getFileClientCwd(resolvedFile: string, serverConfig: ServerConfig, sessionCwd: string): string {
 	return findLspProjectRoot(resolvedFile, serverConfig.rootMarkers) ?? sessionCwd;
 }
 
 const CSHARP_LS_INDEXING_HINT =
 	"csharp-ls may not have indexed this project or the file may be outside its loaded MSBuild workspace. Retry after project load completes; if it persists, verify the initialized project root and csharp-ls logs.";
-
-/**
- * tsserver's "No Project." only says that the queried file is not part of any
- * open project; the raw server dump names no cause and no remedy. The usual
- * cause in a JavaScript tree is tsserver's program budget: a project whose
- * non-TypeScript files exceed `maxProgramSizeForNonTsFiles` (20 MB) is not
- * loaded at all, so semantic requests fail while syntax-only actions still
- * work. Spell out that budget, the two conditions the server cannot report,
- * and the knobs that actually change them, without inventing switches the
- * server does not support.
- */
-const TYPESCRIPT_NO_PROJECT_HINT =
-	'The TypeScript server has no project open for this file, or the project\'s language service is disabled. tsserver refuses to load a project whose non-TypeScript files exceed its 20 MB program budget, which is the usual cause in a JavaScript tree: semantic requests then fail with "No Project." while syntax-only actions still work. Keep large vendored JavaScript (for example public/fontawesome/js or built bundles) out of the project with tsconfig.json/jsconfig.json include/exclude, or set compilerOptions.disableSizeLimit to lift the budget, then retry. Server-specific options can be passed through .lsp.json initOptions; typescript-language-server supports maxTsServerMemory, tsserver.path and tsserver.fallbackPath.';
 
 /**
  * Enumerate the {oldUri, newUri} pairs needed for an LSP willRenameFiles/didRenameFiles request.
@@ -253,6 +229,41 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		return session.enableLsp === false ? null : new LspTool(session);
 	}
 
+	/**
+	 * A server can discover callers without opening them through this client.
+	 * Track returned source snapshots too; otherwise a later external caller edit
+	 * leaves references at old offsets while context rendering reads new disk text.
+	 * Re-query only when announcing those source snapshots changed the server view.
+	 */
+	async #requestLocations(
+		client: LspClient,
+		method: string,
+		params: unknown,
+		signal?: AbortSignal,
+	): Promise<Location | Location[] | LocationLink | LocationLink[] | null> {
+		while (true) {
+			const result = (await sendRequest(client, method, params, signal)) as
+				| Location
+				| Location[]
+				| LocationLink
+				| LocationLink[]
+				| null;
+			let sourcesChanged = false;
+			const seen = new Set<string>();
+			for (const location of normalizeLocationResult(result)) {
+				if (!location.uri.startsWith("file:")) continue;
+				const filePath = uriToFile(location.uri);
+				const sourceUri = fileToUri(filePath);
+				if (seen.has(sourceUri)) continue;
+				seen.add(sourceUri);
+				const previousVersion = client.openFiles.get(sourceUri)?.version;
+				await reconcileFileFromDisk(client, filePath, signal);
+				if (client.openFiles.get(sourceUri)?.version !== previousVersion) sourcesChanged = true;
+			}
+			if (!sourcesChanged) return result;
+		}
+	}
+
 	async execute(
 		_toolCallId: string,
 		params: LspParams,
@@ -289,11 +300,16 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			// "started" (have a live in-process client) so callers cannot mistake
 			// presence-on-PATH for a working server.
 			const startedClients = getActiveClients();
-			const startedByConfigName = new Map<string, LspServerStatus>();
+			const startedByConfigName = new Map<string, LspServerStatus[]>();
+			const sessionRoot = normalizePathForComparison(this.session.cwd);
 			for (const [name, serverConfig] of Object.entries(config.servers)) {
-				const expectedKey = getLspClientKey(serverConfig, this.session.cwd);
-				const matched = startedClients.find(c => c.clientKey === expectedKey);
-				if (matched) startedByConfigName.set(name, matched);
+				const matched = startedClients.filter(client => {
+					const cwd = client.cwd ?? this.session.cwd;
+					const relative = path.relative(sessionRoot, normalizePathForComparison(cwd));
+					if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return false;
+					return client.clientKey === getLspClientKey(serverConfig, cwd);
+				});
+				if (matched.length > 0) startedByConfigName.set(name, matched);
 			}
 
 			const lines: string[] = [];
@@ -303,12 +319,28 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				const labelled = configuredNames.map(name => {
 					const started = startedByConfigName.get(name);
 					if (!started) return `${name} (configured, not started)`;
-					return `${name} (${started.status})`;
+					const statuses = started.map(client => {
+						const unavailable = client.semanticProjects?.some(project => project.status === "unavailable");
+						const status = unavailable ? "semantic unavailable" : client.status;
+						const relative = client.cwd ? path.relative(this.session.cwd, client.cwd) : "";
+						return relative ? `${status} in ${relative}` : status;
+					});
+					return `${name} (${statuses.join("; ")})`;
 				});
 				lines.push(`Language servers: ${labelled.join(", ")}`);
 				lines.push(
-					"  note: 'configured, not started' means the binary resolves on PATH but no request has spawned it yet; 'ready' means a client process is live for this cwd.",
+					"  note: 'configured, not started' means the binary resolves but no client is live; 'ready' means the initialize handshake completed, not that every file has semantic service. TypeScript semantic availability is checked per requested project.",
 				);
+				for (const [name, started] of startedByConfigName) {
+					for (const client of started) {
+						for (const project of client.semanticProjects ?? []) {
+							lines.push(
+								`  [${name}] ${project.project ?? project.file}: semantic ${project.status} (file ${project.file}; workspace ${client.cwd ?? this.session.cwd})`,
+							);
+							if (project.error) lines.push(project.error);
+						}
+					}
+				}
 			}
 			if (lspmuxStatus) lines.push(lspmuxStatus);
 
@@ -392,7 +424,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					totalServerAttempts++;
 					try {
 						throwIfAborted(signal);
-						const serverCwd = getFileClientCwd(file, resolved, serverConfig, this.session.cwd);
+						const serverCwd = getFileClientCwd(resolved, serverConfig, this.session.cwd);
 						if (serverConfig.createClient) {
 							const linterClient = getLinterClient(serverName, serverConfig, this.session.cwd);
 							const diagnostics = await linterClient.lint(resolved, signal);
@@ -402,22 +434,23 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							continue;
 						}
 						const client = await getOrCreateClient(serverConfig, serverCwd, undefined, signal);
+						const minVersion = client.diagnosticsVersion;
+						await prepareFileForRequest(client, resolved, { signal, refreshDiagnostics: true });
 						if (isProjectAwareLspServer(serverConfig)) {
 							await waitForProjectLoaded(client, signal);
 							throwIfAborted(signal);
+							await prepareTypeScriptProject(client, resolved, signal);
 						}
-						const minVersion = client.diagnosticsVersion;
-						await refreshFile(client, resolved, signal);
 						const expectedDocumentVersion = client.openFiles.get(uri)?.version;
 						// Project-aware servers (Roslyn, tsserver, …) compute pull diagnostics
 						// on demand; their first response routinely overruns the 3s single-file
 						// budget, which would otherwise surface as a false "OK". An explicit
 						// diagnostics request can afford to wait, bounded by the tool timeout.
-						const waitCapMs = detailed
-							? BATCH_DIAGNOSTICS_WAIT_TIMEOUT_MS
-							: isProjectAwareLspServer(serverConfig)
-								? PROJECT_DIAGNOSTICS_WAIT_TIMEOUT_MS
-								: SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS;
+						// Batch and individual queries analyze the same files with the same
+						// per-server budget; the shared tool signal bounds the whole batch.
+						const waitCapMs = isProjectAwareLspServer(serverConfig)
+							? PROJECT_DIAGNOSTICS_WAIT_TIMEOUT_MS
+							: SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS;
 						const diagnostics = await waitForDiagnostics(client, uri, {
 							timeoutMs: Math.min(waitCapMs, timeoutSec * 1000),
 							signal,
@@ -441,11 +474,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							throw err;
 						}
 						// Server failed; record it so a total failure is not reported as clean.
-						failedServers.push(serverName);
+						const errorMessage = err instanceof Error ? err.message : String(err);
+						failedServers.push(`${serverName}: ${errorMessage}`);
 						logger.debug("LSP diagnostics server failed", {
 							server: serverName,
 							file: relPath,
-							error: err instanceof Error ? err.message : String(err),
+							error: errorMessage,
 						});
 					}
 				}
@@ -1044,12 +1078,13 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			}
 
 			try {
-				const client = await getOrCreateClient(chosenConfig, this.session.cwd, undefined, signal);
+				const requestCwd = resolvedTarget
+					? getFileClientCwd(resolvedTarget, chosenConfig, this.session.cwd)
+					: this.session.cwd;
+				const client = await getOrCreateClient(chosenConfig, requestCwd, undefined, signal);
 				if (resolvedTarget) {
-					if (hasExplicitPayload) {
-						await ensureFileOpen(client, resolvedTarget, signal);
-					} else {
-						await reconcileFileFromDisk(client, resolvedTarget, signal);
+					await prepareFileForRequest(client, resolvedTarget, { signal });
+					if (!hasExplicitPayload) {
 						if (line !== undefined) {
 							const resolvedPosition = await resolveSymbolPosition(resolvedTarget, line, symbol);
 							requestParams = {
@@ -1059,7 +1094,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						}
 					}
 				}
-				const result = await sendRequest(client, method, requestParams, signal);
+				const result = LOCATION_REQUEST_METHODS[method]
+					? await this.#requestLocations(client, method, requestParams, signal)
+					: await sendRequest(client, method, requestParams, signal);
 				const formatted =
 					result === null || result === undefined
 						? "null"
@@ -1276,13 +1313,16 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		const [serverName, serverConfig] = serverInfo;
 		const serverCommand = path.basename(serverConfig.resolvedCommand ?? serverConfig.command).replace(/\.exe$/i, "");
 		const isCsharpLs = serverName === "csharp-ls" || serverCommand === "csharp-ls";
-		const clientCwd =
-			resolvedFile && file ? getFileClientCwd(file, resolvedFile, serverConfig, this.session.cwd) : this.session.cwd;
+		const clientCwd = resolvedFile
+			? getFileClientCwd(resolvedFile, serverConfig, this.session.cwd)
+			: this.session.cwd;
 
 		if (action === "reload") clearInitializationFailure(serverConfig, clientCwd);
 
+		let requestedClient: LspClient | undefined;
 		try {
 			const client = await getOrCreateClient(serverConfig, clientCwd, undefined, signal);
+			requestedClient = client;
 			const targetFile = resolvedFile;
 			const isRustAnalyzerServer = isRustAnalyzerClient(client) || serverName === "rust-analyzer";
 			const needsProjectIndex =
@@ -1292,10 +1332,10 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 			let reconciledFromDisk = false;
 			if (targetFile) {
-				if (POSITIONAL_ACTIONS.has(action)) {
-					reconciledFromDisk = await reconcileFileFromDisk(client, targetFile, signal);
-				} else {
+				if (action === "reload") {
 					await ensureFileOpen(client, targetFile, signal);
+				} else {
+					reconciledFromDisk = await prepareFileForRequest(client, targetFile, { signal });
 				}
 			}
 			if (rustWorkspaceWait) {
@@ -1342,7 +1382,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				// =====================================================================
 
 				case "definition": {
-					let result = (await sendRequest(
+					let result = (await this.#requestLocations(
 						client,
 						"textDocument/definition",
 						{
@@ -1357,7 +1397,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						await waitForProjectLoaded(client, signal);
 						throwIfAborted(signal);
 						await untilAborted(signal, () => Bun.sleep(REFERENCES_RETRY_DELAY_MS));
-						result = (await sendRequest(
+						result = (await this.#requestLocations(
 							client,
 							"textDocument/definition",
 							{
@@ -1382,7 +1422,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				}
 
 				case "type_definition": {
-					const result = (await sendRequest(
+					const result = (await this.#requestLocations(
 						client,
 						"textDocument/typeDefinition",
 						{
@@ -1407,7 +1447,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				}
 
 				case "implementation": {
-					const result = (await sendRequest(
+					const result = (await this.#requestLocations(
 						client,
 						"textDocument/implementation",
 						{
@@ -1435,7 +1475,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					let previousResultSignature: string | undefined;
 					for (let attempt = 0; attempt <= REFERENCES_RETRY_COUNT; attempt++) {
 						try {
-							result = (await sendRequest(
+							result = (await this.#requestLocations(
 								client,
 								"textDocument/references",
 								{
@@ -1745,11 +1785,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				throw new ToolAbortError();
 			}
 			const errorMessage = err instanceof Error ? err.message : String(err);
-			// Keep the original server dump (name, code, message) for debugging,
-			// then append the only actionable reading of tsserver's "No Project.".
-			const noProjectHint = isTypeScriptNoProjectError(serverName, serverConfig, err)
-				? `\n[${serverName}] ${TYPESCRIPT_NO_PROJECT_HINT}`
-				: "";
+			// Preserve the original dump and record unavailable semantics; the
+			// phrase alone is not evidence of a program-size disable.
+			const noProjectHint =
+				requestedClient && resolvedFile && isTypeScriptNoProjectError(serverName, serverConfig, err)
+					? `\n[${serverName}] ${recordTypeScriptProjectFailure(requestedClient, resolvedFile, errorMessage)}`
+					: "";
 			return {
 				content: [{ type: "text", text: `LSP error: ${errorMessage}${noProjectHint}` }],
 				details: { serverName, action, success: false, request: params },

@@ -1,8 +1,9 @@
 import type { Api } from "../types";
 import type { AbortSourceTracker } from "../utils/abort";
 import type { CapturedHttpErrorResponse, RawHttpRequestDump } from "../utils/http-inspector";
-import { classify, classifyMessage, status } from "./flags";
+import { classify, classifyMessage, create, Flag, status } from "./flags";
 import { formatMessage } from "./format";
+import { isTransientStatus } from "./retryable";
 
 /** Context a provider catch block hands to {@link finalize}. */
 export interface FinalizeOptions {
@@ -62,11 +63,23 @@ export async function finalize(error: unknown, opts: FinalizeOptions = {}): Prom
 	const classificationError =
 		errorStatus === undefined && currentStatus !== undefined ? { status: currentStatus, cause: error } : error;
 
+	let errorId = classify(classificationError, opts.api);
+	// A transport-owned AbortError does not imply caller cancellation. Keep it
+	// retryable, including after partial output, without overriding terminal 4xx.
+	if (
+		!aborted &&
+		error instanceof Error &&
+		error.name === "AbortError" &&
+		(currentStatus === undefined || isTransientStatus(currentStatus))
+	) {
+		errorId = create(errorId, Flag.Abort, Flag.Transient);
+	}
+
 	const id = classifyMessage({
 		api: opts.api,
 		provider: opts.provider,
 		model: opts.model,
-		errorId: classify(classificationError, opts.api),
+		errorId,
 		errorMessage: message,
 		errorStatus: currentStatus,
 	});

@@ -6,6 +6,8 @@
 import * as path from "node:path";
 import { type Component, replaceTabs, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { getMCPConfigPath, getProjectDir } from "@oh-my-pi/pi-utils";
+import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
+import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { clearCache as clearFsCache } from "../../capability/fs";
 import type { SourceMeta } from "../../capability/types";
 import { expandEnvVarsDeep } from "../../discovery/helpers";
@@ -961,7 +963,12 @@ export class MCPCommandController {
 						block.addChild(new Spacer(1));
 						block.addChild(
 							new Text(
-								theme.fg("muted", t("Waiting for authorization... (Press Esc to cancel, 5 minute timeout)")),
+								theme.fg(
+									"muted",
+									t("Waiting for authorization... (Press {key} to cancel, 5 minute timeout)", {
+										key: appKey(this.ctx.keybindings, "app.interrupt"),
+									}),
+								),
 								1,
 								0,
 							),
@@ -1486,7 +1493,13 @@ export class MCPCommandController {
 				"",
 				theme.fg("muted", t("Server creation cancelled.")),
 				"",
-				theme.fg("dim", t("Tip: Press Ctrl+C or Esc anytime to cancel")),
+				theme.fg(
+					"dim",
+					t("Tip: Press {ctrlC} or {key} anytime to cancel", {
+						ctrlC: formatKeyHint("ctrl+c"),
+						key: appKey(this.ctx.keybindings, "app.interrupt"),
+					}),
+				),
 				"",
 			].join("\n"),
 		);
@@ -1771,7 +1784,13 @@ export class MCPCommandController {
 			hintBlock = new MutableHintBlock();
 			hintBlock.addChild(new DynamicBorder());
 			const text = new Text(
-				theme.fg("muted", t('Testing connection to "{name}"... (esc to cancel)', { name })),
+				theme.fg(
+					"muted",
+					t('Testing connection to "{name}"... ({key} to cancel)', {
+						name,
+						key: appKey(this.ctx.keybindings, "app.interrupt"),
+					}),
+				),
 				1,
 				1,
 			);
@@ -2566,7 +2585,11 @@ export class MCPCommandController {
 	}
 
 	async #handleSmitheryLoginWithApiKey(): Promise<boolean> {
-		const apiKey = await this.#promptSmitheryApiKey(t("Smithery API key (Esc to cancel)"));
+		const apiKey = await this.#promptSmitheryApiKey(
+			t("Smithery API key ({key} to cancel)", {
+				key: appKey(this.ctx.keybindings, "app.interrupt"),
+			}),
+		);
 		if (!apiKey) return false;
 		await saveSmitheryApiKey(apiKey);
 		this.ctx.showStatus(t("Smithery API key saved."));

@@ -317,11 +317,12 @@ describe("processResponsesStream: terminal events", () => {
 		]);
 	});
 
-	test("keeps max-output incomplete turns at length when any function call has a JSON prefix", async () => {
+	test("rejects max-output incomplete turns when any function call still has a JSON prefix", async () => {
 		const output = makeOutput();
-		const stream = { push: () => {}, end: () => {} } as never;
+		const emitted: EmittedEvent[] = [];
+		const stream = { push: (event: unknown) => emitted.push(event as EmittedEvent), end: () => {} } as never;
 
-		await processResponsesStream(
+		const processing = processResponsesStream(
 			makeStream([
 				{
 					type: "response.output_item.added",
@@ -370,8 +371,15 @@ describe("processResponsesStream: terminal events", () => {
 			stream,
 			makeModel(),
 		);
+		await expect(processing).rejects.toMatchObject({
+			name: "ProviderResponseError",
+			provider: "openai",
+			kind: "incomplete-stream",
+		});
 
-		expect(output.stopReason).toBe("length");
+		// A strict-final parse failure must reach the provider retry path instead
+		// of exposing this mixed batch as executable tools.
+		expect(emitted.some(event => event.type === "toolcall_end")).toBe(false);
 	});
 
 	test("keeps max-output incomplete unfinished custom-tool input at length", async () => {

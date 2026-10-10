@@ -5,9 +5,10 @@ class "openai" {
 	family "o-series" {
 		thinking-requires-effort #true
 	}
-	// GPT wire ladders are model generations, not host contracts: <5.2 keeps
-	// the classic four-tier scale, 5.2+ drops minimal for xhigh, and 5.6+
-	// exposes the wire-exact five-tier low..max scale.
+	// GPT effort defaults follow model generations: <5.2 keeps the classic
+	// four-tier scale and 5.2+ drops minimal for xhigh. Wire-effort adapters
+	// expose max from 5.6; budget and routing adapters retain their explicit
+	// surfaces, with low..xhigh as the fallback.
 	family "gpt" {
 		revision "<5.2" {
 			thinking-efforts "minimal" "low" "medium" "high"
@@ -23,12 +24,17 @@ class "openai" {
 			}
 		}
 	}
-	revision ">=5.2 <5.6" {
+	revision ">=5.2" {
 		thinking-efforts "low" "medium" "high" "xhigh"
 	}
 	revision ">=5.6" {
-		thinking-efforts "low" "medium" "high" "xhigh" "max"
 		requires-reasoning-off-juice-instruction #true
+	}
+	on-api "openai-completions" "openrouter" "openai-responses" "openai-codex-responses" \
+		"azure-openai-responses" "bedrock-converse-stream" {
+		revision ">=5.6" {
+			thinking-efforts "low" "medium" "high" "xhigh" "max"
+		}
 	}
 	// Delegation appetite is a lineage trait. GPT-5.6 was trained on Codex's
 	// "no subagents unless asked" developer message; GPT-6 fans out on its own
@@ -56,6 +62,28 @@ class "openai" {
 			limits-patch {
 				context-window 272000
 			}
+		}
+	}
+}
+
+// Hosted Responses tools are a GPT-5+ lineage capability on any
+// Responses-compatible host, so proxies exposing these ids inherit them. The
+// swap targets resolve on the same provider only; when a host lacks them the
+// session model runs the tool itself.
+class "openai" {
+	on-api "openai-responses" {
+		revision ">=5" {
+			web-search "openai"
+			web-search-model "gpt-5.6-luna"
+			hosted-image #true
+			image-model "gpt-image-2"
+		}
+	}
+	on-api "openai-codex-responses" {
+		revision ">=5" {
+			web-search-model "gpt-5.6-luna"
+			hosted-image #true
+			image-model "gpt-image-2"
 		}
 	}
 }

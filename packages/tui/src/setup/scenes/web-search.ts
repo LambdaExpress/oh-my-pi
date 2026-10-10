@@ -5,19 +5,24 @@ import { Text } from "../../components/text";
 import { WizardStep } from "../../components/wizard-step";
 import { Container } from "../../tui";
 import { truncateToWidth } from "../../utils";
-import { SEARCH_PROVIDER_OPTIONS, type SearchProviderId } from "../../tools/web-search";
+import { SEARCH_PROVIDER_OPTIONS, type SearchProviderId } from "../../tools/web-search-types";
 import { t } from "../../i18n";
 import { getSelectListTheme, theme } from "../../theme/theme";
-import type { SetupSceneHost, SetupTab } from "./types";
+import { col, span, text } from "../../native/describe";
+import { Memo } from "../../native/memo";
+import type { NativeChild, NativeNode } from "../../native/node";
+import type { SetupSceneHost, SetupTab, StyledLine } from "./types";
 
 const MAX_VISIBLE = 8;
 
 /** Reuse the shared provider options as the single source of truth for labels/descriptions. */
-const WEB_SEARCH_ITEMS: readonly SelectItem[] = SEARCH_PROVIDER_OPTIONS.map(option => ({
-	value: option.value,
-	label: option.label,
-	description: option.description,
-}));
+function webSearchItems(): SelectItem[] {
+	return SEARCH_PROVIDER_OPTIONS.map(option => ({
+		value: option.value,
+		label: t(option.label),
+		description: option.description ? t(option.description) : undefined,
+	}));
+}
 
 type Availability = "checking" | boolean;
 
@@ -34,21 +39,25 @@ export class WebSearchTab implements SetupTab {
 
 	#list: SelectList;
 	#availability = new Map<SearchProviderId, Availability>();
-	#status: string[] = [];
+	#status: StyledLine[] = [];
 	#disposed = false;
 	#step: WizardStep | undefined;
+	#native = new Memo();
+	readonly #items = webSearchItems();
 
 	readonly #host: SetupSceneHost;
 
 	constructor(host: SetupSceneHost) {
 		this.#host = host;
-		this.#list = new SelectList(WEB_SEARCH_ITEMS, MAX_VISIBLE, getSelectListTheme());
+		this.#list = new SelectList(this.#items, MAX_VISIBLE, getSelectListTheme());
 		const order = host.ctx.webSearchOrder;
 		const current = Array.isArray(order) && typeof order[0] === "string" ? order[0] : "auto";
-		const index = WEB_SEARCH_ITEMS.findIndex(item => item.value === current);
+		const index = this.#items.findIndex(item => item.value === current);
 		if (index >= 0) this.#list.setSelectedIndex(index);
 		this.#list.onSelectionChange = item => this.#onHighlight(item.value);
-		this.#list.onSelect = item => this.#apply(item.value);
+		this.#list.onSelect = item => {
+			void this.#apply(item.value);
+		};
 		this.#list.onCancel = () => host.finish("skipped");
 	}
 
@@ -72,8 +81,9 @@ export class WebSearchTab implements SetupTab {
 	}
 
 	invalidate(): void {
-		if (this.#step) this.#step.invalidate();
-		else this.#list.invalidate();
+		this.#native.clear();
+		this.#step?.invalidate();
+		this.#list.invalidate();
 	}
 
 	dispose(): void {
@@ -86,12 +96,12 @@ export class WebSearchTab implements SetupTab {
 		const selected = this.#list.getSelectedItem();
 		if (selected) {
 			for (const line of this.#readinessLines(selected.value)) {
-				status.addChild(new Text(truncateToWidth(line, width), 0, 0));
+				status.addChild(new Text(truncateToWidth(theme.fg(line.color, line.text), width), 0, 0));
 			}
 		}
 		if (selected && this.#status.length > 0) status.addChild(new Spacer(1));
 		for (const line of this.#status) {
-			status.addChild(new Text(truncateToWidth(line, width), 0, 0));
+			status.addChild(new Text(truncateToWidth(theme.fg(line.color, line.text), width), 0, 0));
 		}
 		if (!this.#step) {
 			this.#step = new WizardStep({
@@ -113,6 +123,26 @@ export class WebSearchTab implements SetupTab {
 		}
 		this.#step.setMaxHeight(maxLines);
 		return this.#step.render(width);
+	}
+
+	describe(): NativeNode {
+		const selected = this.#list.getSelectedItem();
+		const readiness = selected ? this.#availability.get(selected.value as SearchProviderId) : undefined;
+		return this.#native.get([selected?.value, readiness, this.#status], () => {
+			const children: NativeChild[] = [
+				text([span(t("Choose the provider the web_search tool should prefer."), "muted")]),
+				this.#list,
+			];
+			if (selected) {
+				for (const line of this.#readinessLines(selected.value)) {
+					children.push(text([span(line.text, line.color)]));
+				}
+			}
+			if (this.#status.length > 0) {
+				children.push(col(this.#status.map(line => text([span(line.text, line.color)]))));
+			}
+			return col(children, { gap: "sm", role: "omp.setup.web-search" });
+		});
 	}
 
 	#onHighlight(value: string): void {
@@ -137,32 +167,49 @@ export class WebSearchTab implements SetupTab {
 		})();
 	}
 
-	#apply(value: string): void {
+	async #apply(value: string): Promise<void> {
 		const option = SEARCH_PROVIDER_OPTIONS.find(option => option.value === value);
 		if (!option) return;
-		// The wizard picks one favorite; persist it as the head of the priority
-		// list with the remaining providers in their built-in order (auto = reset).
-		this.#host.ctx.saveSearchProvider(option.value);
-		const label = WEB_SEARCH_ITEMS.find(item => item.value === value)?.label ?? value;
-		this.#status = [
-			theme.fg("success", `${theme.status.success} ${t("Web search set to {provider}", { provider: label })}`),
-		];
-		if (value !== "auto" && this.#availability.get(value as SearchProviderId) === false) {
-			this.#status.push(theme.fg("dim", t("Not configured yet — add its API key or sign in to enable it.")));
+		// Persist the preferred provider through the host's web model role;
+		// auto clears that preference and restores normal role resolution.
+		try {
+			await this.#host.ctx.saveSearchProvider(option.value);
+			if (this.#disposed) return;
+			const label = this.#items.find(item => item.value === value)?.label ?? value;
+			this.#status = [
+				{
+					text: `${theme.status.success} ${t("Web search set to {provider}", { provider: label })}`,
+					color: "success",
+				},
+			];
+			if (value !== "auto" && this.#availability.get(value as SearchProviderId) === false) {
+				this.#status.push({
+					text: t("Not configured yet — add its API key or sign in to enable it."),
+					color: "dim",
+				});
+			}
+		} catch (error) {
+			if (this.#disposed) return;
+			this.#status = [
+				{
+					text: t("Error: {message}", { message: error instanceof Error ? error.message : String(error) }),
+					color: "error",
+				},
+			];
 		}
 		this.#host.requestRender();
 	}
 
-	#readinessLines(value: string): string[] {
+	#readinessLines(value: string): StyledLine[] {
 		if (value === "auto") {
-			return [theme.fg("dim", t("Automatically uses the first configured provider."))];
+			return [{ text: t("Automatically uses the first configured provider."), color: "dim" }];
 		}
 		const state = this.#availability.get(value as SearchProviderId);
 		if (state === undefined || state === "checking") {
-			return [theme.fg("dim", `${t("Checking availability")}…`)];
+			return [{ text: `${t("Checking availability")}…`, color: "dim" }];
 		}
 		return state
-			? [theme.fg("success", `${theme.status.success} ${t("Ready to use")}`)]
-			: [theme.fg("warning", `${theme.status.pending} ${t("Needs credentials")}`)];
+			? [{ text: `${theme.status.success} ${t("Ready to use")}`, color: "success" }]
+			: [{ text: `${theme.status.pending} ${t("Needs credentials")}`, color: "warning" }];
 	}
 }

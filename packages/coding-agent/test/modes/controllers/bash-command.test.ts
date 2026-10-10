@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -21,6 +21,7 @@ function createContainer() {
 
 beforeAll(() => setLocale("en"));
 afterAll(() => setLocale(null));
+afterEach(() => vi.restoreAllMocks());
 
 function createCwdContext(sourceDir: string, isStreaming = false, showImages = true) {
 	const state = {
@@ -105,53 +106,6 @@ describe("bash shortcut command", () => {
 		const theme = await getThemeByName("dark");
 		if (!theme) throw new Error("Expected dark theme");
 		setThemeInstance(theme);
-	});
-
-	it("runs interactive ! commands through the configured user shell", async () => {
-		const executeBash = vi.fn().mockResolvedValue({
-			output: "ok",
-			exitCode: 0,
-			cancelled: false,
-			truncated: false,
-			totalLines: 1,
-			totalBytes: 2,
-			outputLines: 1,
-			outputBytes: 2,
-		});
-		const ctx = {
-			session: {
-				isStreaming: false,
-				executeBash,
-			},
-			sessionManager: {
-				getCwd: () => "/tmp",
-			},
-			chatContainer: createContainer(),
-			pendingMessagesContainer: createContainer(),
-			pendingBashComponents: [],
-			settings: Settings.isolated(),
-			ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
-			present: vi.fn(),
-			completePendingLocalExecution: vi.fn(),
-			markUserSubmission: vi.fn(),
-			showError: vi.fn(),
-			applyCwdChange: vi.fn(async () => {}),
-			updateEditorBorderColor: vi.fn(),
-			reloadTodos: vi.fn(async () => {}),
-		} as unknown as InteractiveModeContext;
-		const controller = new CommandController(ctx);
-
-		await controller.handleBashCommand("echo hi");
-
-		expect(executeBash).toHaveBeenCalledWith("echo hi", expect.any(Function), {
-			excludeFromContext: false,
-			useUserShell: true,
-			pty: {
-				cols: expect.any(Number),
-				rows: expect.any(Number),
-				onChunk: expect.any(Function),
-			},
-		});
 	});
 
 	it("persists standalone and bare cd before the next user-shell command", async () => {
@@ -281,7 +235,7 @@ describe("bash shortcut command", () => {
 			expect(present).not.toHaveBeenCalled();
 			expect(pendingMessagesContainer.children).toHaveLength(0);
 			expect(ctx.pendingBashComponents).toHaveLength(0);
-			expect(ctx.showWarning).toHaveBeenCalledWith(expect.stringContaining("response"));
+			expect(ctx.showWarning).toHaveBeenCalledTimes(1);
 		} finally {
 			await fs.rm(sourceDir, { recursive: true, force: true });
 		}

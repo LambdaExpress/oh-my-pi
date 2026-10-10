@@ -26,12 +26,13 @@ import { readZip, sniffZip } from "./zip";
 /**
  * Extensions recognized per format, lowercase, without the leading dot.
  * ZIP aliases cover the ZIP-container package families (JVM, Android, Python
- * wheels, browser/IDE extensions, NuGet, comics); `cbr` is RAR-under-alias.
+ * wheels, browser/IDE extensions, NuGet, comics); `cbr` is RAR-under-alias,
+ * and Unity asset packages are gzip-compressed TAR-under-alias.
  */
 const FORMAT_EXTENSIONS: Record<ArchiveFormat, readonly string[]> = {
 	zip: ["zip", "jar", "war", "ear", "apk", "whl", "ipa", "xpi", "vsix", "nupkg", "cbz"],
 	tar: ["tar"],
-	"tar.gz": ["tar.gz", "tgz"],
+	"tar.gz": ["tar.gz", "tgz", "unitypackage"],
 	"tar.bz2": ["tar.bz2", "tbz2", "tbz"],
 	"tar.xz": ["tar.xz", "txz"],
 	"tar.zst": ["tar.zst", "tzst"],

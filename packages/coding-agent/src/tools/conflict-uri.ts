@@ -6,6 +6,7 @@
 import * as fs from "node:fs/promises";
 import { type ConflictEntry, renderConflictRegion } from "@oh-my-pi/pi-tui/tools/conflict-detect";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
+import { isFsError } from "@oh-my-pi/pi-utils";
 import { getEditStore } from "../edit/store";
 import type { InternalWriteResult } from "../internal-urls/types";
 import { writethroughNoop } from "../lsp/writethrough";
@@ -23,6 +24,7 @@ import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import type { ToolSession } from "./index";
 import { formatPathRelativeToCwd } from "./path-utils";
 import { formatTextWithMode, hashlineHeaderContext, prependHashlineHeader } from "./read-format";
+import { ToolAbortError, throwIfAborted } from "./tool-errors";
 import { maybeWriteSnapshotHeader, stripWriteContent } from "./write-content";
 
 /** A rendered `conflict://<N>[/<scope>]` region. */
@@ -395,7 +397,19 @@ async function resolveAllConflicts(
 			continue;
 		}
 
-		await writethroughNoop(absolutePath, text, signal);
+		try {
+			await writethroughNoop(absolutePath, text, signal);
+		} catch (error) {
+			if (error instanceof ToolAbortError || (error instanceof Error && error.name === "AbortError")) throw error;
+			throwIfAborted(signal);
+			const message = error instanceof Error ? error.message : String(error);
+			failedFiles.push({
+				displayPath: sample.displayPath,
+				count: fileEntries.length,
+				error: isFsError(error) ? `${error.code}: ${message}` : message,
+			});
+			continue;
+		}
 		invalidateFsScanAfterWrite(absolutePath);
 		session.bumpFileMutationVersion?.(absolutePath);
 		getEditStore(session).invalidate(absolutePath);

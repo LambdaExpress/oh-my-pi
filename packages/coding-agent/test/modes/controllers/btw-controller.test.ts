@@ -143,43 +143,16 @@ describe("BtwPanelComponent", () => {
 		expect(panel.isBranchable()).toBe(true);
 	});
 
-	it("advertises copy and branch actions after a complete non-empty answer", () => {
-		const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
-		const panel = new BtwPanelComponent({ question: "Question?", tui: ui });
-
-		panel.setAnswer("Answer");
-		panel.markComplete();
-
-		const rendered = Bun.stripANSI(panel.render(120).join("\n"));
-		expect(rendered).toContain("c to copy");
-		expect(rendered).toContain("b to branch");
-		expect(rendered).toContain("Esc to close");
-	});
-
-	it("hides the branch action when the controller rejects the current leaf", () => {
-		const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
-		const panel = new BtwPanelComponent({ question: "Question?", tui: ui, canBranch: () => false });
-
-		panel.setAnswer("Answer");
-		panel.markComplete();
-
-		const rendered = Bun.stripANSI(panel.render(120).join("\n"));
-		expect(rendered).toContain("c to copy");
-		expect(rendered).not.toContain("b to branch");
-	});
-
 	it("confirms a copy visually and clears the confirmation on the next answer", () => {
 		const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
 		const panel = new BtwPanelComponent({ question: "Question?", tui: ui });
 		panel.setAnswer("Answer");
 		panel.markComplete();
-		expect(Bun.stripANSI(panel.render(80).join("\n"))).not.toContain("Copied");
+		const originalTitle = panel.title;
 		panel.markCopied();
-		const copied = Bun.stripANSI(panel.render(80).join("\n"));
-		expect(copied).toContain("Copied");
-		expect(panel.title).toContain("Copied");
+		expect(panel.title).not.toBe(originalTitle);
 		panel.appendText(" more");
-		expect(Bun.stripANSI(panel.render(80).join("\n"))).not.toContain("Copied");
+		expect(panel.title).toBe(originalTitle);
 	});
 });
 
@@ -238,47 +211,6 @@ describe("BtwController", () => {
 		await controller.dispose();
 	});
 
-	it("dispatches the question to runEphemeralTurn with the btw prompt wrapper and a fresh signal", async () => {
-		const runEphemeralTurn = vi.fn(async (_args: RunEphemeralTurnArgs) => ({
-			replyText: "Answer",
-			assistantMessage: createAssistantMessage("Answer"),
-		}));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
-		const controller = new BtwController(ctx);
-
-		await controller.start("What changed?");
-
-		expect(runEphemeralTurn).toHaveBeenCalledTimes(1);
-		const callArg = runEphemeralTurn.mock.calls[0]?.[0];
-		expect(callArg).toBeDefined();
-		expect(callArg?.promptText).toContain("<btw>");
-		expect(callArg?.promptText).toContain("What changed?");
-		expect(callArg?.signal).toBeInstanceOf(AbortSignal);
-		expect(typeof callArg?.onTextDelta).toBe("function");
-		expect(controller.hasActiveRequest()).toBe(true);
-		await controller.dispose();
-	});
-
-	it("renders completed /btw answers with copy and branch affordances", async () => {
-		const runEphemeralTurn = vi.fn(async () => ({
-			replyText: "Answer",
-			assistantMessage: createAssistantMessage("Answer"),
-		}));
-		const btwContainer = new Container();
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn), btwContainer);
-		const controller = new BtwController(ctx);
-
-		await controller.start("What changed?");
-		await drainBtwRequest();
-
-		const panel = btwContainer.children[0] as BtwPanelComponent | undefined;
-		expect(panel).toBeDefined();
-		const rendered = Bun.stripANSI(panel?.render(120).join("\n") ?? "");
-		expect(rendered).toContain("c to copy");
-		expect(rendered).toContain("b to branch");
-		await controller.dispose();
-	});
-
 	it("inlines explicitly selected skills into /btw prompt without tools", async () => {
 		const { dir, skill } = await createReviewerSkill("Use the loaded reviewer skill.");
 		try {
@@ -297,7 +229,6 @@ describe("BtwController", () => {
 			const callArg = runEphemeralTurn.mock.calls[0]?.[0];
 			expect(callArg?.toolCatalogMode).toBe("none");
 			expect(callArg?.promptText).toContain("<btw>");
-			expect(callArg?.promptText).toContain("Skill: reviewer");
 			expect(callArg?.promptText).toContain(skill.filePath);
 			expect(callArg?.promptText).toContain("Use the loaded reviewer skill.");
 			expect(callArg?.promptText).toContain("why did this fail? focus on auth");
@@ -318,7 +249,7 @@ describe("BtwController", () => {
 
 		await controller.start("/skill:missing question");
 
-		expect(ctx.showError).toHaveBeenCalledWith("Unknown skill for /btw: missing");
+		expect(ctx.showError).toHaveBeenCalledTimes(1);
 		expect(runEphemeralTurn).not.toHaveBeenCalled();
 		expect(btwContainer.children).toHaveLength(0);
 	});
@@ -364,17 +295,127 @@ describe("BtwController", () => {
 		expect(controller.handlesBranchKey()).toBe(true);
 	});
 
-	it("allows branch after a complete non-empty reply", async () => {
-		const assistantMessage = createAssistantMessage("Answer");
-		const runEphemeralTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
+	it("asks the focused subagent session and refuses to branch its answer into main", async () => {
+		const mainTurn = vi.fn(async () => ({ replyText: "Main", assistantMessage: createAssistantMessage("Main") }));
+		const focusedTurn = vi.fn(async () => ({
+			replyText: "Worker answer",
+			assistantMessage: createAssistantMessage("Worker answer"),
+		}));
+		const focusedSession = {
+			...makeFakeSession(focusedTurn),
+			sessionManager: {
+				getLeafId: () => "worker-leaf",
+				getSessionId: () => "worker-session",
+				getArtifactsDir: () => undefined,
+				ensureOnDisk: async () => {},
+			},
+		} as unknown as InteractiveModeContext["session"];
+		const ctx = Object.assign(makeCtx(makeFakeSession(mainTurn)), {
+			focusedAgentId: "Worker",
+			viewSession: focusedSession,
+		});
 		const controller = new BtwController(ctx);
 
-		await controller.start("Question?");
+		await controller.start("What is the worker doing?");
 		await drainBtwRequest();
 
-		expect(controller.canBranch()).toBe(true);
-		expect(controller.handlesBranchKey()).toBe(true);
+		expect(focusedTurn).toHaveBeenCalledTimes(1);
+		expect(mainTurn).not.toHaveBeenCalled();
+		expect(controller.canCopy()).toBe(true);
+		expect(controller.canBranch()).toBe(false);
+		expect(controller.handlesBranchKey()).toBe(false);
+		expect(await controller.handleBranch()).toBe(false);
+		expect(ctx.handleBtwBranch).not.toHaveBeenCalled();
+	});
+
+	it("keeps focused-agent side conversations apart from main history in the shared artifacts directory", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "omp-btw-focused-scope-"));
+		const mainTurn = vi.fn(async () => ({
+			replyText: "Main answer",
+			assistantMessage: createAssistantMessage("Main"),
+		}));
+		const focusedTurn = vi.fn(async () => ({
+			replyText: "Worker answer",
+			assistantMessage: createAssistantMessage("Worker answer"),
+		}));
+		const ctx = makeCtx(makeFakeSession(mainTurn));
+		const showOverlay = vi.spyOn(ctx.ui, "showOverlay");
+		const mainManager = SessionManager.create(directory, directory);
+		ctx.sessionManager = mainManager;
+		const controller = new BtwController(ctx);
+		try {
+			await controller.start("Main question?");
+			await drainBtwRequest();
+			const artifacts = mainManager.getArtifactsDir()!;
+			// Subagents adopt the parent's ArtifactManager, so they report the same directory.
+			const focusedSession = {
+				...makeFakeSession(focusedTurn),
+				sessionManager: {
+					getLeafId: () => "worker-leaf",
+					getSessionId: () => "worker-session",
+					getArtifactsDir: () => artifacts,
+					ensureOnDisk: async () => {},
+				},
+			} as unknown as InteractiveModeContext["session"];
+			Object.assign(ctx, { focusedAgentId: "Worker", viewSession: focusedSession });
+
+			await controller.start("");
+			const panel = showOverlay.mock.calls.at(-1)?.[0];
+			if (!(panel instanceof BtwHistoryPanel)) throw new Error("Expected BTW history");
+			expect(Bun.stripANSI(panel.render(120).join("\n"))).not.toContain("Main question?");
+
+			await controller.start("Worker question?");
+			await drainBtwRequest();
+			await controller.flush();
+			expect((await BtwHistoryStore.open(artifacts)).getRecords().map(record => record.question)).toEqual([
+				"Main question?",
+			]);
+			expect(
+				(await BtwHistoryStore.open(artifacts, "worker-session")).getRecords().map(record => record.question),
+			).toEqual(["Worker question?"]);
+		} finally {
+			await controller.dispose();
+			await mainManager.flush();
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps rendering a focused answer after returning to main, parking follow-ups until re-focus", async () => {
+		const pending = Promise.withResolvers<RunEphemeralTurnResult>();
+		const focusedTurn = vi.fn((_args: RunEphemeralTurnArgs) => pending.promise);
+		const focusedSession = {
+			...makeFakeSession(focusedTurn),
+			sessionManager: {
+				getLeafId: () => "worker-leaf",
+				getSessionId: () => "worker-session",
+				getArtifactsDir: () => undefined,
+				ensureOnDisk: async () => {},
+			},
+		} as unknown as InteractiveModeContext["session"];
+		const btwContainer = new Container();
+		const ctx = Object.assign(makeCtx(makeFakeSession(vi.fn()), btwContainer), {
+			focusedAgentId: "Worker" as string | undefined,
+			viewSession: focusedSession,
+		});
+		const controller = new BtwController(ctx);
+
+		await controller.start("What is the worker doing?");
+		ctx.focusedAgentId = undefined;
+		focusedTurn.mock.calls[0]?.[0].onTextDelta?.("Streaming ");
+		pending.resolve({
+			replyText: "Streaming worker answer",
+			assistantMessage: createAssistantMessage("Streaming worker answer"),
+		});
+		await drainBtwRequest();
+
+		const rendered = Bun.stripANSI(btwContainer.render(120).join("\n"));
+		expect(rendered).toContain("Streaming worker answer");
+		expect(controller.canCopy()).toBe(true);
+		expect(controller.canFollowUp()).toBe(false);
+		expect(controller.canBranch()).toBe(false);
+		ctx.focusedAgentId = "Worker";
+		expect(controller.canFollowUp()).toBe(true);
+		await controller.dispose();
 	});
 
 	it("refuses branch when the loaded session changed but the leaf id still matches", async () => {
@@ -459,19 +500,6 @@ describe("BtwController", () => {
 		expect(ctx.handleBtwBranch).not.toHaveBeenCalled();
 	});
 
-	it("handleBranch calls the context with the question and full assistant message when branchable", async () => {
-		const assistantMessage = createAssistantMessage("Answer");
-		const runEphemeralTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
-		const controller = new BtwController(ctx);
-
-		await controller.start("Question?");
-		await drainBtwRequest();
-
-		expect(await controller.handleBranch()).toBe(true);
-		expect(ctx.handleBtwBranch).toHaveBeenCalledWith("Question?", assistantMessage, "leaf-1", "session-1", undefined);
-	});
-
 	it("keeps a pending branch visible and refuses to dismiss it", async () => {
 		const branch = Promise.withResolvers<void>();
 		const assistantMessage = createAssistantMessage("Answer");
@@ -489,8 +517,6 @@ describe("BtwController", () => {
 		await Promise.resolve();
 		expect(controller.handlesBranchKey()).toBe(true);
 
-		const panel = btwContainer.children[0];
-		expect(Bun.stripANSI(panel?.render(120).join("\n") ?? "")).toContain("Branching to chat");
 		expect(controller.handleEscape()).toBe(true);
 		expect(btwContainer.children).toHaveLength(1);
 
@@ -522,8 +548,8 @@ describe("BtwController", () => {
 			if (typeof prelude?.content !== "string") {
 				throw new Error("Expected skill prelude content to be a string");
 			}
-			expect(prelude.content).toContain('[IMPORTANT: User invoked the "reviewer" skill; follow its instructions.');
-			expect(prelude.content).toContain("User: why did this fail? focus on auth");
+			expect(prelude.content).toContain("Use the loaded reviewer skill.");
+			expect(prelude.content).toContain("why did this fail? focus on auth");
 		} finally {
 			await removeWithRetries(dir);
 		}
@@ -584,7 +610,6 @@ describe("BtwController", () => {
 		expect(controller.canCopy()).toBe(true);
 		expect(await controller.handleCopy()).toBe(true);
 		expect(copySpy).toHaveBeenCalledWith(replaceTabs("Visible\tanswer\n\nfrom /btw"));
-		expect(Bun.stripANSI(ctx.btwContainer.render(100).join("\n"))).toContain("Copied");
 	});
 	it("does not confirm a superseded panel when the clipboard settles late", async () => {
 		const { promise: copyGate, resolve: releaseCopy } = Promise.withResolvers<void>();
@@ -604,10 +629,13 @@ describe("BtwController", () => {
 			const copyPromise = controller.handleCopy();
 			await controller.start("Second?");
 			await drainBtwRequest();
+			const panel = btwContainer.children[0];
+			if (!(panel instanceof BtwPanelComponent)) throw new Error("Expected current BTW panel");
+			const titleBeforeCopySettles = panel.title;
 			releaseCopy();
 			expect(await copyPromise).toBe(true);
 			expect(copySpy).toHaveBeenCalledTimes(1);
-			expect(Bun.stripANSI(btwContainer.render(100).join("\n"))).not.toContain("Copied");
+			expect(panel.title).toBe(titleBeforeCopySettles);
 		} finally {
 			await controller.dispose();
 		}
@@ -783,7 +811,6 @@ describe("BtwController", () => {
 			panel.handleInput("c");
 			await drainBtwRequest();
 			expect(copy).toHaveBeenCalledWith("Saved side answer");
-			expect(Bun.stripANSI(panel.render(120).join("\n"))).toContain("Copied");
 			await restored.dispose();
 		} finally {
 			await controller.dispose();

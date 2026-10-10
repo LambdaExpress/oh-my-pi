@@ -1,7 +1,20 @@
 import type { Component } from "../index";
 import { Markdown, Text } from "../index";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
-import type { RenderResultOptions, ToolActivityContext, ToolActivitySummary, ToolRenderer } from "./renderer";
+import type {
+	NativeToolHead,
+	NativeToolView,
+	RenderResultContextOptions,
+	RenderResultOptions,
+	ToolActivityContext,
+	ToolActivitySummary,
+	ToolRenderer,
+} from "./renderer";
+import type { TspSpan } from "@oh-my-pi/pi-wire";
+import { ansi, code as codeNode, compact, keyed, md, node, span, text } from "../native/describe";
+import type { NativeChild, NativeNode } from "../native/node";
+import { plainText } from "../native/spans";
+import { footnoteText, resultText } from "./native-view";
 import { renderAgentTreeRow } from "./agent-tree";
 import { truncateToVisualLines } from "../chrome/visual-truncate";
 import { getMarkdownTheme, type Theme } from "../theme/theme";
@@ -16,6 +29,7 @@ import {
 	JSON_TREE_MAX_LINES_EXPANDED,
 	JSON_TREE_SCALAR_LEN_COLLAPSED,
 	JSON_TREE_SCALAR_LEN_EXPANDED,
+	describeJsonTree,
 	renderJsonTreeLines,
 } from "./json-tree";
 import { formatStyledTruncationWarning, stripOutputNotice } from "./output-meta";
@@ -28,6 +42,7 @@ import {
 	formatTitle,
 	previewWindowRows,
 	replaceTabs,
+	sanitizeDisplayLines,
 	sanitizeDisplayWarning,
 	shortenPath,
 	truncateToWidth,
@@ -35,7 +50,7 @@ import {
 } from "../render/render-utils";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import type { OutputMeta } from "./output-meta";
-import type { ConfiguredThinkingLevel } from "../render/render-utils";
+import { type ConfiguredThinkingLevel, expandKeyHint } from "../render/render-utils";
 
 /** Runtime backend that an eval cell dispatches to. */
 export type EvalLanguage = "python" | "js";
@@ -135,7 +150,7 @@ function getRenderCells(args: EvalRenderArgs | undefined): EvalRenderCell[] {
 		const language = normalizeRenderLanguage(typeof cell.language === "string" ? cell.language : undefined);
 		out.push({
 			language,
-			code: formatEvalCodeForDisplay(cell.code ?? "", language),
+			code: formatEvalCodeForDisplay(sanitizeText(cell.code ?? ""), language),
 			title: typeof cell.title === "string" ? cell.title : undefined,
 		});
 	}
@@ -216,8 +231,11 @@ function renderAgentProgressEvents(
 
 		const status = agentEventStatus(event.status);
 
-		const currentTool = eventString(event.currentTool);
-		const lastIntent = eventString(event.lastIntent);
+		const rawCurrentTool = eventString(event.currentTool);
+		const currentTool = rawCurrentTool ? sanitizeDisplayWarning(rawCurrentTool) : undefined;
+		const rawLastIntent = eventString(event.lastIntent);
+		const lastIntent = rawLastIntent ? sanitizeDisplayWarning(rawLastIntent) : undefined;
+		const model = eventString(event.resolvedModelIdentity ?? event.model ?? event.resolvedModel);
 		const preview = status === "running" && !currentTool && !lastIntent ? eventString(event.taskPreview) : undefined;
 		const toolCount = eventNumber(event.toolCount);
 		lines.push(
@@ -228,11 +246,13 @@ function renderAgentProgressEvents(
 					prefix,
 					id: sanitizeText(eventString(event.id) ?? "agent").replace(/\s+/g, " "),
 					width,
-					model: eventString(event.resolvedModelIdentity ?? event.model ?? event.resolvedModel),
+					model: model ? sanitizeDisplayWarning(model) : undefined,
 					thinkingLevel: event.resolvedThinkingLevel,
 					advisor: event.advisor === true,
 					spinnerFrame,
-					preview: preview ? ` ${theme.fg("muted", truncateToWidth(replaceTabs(preview), 48))}` : undefined,
+					preview: preview
+						? ` ${theme.fg("muted", truncateToWidth(sanitizeDisplayWarning(preview), 48))}`
+						: undefined,
 					statusBadge:
 						status === "failed" || status === "aborted"
 							? ` ${formatBadge(t(status), "error", theme)}`
@@ -256,7 +276,7 @@ function renderAgentProgressEvents(
 			if (currentTool) {
 				let toolLine = `${cont}${theme.tree.hook} ${theme.fg("muted", currentTool)}`;
 				const detail = lastIntent ?? eventString(event.currentToolArgs);
-				if (detail) toolLine += `: ${theme.fg("dim", truncateToWidth(replaceTabs(detail), 48))}`;
+				if (detail) toolLine += `: ${theme.fg("dim", truncateToWidth(sanitizeDisplayWarning(detail), 48))}`;
 				lines.push(truncateToWidth(toolLine, width));
 			} else if (lastIntent) {
 				lines.push(
@@ -311,7 +331,7 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 	const parts: string[] = [];
 
 	if (data.error) {
-		return `${icon} ${theme.fg("warning", op)}: ${theme.fg("dim", String(data.error))}`;
+		return `${icon} ${theme.fg("warning", sanitizeDisplayWarning(op))}: ${theme.fg("dim", sanitizeDisplayWarning(String(data.error)))}`;
 	}
 
 	switch (op) {
@@ -423,8 +443,8 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 			}
 	}
 
-	const desc = parts.length > 0 ? parts.join(" · ") : "";
-	return `${icon} ${theme.fg("muted", op)}${desc ? ` ${theme.fg("dim", desc)}` : ""}`;
+	const desc = parts.length > 0 ? sanitizeDisplayWarning(parts.join(" · ")) : "";
+	return `${icon} ${theme.fg("muted", sanitizeDisplayWarning(op))}${desc ? ` ${theme.fg("dim", desc)}` : ""}`;
 }
 
 /** Format status event with expanded detail lines. */
@@ -437,7 +457,7 @@ function formatStatusEventExpanded(event: EvalStatusEvent, theme: Theme): string
 	const addItems = (items: unknown[], formatter: (item: unknown) => string, max = 5) => {
 		const arr = Array.isArray(items) ? items : [];
 		for (let i = 0; i < Math.min(arr.length, max); i++) {
-			lines.push(`   ${theme.fg("dim", formatter(arr[i]))}`);
+			lines.push(`   ${theme.fg("dim", sanitizeDisplayWarning(formatter(arr[i])))}`);
 		}
 		if (arr.length > max) {
 			lines.push(`   ${theme.fg("dim", t("… {count} more", { count: arr.length - max }))}`);
@@ -445,7 +465,7 @@ function formatStatusEventExpanded(event: EvalStatusEvent, theme: Theme): string
 	};
 
 	const addPreview = (preview: string, maxLines = 3) => {
-		const previewLines = cappedHeadLines(String(preview).split("\n"), maxLines);
+		const previewLines = cappedHeadLines(sanitizeDisplayLines(preview), maxLines);
 		for (const line of previewLines.lines) {
 			lines.push(`   ${theme.fg("toolOutput", truncateToWidth(replaceTabs(line), 80))}`);
 		}
@@ -532,7 +552,7 @@ function formatCellOutputLines(
 	theme: Theme,
 	width: number,
 ): { lines: readonly string[]; hiddenCount: number } {
-	const output = cell.output.trimEnd();
+	const output = sanitizeDisplayLines(cell.output).join("\n").trimEnd();
 	if (!output) {
 		return { lines: [], hiddenCount: 0 };
 	}
@@ -576,6 +596,190 @@ function formatCellOutputLines(
 		theme,
 	);
 	return { lines: formatted.lines, hiddenCount: formatted.hiddenCount };
+}
+
+/** Plain one-line summary of a status event: op plus its scalar fields. */
+function describeStatusEvent(event: EvalStatusEvent): NativeNode {
+	const spans: TspSpan[] = [span(sanitizeDisplayWarning(event.op), "accent")];
+	for (const key in event) {
+		if (key === "op" || key === "resolvedThinkingLevel") continue;
+		const value = event[key];
+		if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+			spans.push(span(` ${sanitizeDisplayWarning(key)}=`, "muted"), span(sanitizeDisplayWarning(String(value))));
+		}
+	}
+	return text(spans, { truncate: "end", role: "omp.tool.eval.status" });
+}
+
+/**
+ * The eval head (§7.3): a single cell's title as the verb (else "Eval"; with
+ * several cells each section carries its own title), a badge per language in
+ * first-use order, a `background` badge for a backgrounded job, and the cell
+ * count when there are several.
+ */
+function evalToolHead(
+	title: string | undefined,
+	languages: readonly EvalLanguage[],
+	cellCount: number,
+	details?: EvalToolDetails,
+): NativeToolHead {
+	const badges: { text: string; title?: string }[] = [...new Set(languages)].map(language => ({ text: language }));
+	if (details?.async?.state === "running") {
+		badges.push({
+			text: t("background"),
+			title: t("Backgrounded: {jobId}", { jobId: sanitizeDisplayWarning(details.async.jobId) }),
+		});
+	}
+	return {
+		title: (cellCount > 1 ? "" : sanitizeDisplayWarning(title ?? "")) || "Eval",
+		badges: badges.length > 0 ? badges : undefined,
+		meta: cellCount > 1 ? [t("{count} cell{s}", { count: cellCount, s: "s" })] : undefined,
+	};
+}
+
+/** Box-drawing `console.table` output split out of plain text: `text` runs and parsed tables, in order. */
+type EvalOutputPart =
+	| { readonly kind: "text"; readonly text: string }
+	| { readonly kind: "table"; readonly head: readonly string[]; readonly rows: readonly string[][] };
+
+/** The cells of a `│ a │ b │` row, trimmed; undefined when the line is not a table row. */
+function tableRowCells(line: string): string[] | undefined {
+	const plain = plainText(line).trim();
+	if (plain.length < 2 || !plain.startsWith("│") || !plain.endsWith("│")) return undefined;
+	return plain
+		.slice(1, -1)
+		.split("│")
+		.map(cell => cell.trim());
+}
+
+/**
+ * Split `console.table` blocks (`┌…┐` header `├…┤` rows `└…┘`, as Node/Bun
+ * print them) out of cell output so they render as a `table`; anything that
+ * does not parse as one stays text.
+ */
+function splitConsoleTables(output: string): EvalOutputPart[] {
+	const lines = output.split("\n");
+	const parts: EvalOutputPart[] = [];
+	let textStart = 0;
+	const flushText = (end: number): void => {
+		const chunk = lines
+			.slice(textStart, end)
+			.join("\n")
+			.replace(/^\n+|\s+$/g, "");
+		if (chunk.length > 0) parts.push({ kind: "text", text: chunk });
+	};
+	for (let i = 0; i < lines.length; i++) {
+		if (!plainText(lines[i]!).trimStart().startsWith("┌")) continue;
+		const head = tableRowCells(lines[i + 1] ?? "");
+		if (
+			!head ||
+			!plainText(lines[i + 2] ?? "")
+				.trimStart()
+				.startsWith("├")
+		)
+			continue;
+		const rows: string[][] = [];
+		let end = i + 3;
+		for (; end < lines.length; end++) {
+			const cells = tableRowCells(lines[end]!);
+			if (!cells) break;
+			rows.push(cells);
+		}
+		if (
+			!plainText(lines[end] ?? "")
+				.trimStart()
+				.startsWith("└")
+		)
+			continue;
+		if (rows.some(row => row.length !== head.length)) continue;
+		flushText(i);
+		parts.push({ kind: "table", head, rows });
+		i = end;
+		textStart = end + 1;
+	}
+	flushText(lines.length);
+	return parts;
+}
+
+/** One cell's output: markdown, else terminal text with any `console.table` blocks as tables. */
+function evalOutputNodes(output: string, markdown: boolean, running: boolean, error: boolean): NativeNode[] {
+	output = sanitizeDisplayLines(output).join("\n");
+	if (output.trim().length === 0) return [];
+	if (markdown && !error) return [md(output)];
+	const tone = error ? "error" : undefined;
+	return splitConsoleTables(output).map(part =>
+		part.kind === "text"
+			? ansi(part.text, { follow: running, tone, role: "omp.tool.eval.output" })
+			: node("table", {
+					// Node's index column header is noise in a real table.
+					cols: part.head.map((head, i) => ({ id: `c${i}`, head: head === "(index)" ? "" : head })),
+					rows: part.rows.map((cells, r) => ({
+						id: `r${r}`,
+						cells: Object.fromEntries(cells.map((cell, i) => [`c${i}`, cell])),
+					})),
+					role: "omp.tool.eval.table",
+				}),
+	);
+}
+
+/** Inputs of one eval cell section. */
+interface EvalCellSection {
+	readonly language: EvalLanguage;
+	readonly code: string;
+	readonly title?: string;
+	readonly status?: EvalCellResult["status"];
+	readonly durationMs?: number;
+	readonly output?: readonly NativeChild[];
+}
+
+/**
+ * A notebook cell with separate input and output gutters. Only multi-cell
+ * calls repeat titles; prompts show execution state, never invented counts.
+ */
+function evalCellSection(cell: EvalCellSection, index: number, total: number): NativeNode {
+	let head: TspSpan[] | undefined;
+	if (total > 1) {
+		head = [span(`${index + 1}/${total}`, "muted")];
+		const title = sanitizeDisplayWarning(cell.title ?? "");
+		if (title) head.push(span(` ${title}`, "toolTitle"));
+		if (cell.status === "error") head.push(span(` · ${t("failed")}`, "error"));
+		if (cell.durationMs !== undefined) head.push(span(` · ${(cell.durationMs / 1000).toFixed(2)}s`, "muted"));
+	}
+	const prompt = cell.status === "running" ? "In [*]:" : !cell.status || cell.status === "pending" ? "In [ ]:" : "In:";
+	return node(
+		"col",
+		{
+			role: "omp.tool.eval.cell",
+			tone: cell.status === "error" ? "error" : cell.status === "running" ? "pending" : undefined,
+		},
+		compact<NativeChild>([
+			head ? text(head, { role: "omp.tool.eval.caption" }) : undefined,
+			node(
+				"row",
+				{ role: "omp.tool.eval.input", align: "start" },
+				[
+					text(prompt, { role: "omp.tool.eval.prompt", wrap: "none" }),
+					keyed(
+						codeNode(sanitizeText(cell.code), { lang: languageForHighlighter(cell.language), numbers: false }),
+						"code",
+					),
+				],
+				"input",
+			),
+			cell.output?.length
+				? node(
+						"row",
+						{ role: "omp.tool.eval.result", align: "start" },
+						[
+							text("Out:", { role: "omp.tool.eval.prompt", wrap: "none" }),
+							node("col", { role: "omp.tool.eval.outputs" }, cell.output),
+						],
+						"output",
+					)
+				: undefined,
+		]),
+		`cell-${index}`,
+	);
 }
 
 /** Render eval code cells, structured display output, and progress events. */
@@ -625,7 +829,7 @@ export const evalToolRenderer = {
 							showLanguage: true,
 							index: i,
 							total: cells.length,
-							title: cell.title,
+							title: cell.title ? sanitizeDisplayWarning(cell.title) : undefined,
 							status: options.spinnerFrame !== undefined ? "running" : "pending",
 							spinnerFrame: options.spinnerFrame,
 							width,
@@ -664,7 +868,7 @@ export const evalToolRenderer = {
 			options.renderContext?.output ?? (result.content?.find(c => c.type === "text")?.text ?? "").trimEnd();
 		// Strip the LLM-facing notice (appended by wrappedExecute) before display;
 		// the styled `warningLine` below carries the same text in ⟨…⟩ form.
-		const output = stripOutputNotice(rawOutput, details?.meta).trimEnd();
+		const output = sanitizeDisplayLines(stripOutputNotice(rawOutput, details?.meta)).join("\n").trimEnd();
 
 		const jsonOutputs = details?.jsonOutputs ?? [];
 		const treeExpanded = options.renderContext?.expanded ?? options.expanded;
@@ -673,7 +877,12 @@ export const evalToolRenderer = {
 		const treeScalarLen = treeExpanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
 		const labelOutputs = jsonOutputs.length > 1;
 		const jsonLines = jsonOutputs.flatMap((value, index) => {
-			const tree = renderJsonTreeLines(value, uiTheme, treeDepth, treeLineCap, treeScalarLen);
+			const tree = renderJsonTreeLines(value, uiTheme, {
+				maxDepth: treeDepth,
+				maxLines: treeLineCap,
+				maxScalarLen: treeScalarLen,
+				sanitizeText,
+			});
 			const body = tree.truncated ? [...tree.lines, uiTheme.fg("dim", "…")] : tree.lines;
 			return labelOutputs ? [uiTheme.fg("dim", `display[${index + 1}]`), ...body] : body;
 		});
@@ -687,17 +896,25 @@ export const evalToolRenderer = {
 		if (details?.meta?.truncation || details?.meta?.artifactError) {
 			warningLine = formatStyledTruncationWarning(details.meta, uiTheme) ?? undefined;
 		}
-		const noticeLine = details?.notice ? uiTheme.fg("dim", wrapBrackets(details.notice, uiTheme)) : undefined;
+		const noticeLine = details?.notice
+			? uiTheme.fg("dim", wrapBrackets(sanitizeDisplayWarning(details.notice), uiTheme))
+			: undefined;
 		const asyncLine =
 			details?.async?.state === "running"
-				? uiTheme.fg("dim", wrapBrackets(t("Backgrounded: {jobId}", { jobId: details.async.jobId }), uiTheme))
+				? uiTheme.fg(
+						"dim",
+						wrapBrackets(
+							t("Backgrounded: {jobId}", { jobId: sanitizeDisplayWarning(details.async.jobId) }),
+							uiTheme,
+						),
+					)
 				: undefined;
 
 		const cellResults = details?.cells;
 		if (cellResults && cellResults.length > 0) {
 			const displayCells = cellResults.map(cell => {
 				const language = cell.language ?? details?.language ?? "python";
-				return { cell, code: formatEvalCodeForDisplay(cell.code, language), language };
+				return { cell, code: formatEvalCodeForDisplay(sanitizeText(cell.code), language), language };
 			});
 			let cached: { key: string; width: number; result: string[] } | undefined;
 
@@ -726,7 +943,10 @@ export const evalToolRenderer = {
 							outputLines.push(
 								uiTheme.fg(
 									"dim",
-									t("… {count} more lines (ctrl+o to expand)", { count: outputContent.hiddenCount }),
+									t("… {count} more lines ({key} to expand)", {
+										count: outputContent.hiddenCount,
+										key: expandKeyHint(),
+									}),
 								),
 							);
 						}
@@ -743,7 +963,7 @@ export const evalToolRenderer = {
 								showLanguage: true,
 								index: i,
 								total: cellResults.length,
-								title: cell.title,
+								title: cell.title ? sanitizeDisplayWarning(cell.title) : undefined,
 								status: cell.status,
 								spinnerFrame: options.spinnerFrame,
 								duration: cell.durationMs,
@@ -861,10 +1081,11 @@ export const evalToolRenderer = {
 					outputLines.push("");
 					const skippedLine = uiTheme.fg(
 						"dim",
-						t("… ({count} earlier lines, showing {shown} of {total}) (ctrl+o to expand)", {
+						t("… ({count} earlier lines, showing {shown} of {total}) ({key} to expand)", {
 							count: cachedSkipped,
 							shown: cachedLines.length,
 							total: cachedSkipped + cachedLines.length,
+							key: expandKeyHint(),
 						}),
 					);
 					outputLines.push(truncateToWidth(skippedLine, width));
@@ -896,6 +1117,105 @@ export const evalToolRenderer = {
 				cachedSkipped = undefined;
 				cachedPreviewLines = undefined;
 			},
+		};
+	},
+
+	describeCall(args: EvalRenderArgs, _options: RenderResultOptions): NativeToolView {
+		const cells = getRenderCells(args);
+		return {
+			tool: evalToolHead(
+				cells[0]?.title,
+				cells.map(cell => cell.language),
+				cells.length,
+			),
+			body: cells.map((cell, i) => evalCellSection(cell, i, cells.length)),
+			preview: { lines: EVAL_DEFAULT_PREVIEW_LINES },
+		};
+	},
+
+	describeResult(
+		result: { content: Array<{ type: string; text?: string }>; details?: EvalToolDetails; isError?: boolean },
+		options: RenderResultContextOptions & { renderContext?: EvalRenderContext },
+		args?: EvalRenderArgs,
+	): NativeToolView {
+		const details = result.details;
+		const isPartial = options.isPartial === true;
+		const previewLines = options.renderContext?.previewLines ?? EVAL_DEFAULT_PREVIEW_LINES;
+		const jsonNodes = (details?.jsonOutputs ?? []).map((value, index) =>
+			keyed(describeJsonTree(value, { hiddenRootKeys: [] }), `display-${index}`),
+		);
+		// A notice and truncation go to one quiet final line (a background job is a head badge).
+		const footer = footnoteText(compact([details?.notice]), details?.meta);
+		const cellResults = details?.cells;
+		let cells: NativeNode[];
+		let head: NativeToolHead;
+		if (cellResults && cellResults.length > 0) {
+			const languages = cellResults.map(cell => cell.language ?? details?.language ?? "python");
+			head = evalToolHead(cellResults[0]!.title, languages, cellResults.length, details);
+			cells = cellResults.map((cell, i) => {
+				const language = languages[i]!;
+				return evalCellSection(
+					{
+						language,
+						code: formatEvalCodeForDisplay(cell.code, language),
+						title: cell.title,
+						status: cell.status,
+						durationMs: cell.durationMs,
+						output: [
+							...evalOutputNodes(
+								cell.output,
+								cell.hasMarkdown === true,
+								cell.status === "running",
+								cell.status === "error",
+							),
+							...(cell.statusEvents ?? []).map(describeStatusEvent),
+							...(i === cellResults.length - 1 ? jsonNodes : []),
+						],
+					},
+					i,
+					cellResults.length,
+				);
+			});
+		} else {
+			// No per-cell results (older details): the call's cells, with the whole output under the last.
+			const argCells = getRenderCells(args);
+			const languages = details?.languages ?? (details?.language ? [details.language] : []);
+			head = evalToolHead(
+				argCells[0]?.title,
+				argCells.length > 0 ? argCells.map(cell => cell.language) : languages,
+				argCells.length,
+				details,
+			);
+			const rawOutput = options.renderContext?.output ?? resultText(result).trimEnd();
+			const output = [
+				...evalOutputNodes(
+					stripOutputNotice(rawOutput, details?.meta).trimEnd(),
+					false,
+					isPartial,
+					result.isError === true,
+				),
+				...(details?.statusEvents ?? []).map(describeStatusEvent),
+				...jsonNodes,
+			];
+			cells =
+				argCells.length > 0
+					? argCells.map((cell, i) =>
+							evalCellSection(
+								{
+									...cell,
+									status: isPartial ? "running" : result.isError ? "error" : "complete",
+									output: i === argCells.length - 1 ? output : undefined,
+								},
+								i,
+								argCells.length,
+							),
+						)
+					: output;
+		}
+		return {
+			tool: head,
+			body: compact<NativeChild>([...cells, footer]),
+			preview: { lines: previewLines },
 		};
 	},
 

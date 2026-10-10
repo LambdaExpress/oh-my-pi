@@ -13,6 +13,7 @@ import { FileSessionStorage } from "../src/session/session-storage";
 
 let tempRoot: string;
 let originalClaudeConfigDir: string | undefined;
+const loadedManagers: SessionManager[] = [];
 
 beforeEach(async () => {
 	tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-foreign-sessions-"));
@@ -27,8 +28,13 @@ afterEach(async () => {
 	} else {
 		process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
 	}
+	await Promise.all(loadedManagers.splice(0).map(manager => manager.close()));
 	await fs.rm(tempRoot, { recursive: true, force: true });
 });
+
+function encodedClaudeProject(cwd: string): string {
+	return cwd.replace(/[:/\\._]/g, "-");
+}
 
 async function writeJsonl(filePath: string, records: Record<string, unknown>[]): Promise<void> {
 	await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -39,7 +45,7 @@ async function createClaudeFixture(): Promise<{ info: ForeignSessionInfo; store:
 	const root = path.join(tempRoot, ".claude");
 	const cwd = path.join(tempRoot, "project-with-hyphen");
 	const id = "11111111-1111-4111-8111-111111111111";
-	const projectDirectory = cwd.replaceAll(path.sep, "-");
+	const projectDirectory = encodedClaudeProject(cwd);
 	const sessionPath = path.join(root, "projects", projectDirectory, `${id}.jsonl`);
 	await writeJsonl(path.join(root, "history.jsonl"), [
 		{ sessionId: id, timestamp: 1_767_225_600_000, display: "First prompt", project: cwd },
@@ -98,7 +104,7 @@ describe("ClaudeSessionStore", () => {
 		const cwd = path.join(tempRoot, "my-project.dir");
 		const id = "33333333-3333-4333-8333-333333333333";
 		// No history entry, and a directory name whose "-" separators are ambiguous.
-		await writeJsonl(path.join(root, "projects", cwd.replace(/[/\\._]/g, "-"), `${id}.jsonl`), [
+		await writeJsonl(path.join(root, "projects", encodedClaudeProject(cwd), `${id}.jsonl`), [
 			{ type: "file-history-snapshot", timestamp: "2026-01-01T00:00:00.000Z" },
 			{
 				type: "user",
@@ -116,8 +122,8 @@ describe("ClaudeSessionStore", () => {
 
 	it("bounds cwd discovery to the transcript prefix before using the encoded fallback", async () => {
 		const root = path.join(tempRoot, ".claude");
-		const cwd = path.join(tempRoot, "late-project.dir");
-		const encoded = cwd.replace(/[/\\._]/g, "-");
+		const cwd = "/work/late-project.dir";
+		const encoded = encodedClaudeProject(cwd);
 		const id = "55555555-5555-4555-8555-555555555555";
 		await writeJsonl(path.join(root, "projects", encoded, `${id}.jsonl`), [
 			{ type: "file-history-snapshot", snapshot: "x".repeat(128 * 1024) },
@@ -135,7 +141,7 @@ describe("ClaudeSessionStore", () => {
 		await writeJsonl(path.join(root, "history.jsonl"), [
 			{ sessionId: id, timestamp: 1_767_225_600_000, display: ".", project: indexedCwd },
 		]);
-		await writeJsonl(path.join(root, "projects", indexedCwd.replaceAll(path.sep, "-"), `${id}.jsonl`), [
+		await writeJsonl(path.join(root, "projects", encodedClaudeProject(indexedCwd), `${id}.jsonl`), [
 			{
 				type: "user",
 				uuid: "u",
@@ -157,7 +163,7 @@ describe("ClaudeSessionStore", () => {
 		await writeJsonl(path.join(root, "history.jsonl"), [
 			{ sessionId: id, timestamp: 1_767_225_600_000, display: ".", project: cwd },
 		]);
-		await writeJsonl(path.join(root, "projects", cwd.replaceAll(path.sep, "-"), `${id}.jsonl`), [
+		await writeJsonl(path.join(root, "projects", encodedClaudeProject(cwd), `${id}.jsonl`), [
 			{
 				type: "user",
 				uuid: "u",
@@ -188,6 +194,7 @@ describe("ClaudeSessionStore", () => {
 		const info = (await store.list())[0];
 		if (!info) throw new Error("Overloaded fixture was not listed");
 		const manager = await store.load(info);
+		loadedManagers.push(manager);
 
 		const assistant = manager.getEntries().find(e => e.type === "message" && e.message.role === "assistant");
 		if (assistant?.type !== "message" || assistant.message.role !== "assistant") {
@@ -204,6 +211,7 @@ describe("ClaudeSessionStore", () => {
 		expect(info.messageCount).toBe(2);
 		expect(info.cwd).toBe(path.join(tempRoot, "project-with-hyphen"));
 		const manager = await store.load(info);
+		loadedManagers.push(manager);
 		expect(manager.getSessionFile()).toBeUndefined();
 		expect(manager.getSessionName()).toBe("Imported Claude");
 		const entries = manager.getEntries();
@@ -232,7 +240,7 @@ describe("ClaudeSessionStore", () => {
 		const root = path.join(tempRoot, ".claude");
 		const cwd = path.join(tempRoot, "legacy");
 		const id = "22222222-2222-4222-8222-222222222222";
-		const sessionPath = path.join(root, ".projects", cwd.replaceAll(path.sep, "-"), `${id}.jsonl`);
+		const sessionPath = path.join(root, ".projects", encodedClaudeProject(cwd), `${id}.jsonl`);
 		await writeJsonl(path.join(root, "history.jsonl"), [
 			{ session_id: id, ts: 1_735_689_600_000, text: "Legacy prompt" },
 		]);
@@ -258,8 +266,9 @@ describe("ClaudeSessionStore", () => {
 		const root = path.join(tempRoot, "relocated-claude");
 		const cwd = path.join(tempRoot, "project-with-hyphen");
 		const id = "22222222-2222-4222-8222-333333333333";
-		const encoded = cwd.replaceAll(path.sep, "-");
+		const encoded = encodedClaudeProject(cwd);
 		process.env.CLAUDE_CONFIG_DIR = root;
+		await fs.mkdir(root, { recursive: true });
 		await Bun.write(path.join(root, ".claude.json"), JSON.stringify({ projects: { [cwd]: {} } }));
 		await writeJsonl(path.join(root, "projects", encoded, `${id}.jsonl`), [
 			{
@@ -379,6 +388,7 @@ describe("CodexSessionStore", () => {
 		if (!info) throw new Error("Codex fixture was not listed");
 
 		const manager = await store.load(info);
+		loadedManagers.push(manager);
 
 		expect(info.title).toBe("Legacy Codex");
 		expect(manager.getSessionFile()).toBeUndefined();

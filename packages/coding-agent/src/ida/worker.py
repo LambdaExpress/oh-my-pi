@@ -172,17 +172,45 @@ def asm(t):
     return _text(_asm_lines(func(t)))
 
 
+def _decompiler_unavailable(architecture):
+    processor = architecture or "unknown"
+    if processor.lower() == "cli":
+        return (
+            f"当前 Hex-Rays 不支持此 .NET CLI/IL 处理器（{processor}）的托管反编译；"
+            "请使用 ILSpy 或 dnSpy 获取托管源码"
+        )
+    return f"处理器 {processor} 没有可用的兼容 Hex-Rays 反编译器；请安装或启用匹配的反编译器"
+
+
 def pseudocode(t):
     """Hex-Rays pseudocode of the function; falls back to disassembly."""
     f = func(t)
     header = f"// {ida_funcs.get_func_name(f.start_ea)} @ 0x{f.start_ea:x}-0x{f.end_ea:x}"
+    architecture = _db().architecture
     try:
-        body = _db().pseudocode.decompile(f).to_text()
+        if not ida_hexrays.init_hexrays_plugin():
+            raise RuntimeError(_decompiler_unavailable(architecture))
+        # IDAPython's second argument is hexrays_failure_t, not the decompilation flags.
+        failure = ida_hexrays.hexrays_failure_t()
+        cfunc = ida_hexrays.decompile_func(f, failure, 0)
+        if not cfunc:
+            if failure.code == ida_hexrays.MERR_CANCELED:
+                raise KeyboardInterrupt()
+            if failure.code == ida_hexrays.MERR_BADARCH:
+                raise RuntimeError(_decompiler_unavailable(architecture))
+            reason = failure.desc() or "反编译器未返回伪代码"
+            if failure.errea != ida_idaapi.BADADDR:
+                reason = f"{reason} @ 0x{failure.errea:x}"
+            raise RuntimeError(reason)
+        body = [ida_lines.tag_remove(line.line) for line in cfunc.get_pseudocode()]
+        return _text([header, *body])
     except Exception as e:
+        reason = str(e)
+    finally:
+        # Kernel/decompiler initialization can reset the handler on success, failure or interruption.
         _arm_sigint()
-        return _text([header, f"// decompilation failed: {e}; showing disassembly", *_asm_lines(f)])
-    _arm_sigint()
-    return _text([header, *body])
+    label = "IL 反汇编" if (architecture or "").lower() == "cli" else "反汇编"
+    return _text([header, f"// 无法生成伪代码：{reason}；以下为{label}", *_asm_lines(f)])
 
 
 # Ordinary-flow xrefs are filtered here: ida_domain 0.5.0's XrefsFlags.NOFLOW alone maps to XREF_ALL.
@@ -658,14 +686,21 @@ def _error(e):
 
 def _send(frame):
     data = json.dumps(frame, ensure_ascii=False, default=str) + "\n"
-    # Defer SIGINT while writing so a late interrupt cannot truncate a frame; it is
-    # delivered after unblocking and swallowed by the idle loop.
-    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+    # Protect complete protocol frames from late interrupts. POSIX defers SIGINT until
+    # the idle loop; Windows has no signal mask, so ignore it only during the write.
+    sigmask = getattr(signal, "pthread_sigmask", None)
+    if sigmask is not None:
+        previous_mask = sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+    else:
+        previous_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
         _proto.write(data)
         _proto.flush()
     finally:
-        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
+        if sigmask is not None:
+            sigmask(signal.SIG_SETMASK, previous_mask)
+        else:
+            signal.signal(signal.SIGINT, previous_handler)
 
 
 def _close_and_exit(save):

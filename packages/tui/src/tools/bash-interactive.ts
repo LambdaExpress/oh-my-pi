@@ -5,7 +5,8 @@ import { t } from "../i18n";
 import { extractPrintableText, matchesKey, parseKey, parseKittySequence } from "../keys";
 import { padding, truncateToWidth, visibleWidth } from "../utils";
 import type { Theme } from "../theme/theme";
-import { formatStatusIcon, replaceTabs } from "../render/render-utils";
+import { formatKeyHint } from "../app-keybindings";
+import { formatStatusIcon, sanitizeDisplayWarning } from "../render/render-utils";
 import { readTerminalRows, styleTerminalRow } from "./terminal-output";
 
 /** Resize-only backend exposed by an interactive PTY controller. */
@@ -263,12 +264,12 @@ export class BashInteractiveOverlayComponent implements Component {
 		const prefix = `${statusIcon} ${title} `;
 		const suffix = ` ${statusBadge}`;
 		const available = Math.max(1, innerWidth - visibleWidth(prefix) - visibleWidth(suffix));
-		const cmd = truncateToWidth(this.#uiTheme.fg("muted", replaceTabs(this.#command)), available);
+		const cmd = truncateToWidth(this.#uiTheme.fg("muted", sanitizeDisplayWarning(this.#command)), available);
 		const header = truncateToWidth(`${prefix}${cmd}${suffix}`, innerWidth);
 		const footer =
 			this.#state === "running"
 				? truncateToWidth(
-						`${this.#uiTheme.fg("warning", "esc")} ${this.#uiTheme.fg("dim", t("force-kill"))} ${this.#uiTheme.fg("dim", t("· input forwarded to PTY"))}`,
+						`${this.#uiTheme.fg("warning", formatKeyHint("escape"))} ${this.#uiTheme.fg("dim", t("force-kill"))} ${this.#uiTheme.fg("dim", t("· input forwarded to PTY"))}`,
 						innerWidth,
 					)
 				: truncateToWidth(this.#uiTheme.fg("dim", t("session finished")), innerWidth);

@@ -11,7 +11,6 @@ import {
 	readTranscriptShape,
 } from "@oh-my-pi/pi-tui/chat/read-tool-group";
 import * as themeModule from "@oh-my-pi/pi-tui/theme";
-import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { cfgTuiHyperlinks } from "@oh-my-pi/pi-coding-agent/modes/settings";
 import { setLocale } from "../src/i18n";
 
@@ -51,9 +50,7 @@ describe("ReadToolGroupComponent", () => {
 		resetSettingsForTest();
 	});
 
-	it("keeps inline read previews disabled by default", () => {
-		expect(cfgReadToolResultPreview.default).toBe(false);
-
+	it("renders a settled read as a summary when inline previews are disabled", () => {
 		const component = new ReadToolGroupComponent();
 		const examplePath = path.resolve("/tmp/example.ts");
 		component.updateArgs({ path: examplePath }, "read-0");
@@ -303,7 +300,7 @@ describe("ReadToolGroupComponent", () => {
 		expect(highlightedInput).toBe("line 1\nline 2\nline 3");
 		expect(rendered).toContain("line 1");
 		expect(rendered).not.toContain("line 4");
-		expect(rendered.toLowerCase()).toContain("ctrl+o");
+		expect(rendered).toContain("2 more lines");
 	});
 
 	it("collapses one long logical line by visual rows and reveals its tail when expanded", () => {

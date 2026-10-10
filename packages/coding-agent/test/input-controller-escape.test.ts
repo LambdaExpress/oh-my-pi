@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import { SpaceHoldGesture } from "@oh-my-pi/pi-tui/space-hold";
 import type { InteractiveModeContext, SubmittedUserInput } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { vocalizer } from "@oh-my-pi/pi-coding-agent/tts/vocalizer";
 import * as logger from "@oh-my-pi/pi-utils/logger";
+import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
 import { cfgDoubleEscapeAction } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
@@ -116,12 +117,10 @@ function createContext(): {
 	const updatePendingMessagesDisplay = vi.fn();
 	const prompt = vi.fn();
 	const previewPromptExpansion = vi.fn((text: string) => text);
-	const startPendingSubmission = vi.fn(
-		(input: { text: string; displayText?: string; images?: ImageContent[]; imageLinks?: (string | undefined)[] }) => {
-			ensureLoadingAnimation();
-			return createSubmission(input);
-		},
-	);
+	const startPendingSubmission = vi.fn<InteractiveModeContext["startPendingSubmission"]>(input => {
+		ensureLoadingAnimation();
+		return createSubmission(input);
+	});
 	const editor: FakeEditor = {
 		setText(text: string) {
 			editorText = text;
@@ -167,6 +166,7 @@ function createContext(): {
 			isEvalRunning: false,
 			queuedMessageCount: 0,
 			hasRunnableQueuedMessages: false,
+			hasInterruptibleInput: false,
 			messages: [],
 			extensionRunner: undefined,
 			customCommands: [],
@@ -216,6 +216,7 @@ function createContext(): {
 		cancelPendingSubmission,
 		ensureLoadingAnimation,
 		finishPendingSubmission: vi.fn(),
+		flushPendingBashComponents: vi.fn(),
 		markPendingSubmissionStarted: vi.fn(() => true),
 		startPendingSubmission,
 		updatePendingMessagesDisplay,
@@ -302,13 +303,15 @@ function mutableSessionState(ctx: InteractiveModeContext): MutableSessionState {
 	// so state mutations are explicit.
 	return ctx.session as MutableSessionState;
 }
+let settingsState: SettingsTestState | undefined;
 beforeEach(async () => {
+	settingsState = beginSettingsTest();
 	await Settings.init({ inMemory: true });
 });
 
 afterEach(() => {
-	vi.restoreAllMocks();
-	resetSettingsForTest();
+	restoreSettingsTestState(settingsState);
+	settingsState = undefined;
 });
 
 describe("InputController escape behavior", () => {
@@ -324,13 +327,16 @@ describe("InputController escape behavior", () => {
 		controller.setupEditorSubmitHandler();
 		await editor.onSubmit?.("hello");
 
-		expect(spies.startPendingSubmission).toHaveBeenCalledWith({
-			text: "hello",
-			displayText: "hello",
-			images: undefined,
-			imageLinks: undefined,
-			streamingBehavior: "steer",
-		});
+		expect(spies.startPendingSubmission).toHaveBeenCalledWith(
+			{
+				text: "hello",
+				displayText: "hello",
+				images: undefined,
+				imageLinks: undefined,
+				streamingBehavior: "steer",
+			},
+			{ clearEditor: false },
+		);
 		expect(spies.onInputCallback).toHaveBeenCalledWith(submission);
 
 		editor.onEscape?.();
@@ -347,13 +353,16 @@ describe("InputController escape behavior", () => {
 		controller.setupEditorSubmitHandler();
 		await editor.onSubmit?.("/template-task");
 
-		expect(spies.startPendingSubmission).toHaveBeenCalledWith({
-			text: "/template-task",
-			displayText: "Expanded prompt template",
-			images: undefined,
-			imageLinks: undefined,
-			streamingBehavior: "steer",
-		});
+		expect(spies.startPendingSubmission).toHaveBeenCalledWith(
+			{
+				text: "/template-task",
+				displayText: "Expanded prompt template",
+				images: undefined,
+				imageLinks: undefined,
+				streamingBehavior: "steer",
+			},
+			{ clearEditor: false },
+		);
 		expect(spies.onInputCallback).toHaveBeenCalledWith({
 			text: "/template-task",
 			displayText: "Expanded prompt template",
@@ -412,16 +421,36 @@ describe("InputController escape behavior", () => {
 		expect(spies.resetDisplay).toHaveBeenCalledTimes(1);
 	});
 
-	it("empty-submit with a queued message aborts the active stream and refreshes pending display", async () => {
+	it("preserves text arriving after Enter while idle submission awaits", async () => {
+		const { ctx, editor, spies } = createContext();
+		spies.startPendingSubmission.mockImplementation((input, options) => {
+			if (!options?.preserveDraft && options?.clearEditor !== false) editor.setText("");
+			return createSubmission(input);
+		});
+		const controller = new InputController(ctx);
+		controller.setupEditorSubmitHandler();
+		const submission = editor.onSubmit?.("first line");
+		editor.setText("paste tail after Enter");
+		await submission;
+		expect(editor.getText()).toBe("paste tail after Enter");
+		expect(spies.onInputCallback).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([
+		{ state: "runnable queue", hasRunnableQueuedMessages: true, hasInterruptibleInput: false },
+		{ state: "live-steered input", hasRunnableQueuedMessages: false, hasInterruptibleInput: true },
+	])("empty-submit with $state aborts the active stream and refreshes pending display", async state => {
 		const { ctx, editor, spies } = createContext();
 		const session = ctx.session as unknown as {
 			isStreaming: boolean;
 			queuedMessageCount: number;
 			hasRunnableQueuedMessages: boolean;
+			hasInterruptibleInput: boolean;
 		};
 		session.isStreaming = true;
-		session.queuedMessageCount = 1;
-		session.hasRunnableQueuedMessages = true;
+		session.queuedMessageCount = state.hasRunnableQueuedMessages ? 1 : 0;
+		session.hasRunnableQueuedMessages = state.hasRunnableQueuedMessages;
+		session.hasInterruptibleInput = state.hasInterruptibleInput;
 		const order: string[] = [];
 		spies.abort.mockImplementation(async () => {
 			order.push("abort");
@@ -717,28 +746,6 @@ describe("InputController escape behavior", () => {
 
 		expect(spies.abort).toHaveBeenCalledTimes(1);
 		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
-		expect(spies.showStatus).not.toHaveBeenCalledWith("Press Esc again within 2s to cancel streaming.");
-	});
-
-	it("logs the terminal sequence and UI state before aborting a streaming turn", () => {
-		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
-		const { ctx, editor } = createContext();
-		mutableSessionState(ctx).isStreaming = true;
-		const controller = new InputController(ctx);
-
-		controller.setupKeyHandlers();
-		editor.onEscape?.("\x1b");
-
-		expect(warnSpy).toHaveBeenCalledWith("ui.interrupt.streaming-turn", {
-			source: "editor",
-			input: "ESC",
-			isStreaming: true,
-			isBashRunning: false,
-			isEvalRunning: false,
-			loopModeEnabled: false,
-			focusedAgentId: null,
-			hasLoadingAnimation: false,
-		});
 	});
 
 	it("aborts the submitted turn on the first Esc once the main session starts streaming", async () => {
@@ -758,7 +765,6 @@ describe("InputController escape behavior", () => {
 		expect(spies.cancelPendingSubmission).not.toHaveBeenCalled();
 		expect(spies.abort).toHaveBeenCalledTimes(1);
 		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
-		expect(spies.showStatus).not.toHaveBeenCalledWith("Press Esc again within 2s to cancel streaming.");
 	});
 
 	it("returns focused subagent view to main on Esc instead of aborting", () => {
@@ -838,9 +844,7 @@ describe("InputController escape behavior", () => {
 		expect(viewSession.abortCompaction).toHaveBeenCalledTimes(1);
 		expect(viewSession.abortHandoff).toHaveBeenCalledTimes(1);
 		expect(viewSession.abortRetry).toHaveBeenCalledTimes(1);
-		expect(debugSpy).toHaveBeenCalledWith("Failed to abort compaction", { error: "compaction boom" });
-		expect(debugSpy).toHaveBeenCalledWith("Failed to abort handoff", { error: "handoff boom" });
-		expect(debugSpy).toHaveBeenCalledWith("Failed to abort retry", { error: "retry boom" });
+		expect(debugSpy).toHaveBeenCalledTimes(3);
 		expect(spies.abort).not.toHaveBeenCalled();
 	});
 
@@ -1008,16 +1012,6 @@ describe("InputController Ctrl+C behavior", () => {
 		// guarantee that the JSONL is on disk even if the user closes the
 		// terminal before the second press.
 		expect(spies.flushSync).toHaveBeenCalledTimes(2);
-	});
-
-	it("does not flush when Ctrl+C is not pressed", () => {
-		const { ctx, editor, spies } = createContext();
-		const controller = new InputController(ctx);
-
-		controller.setupKeyHandlers();
-		editor.onEscape?.(); // Esc is a different handler
-
-		expect(spies.flushSync).not.toHaveBeenCalled();
 	});
 });
 

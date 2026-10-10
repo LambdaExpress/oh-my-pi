@@ -16,7 +16,7 @@
  *   *directory* alone does NOT block it (verified empirically) — only a
  *   locked *file* does.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -30,10 +30,11 @@ import type {
 	ExtensionFactory,
 	ExtensionRunner,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
-import { type CreateAgentSessionOptions, createAgentSession, discoverAuthStorage } from "@oh-my-pi/pi-coding-agent/sdk";
+import { type CreateAgentSessionOptions, createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { FileWriteFallbackRequest } from "@oh-my-pi/pi-coding-agent/tools/file-write-fallback";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 /**
  * Drives `ExtensionRunner.initialize` with no-op stubs, mirroring what a mode
@@ -85,7 +86,6 @@ describe("registerFileWriteFallback end-to-end (real extension, real session)", 
 	const tempDirs: string[] = [];
 	const lockedDirs: string[] = [];
 	let modelRegistry!: ModelRegistry;
-	let registryAuthDir: string;
 
 	const makeTempDir = (): string => {
 		const created = path.join(os.tmpdir(), `pi-file-write-fallback-e2e-${Snowflake.next()}`);
@@ -130,14 +130,8 @@ describe("registerFileWriteFallback end-to-end (real extension, real session)", 
 		workspaceTree: { rootPath: tempDir, rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] },
 	});
 
-	beforeAll(async () => {
-		registryAuthDir = path.join(os.tmpdir(), `pi-file-write-fallback-e2e-auth-${Snowflake.next()}`);
-		fs.mkdirSync(registryAuthDir, { recursive: true });
-		modelRegistry = new ModelRegistry(await discoverAuthStorage(registryAuthDir));
-	});
-
-	afterAll(() => {
-		removeSyncWithRetries(registryAuthDir);
+	beforeEach(() => {
+		modelRegistry = new ModelRegistry(createInMemoryAuthStorage());
 	});
 
 	// Restore every mode this file tightened BEFORE removing the trees. A test that
@@ -146,6 +140,7 @@ describe("registerFileWriteFallback end-to-end (real extension, real session)", 
 	// EACCES, aborting this loop after `splice(0)` already emptied the list, which
 	// strands every remaining temp dir for the rest of the run.
 	afterEach(() => {
+		modelRegistry.authStorage.close();
 		for (const dir of lockedDirs.splice(0)) {
 			try {
 				fs.chmodSync(dir, 0o700);

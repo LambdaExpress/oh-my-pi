@@ -3,14 +3,24 @@ import { parseStreamingJson } from "@oh-my-pi/pi-utils";
 import { type Component, Container, Text } from "../index";
 import { t } from "../i18n";
 import type { Theme } from "../theme/theme";
-import { replaceTabs, sanitizeDisplayWarning } from "../render/render-utils";
-import type { RenderResultOptions, ToolActivityContext, ToolActivitySummary, ToolRenderer } from "./renderer";
-import { renderDefaultToolExecution } from "./default-renderer";
+import { sanitizeDisplayLines, sanitizeDisplayWarning } from "../render/render-utils";
+import type {
+	NativeToolView,
+	RenderResultOptions,
+	ToolActivityContext,
+	ToolActivitySummary,
+	ToolRenderer,
+	ToolRenderResult,
+} from "./renderer";
+import { describeDefaultToolExecution, renderDefaultToolExecution } from "./default-renderer";
+import { text } from "../native/describe";
 import { parseMCPToolName } from "./mcp";
 
 /** Mounted device display callbacks, independent of tool execution state. */
 export interface XdevMountedRenderer {
 	label?: string;
+	describeCall?: ToolRenderer["describeCall"];
+	describeResult?: ToolRenderer["describeResult"];
 	renderCall?(...args: Parameters<ToolRenderer["renderCall"]>): unknown;
 	renderResult?(...args: Parameters<ToolRenderer["renderResult"]>): unknown;
 	activitySummary?: ToolRenderer["activitySummary"];
@@ -79,10 +89,10 @@ function resolveDeviceRenderer(
 
 /** Human label for a device write: mounted tool label, else `server/tool` for MCP names. */
 function displayDeviceLabel(name: string, mounted?: { label?: string }): string {
-	if (mounted?.label) return mounted.label;
+	if (mounted?.label) return sanitizeDisplayWarning(mounted.label);
 	const parsed = parseMCPToolName(name);
-	if (parsed) return `${parsed.serverName}/${parsed.toolName}`;
-	return name;
+	if (parsed) return sanitizeDisplayWarning(`${parsed.serverName}/${parsed.toolName}`);
+	return sanitizeDisplayWarning(name);
 }
 /** Device-write content that requests docs instead of executing: empty, `?`, or `help`. */
 const HELP_CONTENT_RE = /^\s*(\?|help)?\s*$/i;
@@ -239,7 +249,82 @@ export function renderXdevCall(
 		const rendered = renderer.renderCall(args, options, theme);
 		return isComponent(rendered) ? rendered : undefined;
 	}
-	return renderDefaultToolExecution({ label: mounted?.label ?? name, args, options }, theme);
+	return renderDefaultToolExecution({ label: displayDeviceLabel(name, mounted), args, options }, theme);
+}
+
+/** Native form of {@link resolveDeviceRenderer}: the first renderer that can describe. */
+function resolveDeviceDescriber(
+	name: string,
+	mounted: XdevMountedRenderer | undefined,
+): XdevMountedRenderer | undefined {
+	if (mounted && (mounted.describeCall || mounted.describeResult)) return mounted;
+	return rendererLookup?.(name);
+}
+
+/** TSP call view for an `xd://` write: queued card until execution, then the device renderer's own view. */
+export function describeXdevCall(
+	name: string,
+	content: unknown,
+	options: RenderResultOptions,
+	resolveMounted?: (name: string) => XdevMountedRenderer | undefined,
+): NativeToolView | undefined {
+	const mounted = resolveMounted?.(name);
+	const args = decodeInnerArgs(content);
+	const renderer = resolveDeviceDescriber(name, mounted);
+	if (!options.executionStarted && !renderer?.renderCallBeforeExecution) {
+		return describeDefaultToolExecution({
+			label: t("queued {label}", { label: displayDeviceLabel(name, mounted) }),
+			args: displayDeviceArgs(args),
+			options: { ...options, isPartial: true, spinnerFrame: undefined },
+		});
+	}
+	if (renderer?.describeCall) return renderer.describeCall(args, options);
+	return describeDefaultToolExecution({ label: displayDeviceLabel(name, mounted), args, options });
+}
+
+/** Sanitize transport text without discarding non-text blocks or the device's metadata. */
+function deviceResultContent(content: ToolRenderResult["content"]): ToolRenderResult["content"] {
+	return content.map(block =>
+		block.type === "text" && typeof block.text === "string"
+			? { ...block, text: sanitizeDisplayLines(block.text).join("\n") }
+			: block,
+	);
+}
+
+/** TSP result view for an `xd://` dispatch, forwarded to the device renderer. */
+export function describeXdevResult(
+	dispatch: XdevRenderDispatch,
+	result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
+	options: RenderResultOptions,
+	resolveMounted?: (name: string) => XdevMountedRenderer | undefined,
+): NativeToolView | undefined {
+	const content = deviceResultContent(result.content);
+	const output = content
+		.map(block => (block.type === "text" ? block.text : ""))
+		.filter(Boolean)
+		.join("\n");
+	if (dispatch.mode === "help") return output ? { body: [text(output, { wrap: "word" })] } : undefined;
+	const mounted = resolveMounted?.(dispatch.tool);
+	const renderer = resolveDeviceDescriber(dispatch.tool, mounted);
+	if (renderer?.describeResult) {
+		const innerResult = { content, details: dispatch.inner, isError: result.isError };
+		const view = renderer.describeResult(innerResult, options, dispatch.args ?? {});
+		const restoreAbortedCall = dispatch.aborted === true && view !== undefined && !view.tool && !view.head;
+		if (!view || !renderer.describeCall || (renderer.mergeCallAndResult && !restoreAbortedCall)) return view;
+		const call = renderer.describeCall(dispatch.args ?? {}, { ...options, isPartial: false });
+		return {
+			...view,
+			tool: view.tool ?? call?.tool,
+			head: view.head ?? call?.head,
+			body: [...(call?.body ?? []), ...(view.body ?? [])],
+		};
+	}
+	return describeDefaultToolExecution({
+		label: displayDeviceLabel(dispatch.tool, mounted),
+		args: dispatch.args ?? {},
+		result: { output, isError: result.isError },
+		options,
+	});
 }
 
 /** Forward an `xd://` dispatch result to the mounted tool's renderer. */
@@ -250,16 +335,17 @@ export function renderXdevResult(
 	theme: Theme,
 	resolveMounted?: (name: string) => XdevMountedRenderer | undefined,
 ): Component | undefined {
-	const text = result.content
+	const content = deviceResultContent(result.content);
+	const output = content
 		.map(block => (block.type === "text" ? block.text : ""))
 		.filter(Boolean)
 		.join("\n");
 	if (dispatch.mode === "help") {
-		return text ? new Text(theme.fg("toolOutput", replaceTabs(text)), 0, 0) : undefined;
+		return output ? new Text(theme.fg("toolOutput", output), 0, 0) : undefined;
 	}
 	const mounted = resolveMounted?.(dispatch.tool);
 	const renderer = resolveDeviceRenderer(dispatch.tool, mounted);
-	const innerResult = { content: result.content, details: dispatch.inner, isError: result.isError };
+	const innerResult = { content, details: dispatch.inner, isError: result.isError };
 	if (renderer?.renderResult) {
 		const parts: Component[] = [];
 		const rendered = renderer.renderResult(innerResult, options, theme, dispatch.args ?? {});
@@ -285,9 +371,9 @@ export function renderXdevResult(
 	}
 	return renderDefaultToolExecution(
 		{
-			label: mounted?.label ?? dispatch.tool,
+			label: displayDeviceLabel(dispatch.tool, mounted),
 			args: dispatch.args ?? {},
-			result: { output: text, isError: result.isError },
+			result: { output, isError: result.isError },
 			options,
 		},
 		theme,

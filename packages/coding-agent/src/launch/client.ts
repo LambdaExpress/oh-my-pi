@@ -44,11 +44,10 @@ export interface DaemonBrokerClientOptions {
 	idleGraceMs?: number;
 	/**
 	 * Spawn the broker outside the caller's process group/job so it outlives the
-	 * process that happened to start it. Machine-global scopes are leased by every
-	 * omp process on the host, so their broker must not die with its spawner: a
-	 * Windows job object kills a non-detached child (and every daemon it manages)
-	 * on that exit, tearing the shared singleton down under the remaining
-	 * consumers. POSIX spawns every broker detached already.
+	 * process that happened to start it. Shared project and machine-global brokers
+	 * must not die with their spawner: Windows job objects kill non-detached
+	 * children (and their managed daemons) on that exit, tearing the shared broker
+	 * down under remaining consumers. POSIX spawns every broker detached already.
 	 */
 	outliveSpawner?: boolean;
 }
@@ -76,10 +75,13 @@ export class DaemonBrokerRejectedError extends Error {}
 async function readOrCreateToken(runtimeDir: string): Promise<string> {
 	await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
 	const tokenPath = path.join(runtimeDir, TOKEN_FILE);
-	const tokenFile = Bun.file(tokenPath);
 	for (let attempt = 0; attempt < 100; attempt++) {
 		try {
-			const token = (await tokenFile.text()).trim();
+			// node:fs, not Bun.file().text(): on Windows (Bun 1.4.2) a Bun.file
+			// read that rejects with ENOENT holds no event-loop ref, so the loop
+			// drains mid-await — `omp --smoke-test` exited 1 via the unsettled-entry
+			// guard, and a bare script silently stops at that await.
+			const token = (await fs.readFile(tokenPath, "utf8")).trim();
 			if (token.length > 0) return token;
 		} catch (error) {
 			if (!isEnoent(error)) throw error;
@@ -497,7 +499,9 @@ export async function createDaemonBrokerClient(
 /** Get the process-shared daemon broker client for one canonical project directory. */
 export async function daemonClientForProject(projectDir: string): Promise<DaemonBrokerClient> {
 	const canonical = await canonicalProjectDir(projectDir);
-	return sharedDaemonClient(`project:${canonical}`, () => createDaemonBrokerClient(canonical));
+	return sharedDaemonClient(`project:${canonical}`, () =>
+		createDaemonBrokerClient(canonical, { outliveSpawner: true }),
+	);
 }
 
 /** Get the process-shared client that leases one profile-independent, machine-global daemon broker. */

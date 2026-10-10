@@ -158,7 +158,7 @@ fn parse_with_options(
 				index += 1;
 			}
 			if body_start == index {
-				if streaming {
+				if streaming || rename.is_some() {
 					output.push(ApplyPatchEntry {
 						path,
 						op: Operation::Update,

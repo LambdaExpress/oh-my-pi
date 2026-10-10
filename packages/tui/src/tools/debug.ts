@@ -7,13 +7,24 @@ import {
 	formatExpandHint,
 	formatStatusIcon,
 	PREVIEW_LIMITS,
-	replaceTabs,
+	sanitizeDisplayLines,
 	sanitizeDisplayWarning,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
 } from "../render/render-utils";
 import { t } from "../i18n";
-import type { RenderResultOptions, ToolActivityContext, ToolActivitySummary, ToolRenderer } from "./renderer";
+import type {
+	NativeToolView,
+	RenderResultOptions,
+	ToolActivityContext,
+	ToolActivitySummary,
+	ToolRenderer,
+	ToolRenderResult,
+} from "./renderer";
+import { ansi, kv } from "../native/describe";
+import type { NativeChild } from "../native/node";
+import { OwnerMemo } from "../native/memo";
+import { errorView, noteText, resultText, toolHead } from "./native-view";
 
 /** Display fields captured from a debugger session. */
 export interface DebugSessionSnapshot {
@@ -210,7 +221,7 @@ function styleDebugLines(lines: readonly string[], theme: Theme, isError = false
 		outputContinuationColor = undefined;
 
 		if (line === "Next:") {
-			styled.push(theme.fg("dim", line));
+			styled.push(theme.fg("dim", t(line)));
 			inNextActions = true;
 			continue;
 		}
@@ -225,7 +236,7 @@ function styleDebugLines(lines: readonly string[], theme: Theme, isError = false
 
 		const session = /^(Session )(.+)$/.exec(line);
 		if (session) {
-			styled.push(`${theme.fg("dim", session[1])}${theme.fg("accent", session[2])}`);
+			styled.push(`${theme.fg("dim", `${t("Session")} `)}${theme.fg("accent", session[2])}`);
 			continue;
 		}
 
@@ -233,7 +244,7 @@ function styleDebugLines(lines: readonly string[], theme: Theme, isError = false
 		if (field) {
 			const label = field[1];
 			const value = field[2];
-			const prefix = theme.fg("dim", `${label}: `);
+			const prefix = theme.fg("dim", `${t(label)}: `);
 			if (label === "Trigger") {
 				const trigger = /^(.*?)( \()([^()]*)\)$/.exec(value);
 				styled.push(
@@ -279,6 +290,73 @@ function styleDebugLines(lines: readonly string[], theme: Theme, isError = false
 	return styled;
 }
 
+/** Untruncated `[action, target]` for native heads; mirrors {@link summarizeDebugCall}'s field precedence. */
+function debugCallParts(args: DebugRenderArgs | undefined, fallbackAction: string): [string, string | undefined] {
+	const action = sanitizeDisplayWarning((args?.action ?? fallbackAction).replaceAll("_", " "));
+	if (!args) return [action, undefined];
+	const target =
+		args.program ||
+		(args.file && args.line !== undefined ? `${args.file}:${args.line}` : undefined) ||
+		args.function ||
+		args.expression ||
+		args.command ||
+		args.memory_reference ||
+		args.instruction_reference ||
+		args.data_id ||
+		args.name ||
+		undefined;
+	return [action, target ? sanitizeDisplayWarning(target) : undefined];
+}
+
+function describeDebugResult(
+	result: ToolRenderResult<DebugToolDetails>,
+	args: DebugRenderArgs | undefined,
+): NativeToolView {
+	const [action, target] = debugCallParts(args, result.details?.action ?? "debug");
+	const output = sanitizeDisplayLines(resultText(result)).join("\n");
+	if (result.isError) return errorView(t("Debug"), output || t("Debug failed"), action, target);
+	const snapshot = result.details?.snapshot;
+	const body: NativeChild[] = [];
+	let sessionRows = 0;
+	if (snapshot) {
+		const location = formatLocation(snapshot);
+		const rows: [string, string | undefined][] = [
+			["Session", snapshot.id],
+			["Adapter", snapshot.adapter],
+			["Status", snapshot.status],
+			["CWD", snapshot.cwd],
+			["Program", snapshot.program],
+			["Stop reason", snapshot.stopReason],
+			["Frame", snapshot.frameName],
+			["Instruction pointer", snapshot.instructionPointerReference],
+			["Location", location ?? undefined],
+			[
+				"Configuration",
+				snapshot.needsConfigurationDone ? "pending configurationDone; set breakpoints, then continue." : undefined,
+			],
+			["Exit code", snapshot.exitCode !== undefined ? String(snapshot.exitCode) : undefined],
+		];
+		const grid = kv(
+			rows.map(([label, value]): [string, string | undefined] => [
+				t(label),
+				value === undefined ? undefined : sanitizeDisplayWarning(value),
+			]),
+		);
+		if (grid) {
+			body.push(grid);
+			sessionRows = rows.filter(([, value]) => value).length;
+		}
+	}
+	body.push(output ? ansi(output) : noteText(t("No output")));
+	return {
+		head: toolHead(t("Debug"), action, target),
+		body,
+		preview: { lines: sessionRows + PREVIEW_LIMITS.COLLAPSED_LINES },
+	};
+}
+
+const debugResultMemo = new OwnerMemo<NativeToolView | undefined>();
+
 /** Renders debugger calls and captured execution snapshots. */
 export const debugToolRenderer = {
 	animatedPartialResult: true,
@@ -289,7 +367,7 @@ export const debugToolRenderer = {
 	},
 	renderCall(args: DebugRenderArgs, _options: RenderResultOptions, theme: Theme): Component {
 		const text = renderStatusLine(
-			{ icon: "pending", title: t("Debug"), description: summarizeDebugCall(args) },
+			{ icon: "pending", title: t("Debug"), description: sanitizeDisplayWarning(summarizeDebugCall(args)) },
 			theme,
 		);
 		return new Text(text, 0, 0);
@@ -302,7 +380,9 @@ export const debugToolRenderer = {
 		args?: DebugRenderArgs,
 	): Component {
 		return framedToolCard(theme, () => {
-			const action = (args?.action ?? result.details?.action ?? "debug").replaceAll("_", " ");
+			const action = sanitizeDisplayWarning(
+				(args?.action ?? result.details?.action ?? "debug").replaceAll("_", " "),
+			);
 			const success = !options.isPartial && !result.isError;
 			const statusIcon = success
 				? theme.styledSymbol("tool.debug", "accent")
@@ -310,12 +390,12 @@ export const debugToolRenderer = {
 			const header = `${statusIcon} ${t("Debug")} ${action}`;
 			const summaryLines = result.details?.snapshot
 				? styleDebugLines(
-						formatSessionSnapshot(result.details.snapshot).map(line => replaceTabs(line)),
+						formatSessionSnapshot(result.details.snapshot).flatMap(line => sanitizeDisplayLines(line)),
 						theme,
 					)
 				: [];
 			const text = result.content.find(block => block.type === "text")?.text ?? t("No output");
-			const rawLines = replaceTabs(text).split("\n");
+			const rawLines = sanitizeDisplayLines(text);
 			const previewLimit = options.expanded ? rawLines.length : PREVIEW_LIMITS.COLLAPSED_LINES;
 			const displayedLines = styleDebugLines(
 				rawLines.slice(0, previewLimit).map(line => truncateToWidth(line, TRUNCATE_LENGTHS.LINE)),
@@ -343,6 +423,17 @@ export const debugToolRenderer = {
 				applyBg: false,
 			};
 		});
+	},
+	describeCall(args: DebugRenderArgs): NativeToolView {
+		const [action, target] = debugCallParts(args, "request");
+		return { head: toolHead(t("Debug"), action, target) };
+	},
+	describeResult(
+		result: ToolRenderResult<DebugToolDetails>,
+		_options: RenderResultOptions,
+		args?: DebugRenderArgs,
+	): NativeToolView | undefined {
+		return debugResultMemo.get(result, [], () => describeDebugResult(result, args));
 	},
 	mergeCallAndResult: true,
 	inline: true,

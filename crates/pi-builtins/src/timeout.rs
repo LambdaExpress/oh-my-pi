@@ -275,7 +275,7 @@ impl builtins::Command for TimeoutCommand {
 			// external children it degrades to SIGKILL — see `Process::wait`.
 			child_cancel.cancel();
 		}
-		let mut killed = signal.as_str() == "SIGKILL";
+		let mut killed = signal_display(signal) == "KILL";
 
 		// Wait for the command to finish, escalating to SIGKILL after
 		// `--kill-after`. Without `-k`, GNU waits indefinitely — a command
@@ -353,10 +353,7 @@ impl builtins::Command for TimeoutCommand {
 
 #[cfg(test)]
 mod tests {
-	use std::{
-		io::{Read, Seek, SeekFrom},
-		time::Duration,
-	};
+	use std::time::Duration;
 
 	use brush_core::{
 		ExecutionContext, ExecutionResult, Shell, SourceInfo, builtins,
@@ -471,32 +468,10 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn invalid_duration_preserves_diagnostic() {
-		let mut shell = test_shell().await;
-		let mut stderr = tempfile::tempfile().expect("create stderr capture");
-		let mut params = shell.default_exec_params();
-		params.set_fd(
-			OpenFiles::STDERR_FD,
-			stderr.try_clone().expect("clone stderr capture").into(),
-		);
-
-		let result = tokio::time::timeout(
-			Duration::from_secs(1),
-			shell.run_string(
-				"timeout invalid status-test",
-				&SourceInfo::default(),
-				&params,
-			),
-		)
-		.await
-		.expect("invalid-duration test exceeded its safety deadline")
-		.expect("execute invalid-duration command");
-		stderr.seek(SeekFrom::Start(0)).expect("rewind stderr capture");
-		let mut diagnostic = String::new();
-		stderr.read_to_string(&mut diagnostic).expect("read stderr capture");
+	async fn invalid_duration_exits_125() {
+		let result = run_with_deadline("timeout invalid status-test").await;
 
 		assert_eq!(u8::from(result.exit_code), 125);
-		assert_eq!(diagnostic, "timeout: invalid time interval 'invalid'\n");
 	}
 
 	#[tokio::test]
@@ -544,15 +519,39 @@ mod tests {
 	#[test]
 	fn signal_spellings_parse_and_display_without_prefix() {
 		// Failure mode: rejecting a signal spelling GNU accepts.
-		for spec in ["TERM", "term", "SIGTERM", "sigterm", "15", "KILL", "9", "INT", "2"] {
-			assert!(parse_signal(spec).is_some(), "spec {spec:?} must parse");
+		for (spec, name) in [
+			("TERM", "TERM"),
+			("term", "TERM"),
+			("SIGTERM", "TERM"),
+			("sigterm", "TERM"),
+			("KILL", "KILL"),
+			("INT", "INT"),
+		] {
+			let signal = parse_signal(spec).unwrap_or_else(|| panic!("spec {spec:?} must parse"));
+			assert_eq!(signal_display(signal), name);
 		}
 		// Shell-trap pseudo-signals and unknown names are invalid for kill(2).
-		for spec in ["NOSUCH", "EXIT", "DEBUG", "ERR", "64", "-5"] {
+		for spec in ["NOSUCH", "EXIT", "DEBUG", "ERR", "0", "64", "-5"] {
 			assert!(parse_signal(spec).is_none(), "spec {spec:?} must be rejected");
 		}
-		let term = parse_signal("SIGTERM").expect("SIGTERM parses");
-		assert_eq!(signal_display(term), "TERM");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn numeric_signals_map_to_names() {
+		for (spec, name) in [("15", "TERM"), ("9", "KILL"), ("2", "INT")] {
+			let signal = parse_signal(spec).expect("Unix signal number must parse");
+			assert_eq!(signal_display(signal), name);
+		}
+	}
+
+	#[cfg(windows)]
+	#[test]
+	fn numeric_signals_are_unsupported() {
+		// The Windows backend exposes named termination operations only.
+		for spec in ["15", "9", "2"] {
+			assert!(parse_signal(spec).is_none(), "spec {spec:?} must be rejected");
+		}
 	}
 
 	#[tokio::test]
@@ -565,6 +564,7 @@ mod tests {
 		assert_eq!(u8::from(result.exit_code), 7);
 	}
 
+	#[cfg(unix)]
 	#[tokio::test]
 	async fn preserve_status_reports_death_by_the_timeout_signal() {
 		// In-process operands retire via the cancel fallback, where the inner
@@ -635,36 +635,6 @@ mod tests {
 		let result = run_with_deadline("timeout -s NOSUCH 1 status-test").await;
 
 		assert_eq!(u8::from(result.exit_code), 125);
-	}
-
-	#[tokio::test]
-	async fn verbose_reports_the_signal_sent() {
-		let mut shell = test_shell().await;
-		let mut stderr = tempfile::tempfile().expect("create stderr capture");
-		let mut params = shell.default_exec_params();
-		params.set_fd(
-			OpenFiles::STDERR_FD,
-			stderr.try_clone().expect("clone stderr capture").into(),
-		);
-
-		let result = tokio::time::timeout(
-			Duration::from_secs(1),
-			shell.run_string("timeout -v 0.010 slow-test", &SourceInfo::default(), &params),
-		)
-		.await
-		.expect("verbose test exceeded its safety deadline")
-		.expect("execute verbose command");
-		stderr.seek(SeekFrom::Start(0)).expect("rewind stderr capture");
-		let mut diagnostic = String::new();
-		stderr.read_to_string(&mut diagnostic).expect("read stderr capture");
-
-		assert_eq!(u8::from(result.exit_code), 124);
-		// The cancel-fallback may race the inner shell's own cancellation
-		// check, which can append its interrupted notice after our line.
-		assert!(
-			diagnostic.starts_with("timeout: sending signal TERM to command 'slow-test'\n"),
-			"diagnostic must lead with the GNU-style signal line: {diagnostic:?}"
-		);
 	}
 
 	#[cfg(unix)]

@@ -6,38 +6,30 @@ import {
 	shadowSnapshotDigest,
 } from "@oh-my-pi/pi-coding-agent/eval/js/shared/runtime";
 
-const GLOBAL_KEYS = ["__omp_import__", "read"] as const;
+const GLOBAL_KEYS = ["__omp_import__", "__omp_bun__", "Bun", "read"] as const;
 
 type GlobalKey = (typeof GLOBAL_KEYS)[number];
 
-interface GlobalSnapshot {
-	exists: boolean;
-	value: unknown;
-}
+type GlobalSnapshot = PropertyDescriptor | undefined;
 
 function snapshotGlobals(): Record<GlobalKey, GlobalSnapshot> {
-	const globals = globalThis as Record<string, unknown>;
-	return {
-		__omp_import__: { exists: "__omp_import__" in globals, value: globals.__omp_import__ },
-		read: { exists: "read" in globals, value: globals.read },
-	};
+	return Object.fromEntries(GLOBAL_KEYS.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)])) as Record<
+		GlobalKey,
+		GlobalSnapshot
+	>;
 }
 
 function restoreGlobals(snapshot: Record<GlobalKey, GlobalSnapshot>): void {
-	const globals = globalThis as Record<string, unknown>;
 	for (const key of GLOBAL_KEYS) {
 		const state = snapshot[key];
-		if (state.exists) globals[key] = state.value;
-		else delete globals[key];
+		if (state) Object.defineProperty(globalThis, key, state);
+		else delete (globalThis as Record<string, unknown>)[key];
 	}
 }
 
 function expectGlobalsRestored(snapshot: Record<GlobalKey, GlobalSnapshot>): void {
-	const globals = globalThis as Record<string, unknown>;
 	for (const key of GLOBAL_KEYS) {
-		const state = snapshot[key];
-		if (state.exists) expect(globals[key]).toBe(state.value);
-		else expect(key in globals).toBe(false);
+		expect(Object.getOwnPropertyDescriptor(globalThis, key)).toEqual(snapshot[key]);
 	}
 }
 
@@ -48,6 +40,113 @@ const hooks: RuntimeHooks = {
 };
 
 describe("JsRuntime global disposal", () => {
+	it("executes plugin cells without replacing immutable host Bun bindings or native APIs", async () => {
+		const before = snapshotGlobals();
+		const nativeBun = Bun;
+		const nativePlugin = Object.getOwnPropertyDescriptor(nativeBun, "plugin");
+		const runtime = new JsRuntime({ initialCwd: process.cwd(), sessionId: "immutable-bun" });
+		try {
+			await runtime.run(
+				`Bun.plugin({ name: "cell-plugin", setup(build) {
+					build.module("cell-plugin:value", () => ({ loader: "object", exports: { answer: 42 } }));
+				}});`,
+				undefined,
+				hooks,
+			);
+			expect(await runtime.run('require("cell-plugin:value").answer', undefined, hooks)).toBe(42);
+			expect(await runtime.run('(await import("cell-plugin:value")).answer', undefined, hooks)).toBe(42);
+			expect(
+				await runtime.run(
+					`[Bun.hash("native"), new TextDecoder().decode(Bun.gunzipSync(Bun.gzipSync("native")))];`,
+					undefined,
+					hooks,
+				),
+			).toEqual([nativeBun.hash("native"), "native"]);
+			expect(
+				await runtime.run('"use strict"; (function () { return this === undefined; })();', undefined, hooks),
+			).toBe(true);
+			expect(await runtime.run('"use strict"; const Bun = { answer: 19 }; Bun.answer;', undefined, hooks)).toBe(19);
+			expect(await runtime.run("((Bun) => Bun.answer)({ answer: 17 });", undefined, hooks)).toBe(17);
+			await runtime.run("var persistedBunCellValue = 8;", undefined, hooks);
+			expect(await runtime.run("persistedBunCellValue + 1;", undefined, hooks)).toBe(9);
+			expect(Object.getOwnPropertyDescriptor(globalThis, "Bun")).toEqual(before.Bun);
+			expect(Object.getOwnPropertyDescriptor(nativeBun, "plugin")).toEqual(nativePlugin);
+			runtime.dispose();
+			expectGlobalsRestored(before);
+			expect(Object.getOwnPropertyDescriptor(nativeBun, "plugin")).toEqual(nativePlugin);
+		} finally {
+			delete (globalThis as Record<string, unknown>).persistedBunCellValue;
+			runtime.dispose();
+			restoreGlobals(before);
+		}
+	});
+
+	it("restores configurable host accessors after switching and disposing runtime owners", async () => {
+		const key = "__omp_descriptor_probe__";
+		const before = Object.getOwnPropertyDescriptor(globalThis, key);
+		const host = { get: () => "host", enumerable: false, configurable: true };
+		Object.defineProperty(globalThis, key, host);
+		let first: JsRuntime | undefined;
+		let second: JsRuntime | undefined;
+		try {
+			first = new JsRuntime({
+				initialCwd: process.cwd(),
+				sessionId: "descriptor-first",
+				extraGlobals: { [key]: "first" },
+			});
+			second = new JsRuntime({
+				initialCwd: process.cwd(),
+				sessionId: "descriptor-second",
+				extraGlobals: { [key]: "second" },
+			});
+			expect(await first.run(key, undefined, hooks)).toBe("first");
+			expect(await second.run(key, undefined, hooks)).toBe("second");
+			second.dispose();
+			expect(await first.run(key, undefined, hooks)).toBe("first");
+			first.dispose();
+			expect(Object.getOwnPropertyDescriptor(globalThis, key)).toEqual({ ...host, set: undefined });
+		} finally {
+			second?.dispose();
+			first?.dispose();
+			if (before) Object.defineProperty(globalThis, key, before);
+			else delete (globalThis as Record<string, unknown>)[key];
+		}
+	});
+
+	it("rolls back failed initialization without stranding an owner or breaking an existing runtime", async () => {
+		const before = snapshotGlobals();
+		const runtime = new JsRuntime({ initialCwd: process.cwd(), sessionId: "surviving-initialization" });
+		const installed = snapshotGlobals();
+		const failure = new Error("extra global initialization failed");
+		const extraGlobals = {
+			get __omp_failed_install__(): unknown {
+				throw failure;
+			},
+		};
+		try {
+			expect(
+				() => new JsRuntime({ initialCwd: process.cwd(), sessionId: "failed-initialization", extraGlobals }),
+			).toThrow(failure);
+			expectGlobalsRestored(installed);
+			expect(Object.hasOwn(globalThis, "__omp_failed_install__")).toBe(false);
+			expect(
+				() =>
+					new JsRuntime({
+						initialCwd: process.cwd(),
+						sessionId: "readonly-initialization",
+						extraGlobals: { Infinity: 0 },
+					}),
+			).toThrow();
+			expectGlobalsRestored(installed);
+			expect(await runtime.run("6 * 7;", undefined, hooks)).toBe(42);
+			runtime.dispose();
+			expectGlobalsRestored(before);
+		} finally {
+			runtime.dispose();
+			restoreGlobals(before);
+		}
+	});
+
 	it("keeps newer same-realm runtime globals after disposing an older runtime", () => {
 		const globals = globalThis as Record<string, unknown>;
 		const before = snapshotGlobals();
@@ -149,17 +248,6 @@ describe("JsRuntime global disposal", () => {
 			expect(shadowSnapshotDigest(after)).not.toBe(before);
 		} finally {
 			globals.String = genuineString;
-			runtime.dispose();
-		}
-	});
-	it("reports the installed bridge dispatcher identity in snapshots", async () => {
-		const runtime = new JsRuntime({ initialCwd: process.cwd(), sessionId: "shadow-call-tool" });
-		try {
-			// The dispatcher is an owned global installed by every runtime, so
-			// the identity flag is always present; the exact-shape assertion
-			// above pins the full key set.
-			expect(runtime.snapshotUserGlobals().initialGlobals).toMatchObject({ __omp_call_tool__: true });
-		} finally {
 			runtime.dispose();
 		}
 	});

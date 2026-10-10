@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { setLocale } from "../../src/i18n";
 import {
 	assertSecurityScanPlanFresh,
@@ -32,7 +33,7 @@ const adapter: SecurityGitAdapter = {
 
 beforeEach(async () => {
 	setLocale("en");
-	temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-security-preflight-"));
+	temporaryRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "omp-security-preflight-")));
 	repositoryRoot = path.join(temporaryRoot, "repo");
 	stateRoot = path.join(temporaryRoot, "output");
 	await fs.mkdir(path.join(repositoryRoot, "src"), { recursive: true });
@@ -48,7 +49,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
 	setLocale(null);
-	await fs.rm(temporaryRoot, { recursive: true, force: true });
+	await removeWithRetries(temporaryRoot);
 });
 
 async function plan(target: SecurityTargetRequest = { kind: "repository" }) {

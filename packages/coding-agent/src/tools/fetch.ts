@@ -25,10 +25,8 @@ import { finalizeOutput, loadPage, looksLikeHtml, MAX_BYTES, MAX_OUTPUT_CHARS } 
 import { convertWithMarkit, fetchBinary } from "../web/scrapers/utils";
 import { findCredential } from "../web/search/providers/utils";
 import { applyListLimit } from "@oh-my-pi/pi-tui/tools/list-limit";
-import { parseTailCount } from "./path-utils";
-import { type LineRange, parseLineRanges } from "@oh-my-pi/pi-tui/tools/line-ranges";
 import { isReadableUrlPath } from "@oh-my-pi/pi-tui/tools/read";
-import type { ParsedSelector } from "./read-selector";
+import { type ParsedSelector, parseSel } from "./read-selector";
 import { formatBytes } from "@oh-my-pi/pi-tui/render/render-utils";
 import { listTables, looksLikeSqlite, openSqliteReadConnection, renderTableList } from "./sqlite-reader";
 import { ToolAbortError } from "./tool-errors";
@@ -155,36 +153,27 @@ export function parseReadUrlTarget(readPath: string): ParsedReadUrlTarget | null
 	}
 
 	let raw = false;
-	let ranges: [LineRange, ...LineRange[]] | undefined;
-	let tail: number | undefined;
+	let rangeSelector: Extract<ParsedSelector, { kind: "lines" | "tail" }> | undefined;
 	for (const token of embedded?.sels ?? []) {
 		if (token.toLowerCase() === "raw") {
 			raw = true;
 			continue;
 		}
-		if (ranges !== undefined || tail !== undefined) {
+		if (rangeSelector !== undefined) {
 			// Two range groups on the same URL (`…:5-10:20-30`) — combine with commas instead.
 			throw new ToolError(
 				`URL selector has multiple range groups; combine them with commas (e.g. \`:5-10,20-30\`).`,
 			);
 		}
-		ranges = parseLineRanges(token) ?? undefined;
-		if (ranges !== undefined) continue;
-		const count = parseTailCount(token);
-		if (count === null) {
+		const parsed = parseSel(token);
+		if (parsed.kind !== "lines" && parsed.kind !== "tail") {
 			// Shouldn't happen — isUrlSelectorToken vetted it. Belt-and-suspenders.
 			throw new ToolError(`Invalid URL line selector: ${token}`);
 		}
-		tail = count;
+		rangeSelector = parsed;
 	}
 
-	const sel: ParsedSelector = ranges
-		? { kind: "lines", ranges, raw }
-		: tail !== undefined
-			? { kind: "tail", count: tail, raw }
-			: raw
-				? { kind: "raw" }
-				: { kind: "none" };
+	const sel: ParsedSelector = rangeSelector ? { ...rangeSelector, raw } : raw ? { kind: "raw" } : { kind: "none" };
 	return { path: urlPath, sel };
 }
 

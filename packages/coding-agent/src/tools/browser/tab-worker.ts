@@ -18,12 +18,12 @@ import type {
 	SerializedAXNode,
 	Target,
 } from "puppeteer-core";
+import type { CdpFrame } from "puppeteer-core/internal/cdp/Frame.js";
 import { JsRuntime, type RuntimeHooks } from "../../eval/js/shared/runtime";
 import { formatScreenshot, resizeImage } from "../../utils/image-resize";
 import { resolveToCwd } from "../path-utils";
 import {
 	bindRunFacade,
-	CELL_BUDGET_SLACK_MS,
 	installBrowserWorkerRejectionGuard,
 	isBrowserRunOwnedRejection,
 	markBrowserRunRejection,
@@ -40,9 +40,11 @@ import {
 	type AriaSnapshotOptions,
 	assertSelectorString,
 	captureAriaSnapshot,
+	PLAYWRIGHT_ONLY_SELECTOR_RE,
 	parseAriaRefSelector,
 	resolveAriaRefHandle,
 } from "./aria/aria-snapshot";
+import { resolveOpTimeouts, resolveWaitTimeout, ZERO_MATCH_FAIL_FAST_MS, ZERO_MATCH_POLL_MS } from "./op-timeouts";
 import { type BrowserA11yOptions, type BrowserA11yResult, formatA11ySummary, runA11yAudit } from "./a11y/audit";
 import {
 	applyUserAgentOverride,
@@ -55,7 +57,6 @@ import {
 	applyStealthPatches,
 	applyViewport,
 	BROWSER_PROTOCOL_TIMEOUT_MS,
-	DEFAULT_VIEWPORT,
 	isPuppeteerHandle,
 	loadPuppeteerInWorker,
 	loadedKnownDevices,
@@ -78,7 +79,7 @@ import {
 	clearPageStorage,
 	type StorageKind,
 } from "./storage-state";
-import { enableReact, type ReactEnableResult } from "./react/devtools-hook";
+import { enableReact, puppeteerReactHost, type ReactEnableResult } from "./react/devtools-hook";
 import { collectReactRenders, type ReactRendersAction, type ReactRendersResult } from "./react/renders";
 import { readReactSuspense, type ReactSuspenseBoundary, type ReactSuspenseOptions } from "./react/suspense";
 import {
@@ -89,7 +90,11 @@ import {
 	readReactTree,
 } from "./react/tree";
 import { collectVitals, installVitalsObservers, type VitalsOptions, type VitalsResult } from "./react/vitals";
-import { registerSemanticQueryHandlers } from "./query-handlers";
+import {
+	collectDomObservationCandidates,
+	isObservationElementVisible,
+	registerSemanticQueryHandlers,
+} from "./query-handlers";
 import {
 	type ElementQueryHelpers,
 	enrichElementQueries,
@@ -145,6 +150,7 @@ import {
 	type WebMcpListResult,
 } from "./webmcp";
 import {
+	createCdpRecordingSource,
 	RecordingController,
 	type RecordingOptions,
 	type RecordingStartResult,
@@ -283,15 +289,6 @@ const SELECTOR_HANDLER_PREFIXES = [
 	"p-",
 ] as const;
 
-/**
- * Playwright-only selector engines/pseudos puppeteer cannot parse. Without this guard a
- * `tab.click(":has-text(...)")` would wait the full action timeout and fail opaquely;
- * fail fast instead with a pointer to the puppeteer-native alternative. Skipped for
- * explicit query-handler prefixes (`text/`, `aria/`, …) whose payload is literal text.
- */
-const PLAYWRIGHT_ONLY_SELECTOR_RE =
-	/:has-text\(|:text\(|:text-is\(|:text-matches\(|:visible\b|:hidden\b|:nth-match\(|:near\(|:above\(|:below\(|:right-of\(|:left-of\(/;
-
 type DragTarget = string | { readonly x: number; readonly y: number };
 type SelectorAction = "click" | "fill";
 type PageElement = Element & {
@@ -303,61 +300,12 @@ type PageElement = Element & {
 	hasAttribute(name: string): boolean;
 };
 
-/**
- * Per-op fail-fast ceilings for `tab.*` helpers. All are kept strictly under the cell
- * budget (`timeoutMs - OP_DEADLINE_SLACK_MS`) so a stalled helper rejects with a named,
- * attributable error that leaves recovery budget — never the opaque whole-cell
- * "Browser code execution timed out" path that consumed the entire run.
- *
- * - `QUICK_OP_TIMEOUT_MS`: page-coupled reads that should resolve fast (`observe`,
- *   `screenshot`, `extract`, `ariaSnapshot`).
- * - `ACTION_OP_TIMEOUT_MS`: interactive point actions (`click`, `fill`, `type`, …) and
- *   the default for wait helpers when no explicit `{ timeout }` is given. Selector ops
- *   additionally fail fast after `ZERO_MATCH_FAIL_FAST_MS` of confirmed zero matches
- *   (see `#zeroMatchWatchdog`), so the full ceiling is only spent on elements that
- *   exist but are not yet actionable.
- *
- * `goto` and `evaluate` stay uncapped (`Number.POSITIVE_INFINITY`): navigation and user
- * code legitimately use the full cell budget.
- */
-const QUICK_OP_TIMEOUT_MS = 20_000;
-const ACTION_OP_TIMEOUT_MS = 8_000;
 /** Maximum wait for a renderer acknowledgement after a wheel event is queued. */
 const SCROLL_ACK_TIMEOUT_MS = 2_000;
-/** Headroom subtracted from the cell budget so a per-op deadline fires before it. */
-const OP_DEADLINE_SLACK_MS = CELL_BUDGET_SLACK_MS;
-/**
- * A selector op whose selector has matched nothing for this long fails fast with the
- * zero-match hint instead of burning the rest of its deadline: a wrong selector or a
- * wrong page (consent wall, pre-navigation document) is the common agent failure and
- * should cost ~2s, not the full action ceiling. Explicit `{ timeout }` waits opt out.
- */
-const ZERO_MATCH_FAIL_FAST_MS = 2_000;
-/** Poll cadence for the zero-match watchdog. */
-const ZERO_MATCH_POLL_MS = 250;
 /** Cleanup must settle inside the supervisor's 750ms post-run grace window. */
 const REQUEST_INTERCEPTION_CLEANUP_TIMEOUT_MS = 500;
 /** Bound cleanup window after a timed-out raw handle action. */
 const HANDLE_ACTION_INVALIDATION_TIMEOUT_MS = 500;
-
-export interface OpTimeouts {
-	/** Largest per-op deadline allowed — strictly below the cell budget. */
-	budgetBound: number;
-	/** Ceiling for quick page reads. */
-	quickOpMs: number;
-	/** Ceiling for interactive actions + default for waits. */
-	actionOpMs: number;
-}
-
-/** Resolve the per-op fail-fast ceilings for a given cell budget. */
-export function resolveOpTimeouts(cellTimeoutMs: number): OpTimeouts {
-	const budgetBound = Math.max(1, cellTimeoutMs - OP_DEADLINE_SLACK_MS);
-	return {
-		budgetBound,
-		quickOpMs: Math.min(budgetBound, QUICK_OP_TIMEOUT_MS),
-		actionOpMs: Math.min(budgetBound, ACTION_OP_TIMEOUT_MS),
-	};
-}
 
 /** Queue a wheel event without treating a delayed renderer acknowledgement as dispatch failure. */
 export async function dispatchScroll(
@@ -372,24 +320,6 @@ export async function dispatchScroll(
 	} finally {
 		clearTimeout(timer);
 	}
-}
-
-/**
- * Effective timeout for a wait helper (`waitFor*`). A positive explicit `{ timeout }` is
- * honored but clamped to the cell budget so it still fails fast + named; raising the tool
- * `timeout` raises that cap, so a longer budget stays meaningful. No `{ timeout }` → the
- * action ceiling. Puppeteer's `{ timeout: 0 }` / `Infinity` ("disable") maps to the largest
- * bounded wait (`budgetBound`) — the harness never permits an unbounded wait. Garbage input
- * (negative, `NaN`) falls back to the action ceiling rather than the longest wait.
- */
-export function resolveWaitTimeout(cellTimeoutMs: number, explicit?: number): number {
-	const { budgetBound, actionOpMs } = resolveOpTimeouts(cellTimeoutMs);
-	if (explicit === undefined) return actionOpMs;
-	// Puppeteer "disable" sentinels — still bounded by the budget here.
-	if (explicit === 0 || explicit === Number.POSITIVE_INFINITY) return budgetBound;
-	// Positive finite → honored + clamped. Negative/NaN garbage → default, not the longest wait.
-	if (Number.isFinite(explicit) && explicit > 0) return Math.min(explicit, budgetBound);
-	return actionOpMs;
 }
 
 interface TabApi {
@@ -621,7 +551,6 @@ type RawHandleMethod = (...args: unknown[]) => Promise<unknown>;
 
 interface RawHandleMethods {
 	interactive: Partial<Record<GuardedHandleMethod, RawHandleMethod>>;
-	type: ElementHandle["type"];
 	invalidatedBy?: string;
 }
 
@@ -720,7 +649,7 @@ async function adoptElementArgs(
  * and disposes its handle before surfacing the named error, so catching it cannot
  * dispatch a duplicate retry through the stale handle. Puppeteer handles expose
  * `type()` but no `fill()`; the `fill()` semantics mirror the selector-based
- * `tab.fill()`: focus, clear any existing value, then type.
+ * `tab.fill()`: set the value and notify the page's input/change handlers.
  */
 export function toActionableHandle(
 	handle: ElementHandle,
@@ -737,7 +666,7 @@ export function toActionableHandle(
 				if (original) methods[method] = original;
 			}
 		}
-		enriched.fill = value => fillViaHandle(enriched, value, undefined, preserved?.type);
+		enriched.fill = value => fillViaHandle(enriched, value);
 		enriched.click = options =>
 			clickElement(enriched, "handle.click()", undefined, {
 				button: options?.button,
@@ -758,7 +687,7 @@ export function toActionableHandle(
 			const original = methods[method];
 			if (typeof original === "function") interactive[method] = original.bind(enriched);
 		}
-		originals = { interactive, type: enriched.type.bind(enriched) };
+		originals = { interactive };
 		enriched[RAW_HANDLE_METHODS] = originals;
 	}
 
@@ -796,7 +725,7 @@ export function toActionableHandle(
 				originals,
 				"handle.fill()",
 				signal,
-				() => fillViaHandle(enriched, value, signal, text => typeViaHandle(enriched, text, { delay: 0 }, signal)),
+				() => fillViaHandle(enriched, value, signal),
 				invalidate,
 			),
 		);
@@ -915,6 +844,7 @@ interface RunPageScope {
  */
 function createRunPageScope(page: Page, restoreInterception: () => Promise<void>): RunPageScope {
 	const handlers = new Map<unknown, unknown[]>();
+	let interceptionChanged = false;
 	const on = page.on;
 	const off = page.off;
 	const once = page.once;
@@ -993,6 +923,9 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 		setRequestInterception: {
 			configurable: true,
 			value: async (enabled: boolean): Promise<void> => {
+				// Mark before awaiting: a rejected protocol call can still have changed
+				// Chromium or Puppeteer's interception state and requires restoration.
+				interceptionChanged = true;
 				await Reflect.apply(setRequestInterception, page, [enabled]);
 			},
 		},
@@ -1016,6 +949,7 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 				for (const handler of owned) Reflect.apply(off, page, [type, handler]);
 			}
 			handlers.clear();
+			if (!interceptionChanged) return;
 			try {
 				await withTimeout(
 					restoreInterception(),
@@ -1129,24 +1063,33 @@ async function collectObservationEntries(
 		includeAll: boolean;
 		compact: boolean;
 		interactiveAncestors: Set<SerializedAXNode>;
+		seenBackendNodeIds: Set<number>;
+		signal?: AbortSignal;
 	},
 ): Promise<void> {
+	throwIfAborted(options.signal);
 	const emptyStructural =
 		(node.role === "generic" || node.role === "none" || node.role === "group") &&
 		!node.name &&
 		!options.interactiveAncestors.has(node);
 	if ((options.includeAll || isInteractiveNode(node)) && !(options.compact && emptyStructural)) {
-		const handle = await node.elementHandle();
+		const handle = await untilAborted(options.signal, () => node.elementHandle());
 		if (handle) {
-			let inViewport = true;
-			if (options.viewportOnly) {
-				try {
-					inViewport = await handle.isIntersectingViewport();
-				} catch {
-					inViewport = false;
-				}
+			let backendNodeId: number | undefined;
+			try {
+				const visible = await untilAborted(options.signal, () =>
+					handle.evaluate(isObservationElementVisible, {
+						viewportOnly: options.viewportOnly,
+						interactive: isInteractiveNode(node),
+					}),
+				);
+				if (visible) backendNodeId = await untilAborted(options.signal, () => handle.backendNodeId());
+			} catch {
+				if (options.signal?.aborted) await handle.dispose().catch(() => undefined);
+				throwIfAborted(options.signal);
 			}
-			if (inViewport) {
+			if (backendNodeId !== undefined && !options.seenBackendNodeIds.has(backendNodeId)) {
+				options.seenBackendNodeIds.add(backendNodeId);
 				const id = core.nextElementId();
 				const states: string[] = [];
 				if (node.disabled) states.push("disabled");
@@ -1185,9 +1128,7 @@ async function collectObservationEntries(
  *
  * `interactions.ts` verifies click geometry only, and a resolved handle can still be a
  * disabled control, a read-only input, or an element that cannot receive text at all.
- * Puppeteer's click silently no-ops on the first, and `fillViaHandle` clears the value
- * before typing — an unguarded fill would wipe a read-only input or a `<select>`, then
- * type nothing. Reject those targets up front with a named reason instead.
+ * Reject those targets before dispatching input or changing a value.
  */
 async function assertActionableSelectorTarget(
 	handle: ElementHandle,
@@ -1295,6 +1236,7 @@ export class WorkerCore {
 	#browser?: Browser;
 	#page?: Page;
 	#targetId?: string;
+	#lastViewport?: ReadyInfo["viewport"];
 	#elementCache = new Map<number, ElementHandle>();
 	#elementCounter = 0;
 	#active: ActiveRun | null = null;
@@ -1449,7 +1391,9 @@ export class WorkerCore {
 				});
 				this.#observeDialogs();
 				await applyStealthPatches(this.#browser, this.#page, { browserSession: null, override: null });
-				if (payload.emulateViewport !== false) await applyViewport(this.#page, payload.viewport);
+				if (payload.viewport || payload.emulateViewport !== false) {
+					await applyViewport(this.#page, payload.viewport);
+				}
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
 			} else {
 				const target = await this.#findAttachedTarget(payload.targetId);
@@ -1463,6 +1407,7 @@ export class WorkerCore {
 				await this.#claimRelayTarget(page);
 				this.#observeDialogs();
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
+				if (payload.viewport) await applyViewport(page, payload.viewport);
 			}
 			if (payload.mode === "headless" || payload.emulateFocus) {
 				// Background Chromium tabs stop producing frames, stalling rAF,
@@ -1490,6 +1435,7 @@ export class WorkerCore {
 			this.#tracing = new BrowserTracingController(this.#page);
 			this.#network = new BrowserNetworkManager(this.#page, payload.allowedDomains);
 			await this.#network.start();
+			await this.#currentViewport();
 			if (payload.url) {
 				await this.#page.goto(payload.url, {
 					// Default to "load" because dev servers with HMR/WS never reach networkidle.
@@ -1573,6 +1519,22 @@ export class WorkerCore {
 		this.#dialogs.observe();
 	}
 
+	async #currentViewport(): Promise<ReadyInfo["viewport"]> {
+		const page = this.#requirePage();
+		const viewport =
+			page.viewport() ??
+			(await page.evaluate(() => {
+				const win = globalThis as unknown as {
+					innerWidth: number;
+					innerHeight: number;
+					devicePixelRatio: number;
+				};
+				return { width: win.innerWidth, height: win.innerHeight, deviceScaleFactor: win.devicePixelRatio };
+			}));
+		this.#lastViewport = viewport;
+		return viewport;
+	}
+
 	async #currentReadyInfo(): Promise<ReadyInfo> {
 		const page = this.#requirePage();
 		const targetId = this.#targetId ?? (await targetIdForPage(page));
@@ -1581,7 +1543,9 @@ export class WorkerCore {
 		return {
 			url: redactUrlCredentials(page.url()),
 			title: dialogPending ? undefined : await page.title().catch(() => undefined),
-			viewport: page.viewport() ?? DEFAULT_VIEWPORT,
+			// Evaluating dimensions while a modal is pending would block the dialog
+			// handling run itself. Retain the last measured dimensions in that case.
+			viewport: dialogPending && this.#lastViewport ? this.#lastViewport : await this.#currentViewport(),
 			targetId,
 		};
 	}
@@ -1605,6 +1569,30 @@ export class WorkerCore {
 			this.#log("debug", "Failed to refresh tab info", {
 				error: error instanceof Error ? error.message : String(error),
 			});
+		}
+	}
+
+	async #refreshDetachedMainFrame(signal: AbortSignal): Promise<void> {
+		const page = this.#requirePage();
+		const frame = page.mainFrame();
+		if (!frame.detached) return;
+		// Puppeteer 25's FrameTree retains its last main-frame reference after a
+		// detach. A live Electron/relay target can therefore expose a disposed
+		// frame until the next frame-tree update. Resync through the pinned CDP
+		// manager, retaining the Page and all its routes, scripts, and observers.
+		// This runs before user code only: never retry a possibly completed action.
+		const manager = (frame as unknown as CdpFrame)._frameManager;
+		this.#clearElementCache();
+		this.#ariaSnapshotBaselines.clear();
+		this.#screenshotHistory.clear();
+		// A navigation received before detachment can consume the first snapshot
+		// via FrameManager's pending-navigation marker. A second read rebuilds
+		// that frame; protocol errors are never retried or hidden.
+		for (let attempt = 0; attempt < 2 && page.mainFrame().detached; attempt++) {
+			await untilAborted(signal, () => manager.initialize(manager.client));
+		}
+		if (page.mainFrame().detached) {
+			throw new ToolError("Browser main frame is still detached after refreshing the live target");
 		}
 	}
 
@@ -1646,6 +1634,7 @@ export class WorkerCore {
 		let runPage: RunPageScope | undefined;
 		try {
 			throwIfAborted(signal);
+			await this.#refreshDetachedMainFrame(signal);
 			const page = this.#requirePage();
 			if (this.#activatePageBeforeRun) await untilAborted(signal, () => page.bringToFront());
 			await untilAborted(signal, () => this.#emulation?.reapply() ?? Promise.resolve());
@@ -2255,7 +2244,7 @@ export class WorkerCore {
 				),
 			recordStart: (destination, opts) =>
 				op(`tab.recordStart(${JSON.stringify(destination)})`, quickOpMs, sig =>
-					this.#recording.start(page, destination, session.cwd, opts, sig),
+					this.#recording.start(createCdpRecordingSource(page), destination, session.cwd, opts, sig),
 				),
 			recordStop: () =>
 				op("tab.recordStop()", budgetBound, sig =>
@@ -2263,7 +2252,7 @@ export class WorkerCore {
 				),
 			recordRestart: (destination, opts) =>
 				op(`tab.recordRestart(${JSON.stringify(destination)})`, budgetBound, sig =>
-					this.#recording.restart(page, destination, session.cwd, opts, {
+					this.#recording.restart(createCdpRecordingSource(page), destination, session.cwd, opts, {
 						signal: sig,
 						output,
 						excludeWebP: session.excludeWebP,
@@ -2284,8 +2273,8 @@ export class WorkerCore {
 					output.push({ type: "text", text: formatA11ySummary(result) });
 					return result;
 				}),
-			vitals: opts => op("tab.vitals()", INF, sig => collectVitals(page, opts, sig)),
-			reactEnable: () => op("tab.reactEnable()", INF, sig => enableReact(page, sig)),
+			vitals: opts => op("tab.vitals()", INF, sig => collectVitals(puppeteerReactHost(page), opts, sig)),
+			reactEnable: () => op("tab.reactEnable()", INF, sig => enableReact(puppeteerReactHost(page), sig)),
 			reactTree: opts => op("tab.reactTree()", quickOpMs, sig => readReactTree(page, opts, sig)),
 			reactInspect: id => op(`tab.reactInspect(${id})`, quickOpMs, sig => inspectReactFiber(page, id, sig)),
 			reactRenders: opts => op("tab.reactRenders()", quickOpMs, sig => collectReactRenders(page, opts, sig)),
@@ -2627,49 +2616,74 @@ export class WorkerCore {
 				throw new ToolError(`tab.observe: selector ${JSON.stringify(options.selector)} matched no element`);
 			}
 		}
-		let snapshot: SerializedAXNode | null;
+		const entries: ObservationEntry[] = [];
+		const seenBackendNodeIds = new Set<number>();
 		try {
-			snapshot = (await untilAborted(options.signal, () =>
-				page.accessibility.snapshot({ interestingOnly: !includeAll, root: root ?? undefined }),
+			const snapshot = (await untilAborted(options.signal, () =>
+				page.accessibility.snapshot({ interestingOnly: false, root: root ?? undefined }),
 			)) as SerializedAXNode | null;
+			if (snapshot) {
+				const interactiveAncestors = new Set<SerializedAXNode>();
+				if (options.compact) collectInteractiveObservationAncestors(snapshot, interactiveAncestors);
+				await collectObservationEntries(this, snapshot, entries, {
+					includeAll,
+					viewportOnly,
+					compact: options.compact ?? false,
+					interactiveAncestors,
+					seenBackendNodeIds,
+					signal: options.signal,
+				});
+			}
+			const candidates = await collectDomObservationCandidates(root ?? page, {
+				viewportOnly,
+				seenBackendNodeIds,
+				signal: options.signal,
+			});
+			for (const { handle, entry } of candidates) {
+				const id = this.nextElementId();
+				this.cacheElement(id, handle);
+				entries.push({ id, ...entry });
+			}
+			// A matched scoped root can be excluded from AX, with no rendered DOM candidates.
+			// Keep the shared visibility filters and normal metadata collection for that empty scope.
+			if (!snapshot && entries.length === 0 && !root) throw new ToolError("Accessibility snapshot unavailable");
 		} finally {
 			await root?.dispose().catch(() => undefined);
 		}
-		if (!snapshot) throw new ToolError("Accessibility snapshot unavailable");
-		const entries: ObservationEntry[] = [];
-		const interactiveAncestors = new Set<SerializedAXNode>();
-		if (options.compact) collectInteractiveObservationAncestors(snapshot, interactiveAncestors);
-		await collectObservationEntries(this, snapshot, entries, {
-			includeAll,
-			viewportOnly,
-			compact: options.compact ?? false,
-			interactiveAncestors,
-		});
-		const scroll = (await untilAborted(options.signal, () =>
+		const geometry = await untilAborted(options.signal, () =>
 			page.evaluate(() => {
 				const win = globalThis as unknown as {
 					scrollX: number;
 					scrollY: number;
 					innerWidth: number;
 					innerHeight: number;
+					devicePixelRatio: number;
 					document: { documentElement: { scrollWidth: number; scrollHeight: number } };
 				};
 				const doc = win.document.documentElement;
 				return {
-					x: win.scrollX,
-					y: win.scrollY,
-					width: win.innerWidth,
-					height: win.innerHeight,
-					scrollWidth: doc.scrollWidth,
-					scrollHeight: doc.scrollHeight,
+					viewport: {
+						width: win.innerWidth,
+						height: win.innerHeight,
+						deviceScaleFactor: win.devicePixelRatio,
+					},
+					scroll: {
+						x: win.scrollX,
+						y: win.scrollY,
+						width: win.innerWidth,
+						height: win.innerHeight,
+						scrollWidth: doc.scrollWidth,
+						scrollHeight: doc.scrollHeight,
+					},
 				};
 			}),
-		)) as Observation["scroll"];
+		);
+		this.#lastViewport = geometry.viewport;
 		return {
 			url: page.url(),
 			title: (await untilAborted(options.signal, () => page.title())) as string,
-			viewport: page.viewport() ?? DEFAULT_VIEWPORT,
-			scroll,
+			viewport: geometry.viewport,
+			scroll: geometry.scroll,
 			elements: entries,
 		};
 	}

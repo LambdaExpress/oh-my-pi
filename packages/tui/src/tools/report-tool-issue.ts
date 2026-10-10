@@ -1,11 +1,17 @@
 import type { Component } from "../index";
 import { t } from "../i18n";
 import type { Theme } from "../theme/theme";
-import { renderDeviceCallPreview } from "./resolve";
+import type { NativeToolView } from "./renderer";
+import { describeDeviceCallPreview, renderDeviceCallPreview } from "./resolve";
 
 /** Call preview for an `xd://report_issue` write. */
 export function renderReportIssueDeviceCall(content: unknown, uiTheme: Theme): Component {
 	return renderDeviceCallPreview(t("Report Tool Issue"), content, uiTheme);
+}
+
+/** Native call preview for an `xd://report_issue` write. */
+export function describeReportIssueDeviceCall(content: unknown): NativeToolView {
+	return describeDeviceCallPreview("Report Tool Issue", content);
 }
 
 /** Device name for automatic tool issue reports. */

@@ -1,8 +1,10 @@
-import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { RenderResultOptions } from "../src/tools/renderer";
-import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-tui/theme";
+import { ensureThemeSync, setThemeInstance, theme, type Theme } from "@oh-my-pi/pi-tui/theme";
+import { loadThemeSync } from "@oh-my-pi/pi-tui/theme/loader";
+import { setLocale } from "@oh-my-pi/pi-tui/i18n";
 import { bashToolRenderer, formatBackgroundNotice } from "@oh-my-pi/pi-tui/tools/bash";
 import { previewWindowRows } from "@oh-my-pi/pi-tui/render/render-utils";
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
@@ -17,15 +19,23 @@ const terminal = TERMINAL as unknown as MutableTerminalInfo;
 describe("bashToolRenderer", () => {
 	const originalProtocol = TERMINAL.imageProtocol;
 	let uiTheme: Theme;
+	let previousTheme: Theme;
 
-	beforeAll(async () => {
-		const loadedTheme = await getThemeByName("dark");
-		if (!loadedTheme) throw new Error("Expected dark theme");
-		uiTheme = loadedTheme;
+	beforeAll(() => {
+		uiTheme = loadThemeSync("dark", { mode: "truecolor", symbolPresetOverride: "unicode" });
+	});
+
+	beforeEach(() => {
+		ensureThemeSync();
+		previousTheme = theme;
+		setThemeInstance(uiTheme);
+		setLocale("en");
 	});
 
 	afterEach(() => {
 		terminal.imageProtocol = originalProtocol;
+		setThemeInstance(previousTheme);
+		setLocale(null);
 	});
 
 	it("shows rendered env assignments in the command preview", async () => {
@@ -65,17 +75,25 @@ describe("bashToolRenderer", () => {
 	});
 
 	it("renders streamed raw commands instead of stale parsed commands", async () => {
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
-		const uiTheme = theme!;
 		const component = bashToolRenderer.renderCall(
 			{ command: "echo stale", __partialJson: '{"command":"echo streamed' },
 			{ expanded: false, isPartial: true },
 			uiTheme,
 		);
-		const rendered = Bun.stripANSI(component.render(120).join("\n"));
+		const rendered = sanitizeText(component.render(120).join("\n"));
 		expect(rendered).toContain("echo streamed");
 		expect(rendered).not.toContain("echo stale");
+	});
+
+	it("reads streamed env assignments only from inside the env object", async () => {
+		const component = bashToolRenderer.renderCall(
+			{ command: "ls", __partialJson: '{"env":{"A":"1","B":"two"},"command":"ls' },
+			{ expanded: false, isPartial: true },
+			uiTheme,
+		);
+		const rendered = sanitizeText(component.render(120).join("\n"));
+		expect(rendered).toContain('A="1" B="two"');
+		expect(rendered).not.toContain("command=");
 	});
 
 	it("sanitizes command tabs and shortens home cwd in previews", async () => {
@@ -294,16 +312,14 @@ describe("bashToolRenderer", () => {
 		const lines = component.render(80);
 
 		expect(lines.filter(line => line === sixel)).toHaveLength(1);
-		expect(lines.some(line => line.includes("ctrl+o to expand"))).toBe(false);
 	});
 
 	it("highlights every line of a multi-line bash command in renderResult", async () => {
-		setThemeInstance(uiTheme!);
 		const command = 'for f in a b; do\n\techo "$f"\ndone';
 		const component = bashToolRenderer.renderResult(
 			{ content: [{ type: "text", text: "" }], details: {}, isError: false },
 			{ expanded: false, isPartial: false },
-			uiTheme!,
+			uiTheme,
 			{ command },
 		);
 		const rendered = component.render(120);

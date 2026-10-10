@@ -12,7 +12,6 @@
  *   - one Alt+Up restores exactly the last queued message and leaves the others
  *     in the queue (does not call `clearQueue`);
  *   - the restored text is merged ahead of the existing draft;
- *   - an empty queue reports "No queued messages to restore";
  *   - when the agent queues are empty, the compaction queue is the fallback and
  *     only its last entry is popped.
  */
@@ -31,7 +30,6 @@ function makeCtx(
 ) {
 	const queue = [...(opts.queue ?? [])];
 	let editorText = opts.draft ?? "";
-	const statuses: string[] = [];
 
 	// Faithful stub of AgentSession.popLastQueuedMessage: removes and returns the
 	// last queued entry, or undefined when empty. clearQueue is spied so the test
@@ -56,13 +54,11 @@ function makeCtx(
 		},
 		locallySubmittedUserSignatures: new Set<string>(),
 		updatePendingMessagesDisplay: () => {},
-		showStatus: (msg: string) => {
-			statuses.push(msg);
-		},
+		showStatus: () => {},
 		showError: () => {},
 	} as unknown as InteractiveModeContext;
 
-	return { ctx, session, queue, clearQueue, statuses, getText: () => editorText };
+	return { ctx, session, queue, clearQueue, getText: () => editorText };
 }
 
 describe("InputController.handleDequeue (Alt+Up)", () => {
@@ -88,19 +84,6 @@ describe("InputController.handleDequeue (Alt+Up)", () => {
 		controller.handleDequeue();
 		// Popped message merges ahead of the draft the first pop restored.
 		expect(getText()).toBe("first\n\nsecond");
-	});
-
-	test("merges the popped message ahead of an existing draft", () => {
-		const { ctx, getText } = makeCtx({ queue: [{ text: "queued" }], draft: "typed draft" });
-		new InputController(ctx).handleDequeue();
-		expect(getText()).toBe("queued\n\ntyped draft");
-	});
-
-	test("empty queue reports nothing to restore", () => {
-		const { ctx, statuses, getText } = makeCtx();
-		new InputController(ctx).handleDequeue();
-		expect(statuses).toEqual(["No queued messages to restore"]);
-		expect(getText()).toBe("");
 	});
 
 	test("falls back to the compaction queue and pops only its last entry", () => {

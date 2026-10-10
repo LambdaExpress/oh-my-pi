@@ -20,6 +20,7 @@ import {
 	encodeSecurityProjectKey,
 	parseSecurityScanBundle,
 } from "../contracts";
+import { pathIsWithin } from "../preflight";
 
 interface SarifRegion {
 	startLine?: number;
@@ -91,10 +92,6 @@ function severityFromSarif(result: SarifResult): SecuritySeverityLevel {
 		default:
 			return "informational";
 	}
-}
-
-function pathIsWithin(candidate: string, root: string): boolean {
-	return candidate === root || candidate.startsWith(`${root}${path.sep}`);
 }
 
 async function resolveSarifArtifactPath(

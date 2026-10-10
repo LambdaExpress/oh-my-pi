@@ -1,12 +1,17 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { TranscriptContainer, type TranscriptStableRow } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import {
+	TranscriptContainer,
+	type TranscriptStableRow,
+	trimBlankEdges,
+} from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { Component } from "@oh-my-pi/pi-tui";
 
 class Block implements Component {
 	#rows: string[];
 	#finalized: boolean;
-	allocations: number[] = [];
 
 	constructor(rows: string[], finalized: boolean) {
 		this.#rows = rows;
@@ -20,10 +25,6 @@ class Block implements Component {
 
 	isTranscriptBlockFinalized(): boolean {
 		return this.#finalized;
-	}
-
-	setTranscriptAllocation(rows: number): void {
-		this.allocations.push(rows);
 	}
 
 	render(): readonly string[] {
@@ -98,6 +99,36 @@ class ToolBlock extends Block {
 	setToolActivityVisible(): void {}
 }
 
+/** A settled block whose render costs real wall-clock time, like a markdown-heavy message. */
+class SlowBlock extends Block {
+	#costMs: number;
+
+	constructor(rows: string[], costMs: number) {
+		super(rows, true);
+		this.#costMs = costMs;
+	}
+
+	override render(): readonly string[] {
+		const until = performance.now() + this.#costMs;
+		while (performance.now() < until) {}
+		return super.render();
+	}
+}
+
+/** A settled block that records how often the container rendered it. */
+class CountingBlock extends Block {
+	renders = 0;
+
+	constructor(rows: string[]) {
+		super(rows, true);
+	}
+
+	override render(): readonly string[] {
+		this.renders++;
+		return super.render();
+	}
+}
+
 function literalStableRow(row: string): TranscriptStableRow {
 	return { key: row };
 }
@@ -170,6 +201,27 @@ class ReflowingAppendBlock implements Component {
 		return [...this.renderTranscriptStableRows(1, width), this.#finalized ? "final" : "partial"];
 	}
 }
+
+const finalAnswer: AssistantMessage = {
+	role: "assistant",
+	content: [
+		{ type: "thinking", thinking: "Reasoning first" },
+		{ type: "text", text: "## Implemented" },
+	],
+	api: "openai-codex-responses",
+	provider: "openai-codex",
+	model: "gpt-5.6-sol",
+	stopReason: "stop",
+	usage: {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	},
+	timestamp: 1,
+};
 
 const frame = { tick: 0, now: 0 };
 
@@ -252,6 +304,33 @@ describe("TranscriptContainer", () => {
 		expect(transcript.peekFinalizedBatch(80, 0)?.rows).toEqual(["two", ""]);
 	});
 
+	it("freezes same-length drift in a reused render buffer without changing emitted history", () => {
+		const transcript = new TranscriptContainer();
+		const stableRender = ["one"];
+		const fullRender = ["one", "tail"];
+		const block = new (class extends AppendBlock {
+			override renderTranscriptStableRows(count: number): readonly string[] {
+				return count === stableRender.length ? stableRender : stableRender.slice(0, count);
+			}
+		})(fullRender, stableRender);
+		transcript.addChild(block);
+
+		const emitted = transcript.peekFinalizedBatch(80, 1);
+		if (!emitted) throw new Error("Expected stable history batch");
+		transcript.acknowledgeFinalizedBatch(emitted.id);
+
+		stableRender[0] = "changed";
+		fullRender[0] = "changed";
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["tail"]);
+		expect(emitted.rows).toEqual(["one"]);
+
+		// Restoring the old prefix does not unfreeze publication.
+		stableRender.splice(0, 1, "one", "two");
+		fullRender.splice(0, 2, "one", "two", "tail");
+		block.publish(stableRender);
+		expect(transcript.peekFinalizedBatch(80, 0)).toBeUndefined();
+	});
+
 	it("emits only the stable current head under row pressure", () => {
 		const transcript = new TranscriptContainer();
 		const head = new Block(["mutable head"], false);
@@ -314,6 +393,9 @@ describe("TranscriptContainer", () => {
 		block.finalize(["complete"]);
 		expect(transcript.peekFinalizedBatch(80, 0)).toBeUndefined();
 		expect(transcript.blockStates()).toEqual(["committed"]);
+		expect(transcript.render(80)).toEqual(["complete"]);
+		transcript.beginReplay();
+		expect(transcript.peekReplayBatch(80)?.rows).toEqual(["complete", ""]);
 	});
 
 	it("replays and retires semantic stable rows after they reflow at a new width", () => {
@@ -473,6 +555,26 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderViewport(80, 1)).toEqual(["fresh live"]);
 	});
 
+	it("never replays a frame's measurements after the block changes outside that frame", () => {
+		const transcript = new TranscriptContainer();
+		const block = new Block(["draft"], false);
+		transcript.addChild(block);
+		const first = { tick: 0, now: 0 };
+		transcript.beginFrame(first);
+		expect(transcript.liveRowCount(80)).toBe(1);
+		expect(transcript.renderViewport(80, 5, first)).toEqual(["draft"]);
+
+		// The viewport closed the frame: a later peek measures the change.
+		block.finalize(["revised", "twice"]);
+		expect(transcript.liveRowCount(80)).toBe(2);
+
+		// A viewport for a different frame discards the open frame's measurements.
+		transcript.beginFrame({ tick: 1, now: 16 });
+		expect(transcript.peekFinalizedBatch(80, 5)).toBeUndefined();
+		block.finalize(["late"]);
+		expect(transcript.renderViewport(80, 5, { tick: 2, now: 32 })).toEqual(["late"]);
+	});
+
 	it("keeps full semantic block rendering instead of compacting each block", () => {
 		const transcript = new TranscriptContainer();
 		const first = new Block(["first top", "first bottom"], false);
@@ -482,8 +584,6 @@ describe("TranscriptContainer", () => {
 
 		expect(transcript.renderViewport(80, 3, frame)).toEqual(["", "second top", "second bottom"]);
 		expect(transcript.renderViewport(80, 1, frame)).toEqual(["second bottom"]);
-		expect(first.allocations.at(-1)).toBe(Number.MAX_SAFE_INTEGER);
-		expect(second.allocations.at(-1)).toBe(Number.MAX_SAFE_INTEGER);
 		expect(transcript.canAdmit(2)).toBe(false);
 	});
 	it("moves overflowing full-fidelity active rows into visual history instead of clipping them", () => {
@@ -512,6 +612,78 @@ describe("TranscriptContainer", () => {
 		// settled transcript prefix live for one frame while it drains next.
 		expect(transcript.renderViewport(80, 1)).toEqual(["current tool"]);
 	});
+	it("retires a resumed ledger across frames instead of one blocking batch (#12933)", () => {
+		const transcript = new TranscriptContainer();
+		const blocks = Array.from({ length: 6 }, (_, index) => new SlowBlock([`block ${index}`], 4));
+		for (const block of blocks) transcript.addChild(block);
+
+		const drained: string[] = [];
+		let batches = 0;
+		for (let batch = transcript.peekFinalizedBatch(80, 0); batch !== undefined;) {
+			drained.push(...batch.rows);
+			transcript.acknowledgeFinalizedBatch(batch.id);
+			if (++batches > blocks.length) throw new Error("retirement did not converge");
+			batch = transcript.peekFinalizedBatch(80, 0);
+		}
+
+		// The whole backlog would block the frame that first paints it, so a
+		// batch stops at the render budget and the rest follows on later frames.
+		expect(batches).toBeGreaterThan(1);
+		// Chunking must not reorder, drop, or duplicate a single scrollback row.
+		expect(drained.filter(row => row !== "")).toEqual(blocks.map((_, index) => `block ${index}`));
+		expect(transcript.blockStates()).toEqual(blocks.map(() => "committed"));
+	});
+
+	it("drains budgeted successors while the zero-row collapse anchor remains open", () => {
+		const transcript = new TranscriptContainer();
+		const gate = new TransparentGate();
+		const blocks = Array.from({ length: 6 }, (_, index) => new SlowBlock([`block ${index}`], 4));
+		transcript.addChild(blocks[0]!);
+		transcript.addChild(gate);
+		for (const block of blocks.slice(1)) transcript.addChild(block);
+
+		const history: string[] = [];
+		let batches = 0;
+		for (let batch = transcript.peekFinalizedBatch(80, 0); batch !== undefined;) {
+			expect(transcript.peekFinalizedBatch(80, 40)).toBe(batch);
+			history.push(...batch.rows);
+			transcript.acknowledgeFinalizedBatch(batch.id);
+			if (++batches > blocks.length) throw new Error("successor retirement did not converge");
+			batch = transcript.peekFinalizedBatch(80, 0);
+		}
+
+		expect(history.filter(Boolean)).toEqual(blocks.map((_, index) => `block ${index}`));
+		expect(transcript.blockStates()).toEqual([
+			"committed",
+			"active",
+			...blocks.slice(1).map(() => "committed" as const),
+		]);
+		expect(transcript.renderViewport(80, 10)).toEqual([]);
+	});
+
+	it("retires hidden blocks without introducing blank history at the live-block limit", () => {
+		const transcript = new TranscriptContainer();
+		for (let index = 0; index < 256; index++) transcript.addChild(new Block([], true));
+
+		const empty = transcript.peekFinalizedBatch(80, 10);
+		if (!empty) throw new Error("expected live-block-limit retirement");
+		expect(empty.rows).toEqual([]);
+		transcript.acknowledgeFinalizedBatch(empty.id);
+		transcript.addChild(new Block(["visible"], false));
+		expect(transcript.renderViewport(80, 10)).toEqual(["visible"]);
+	});
+
+	it("leaves the backlog behind the screen unrendered while painting (#12933)", () => {
+		const transcript = new TranscriptContainer();
+		const blocks = Array.from({ length: 40 }, (_, index) => new CountingBlock([`row ${index}`]));
+		for (const block of blocks) transcript.addChild(block);
+
+		expect(transcript.renderViewport(80, 4, frame)).toEqual(["", "row 38", "", "row 39"]);
+		// Full semantic rows and separators survive tail clipping without
+		// rendering the resumed session's offscreen backlog.
+		expect(blocks.slice(0, 34).map(block => block.renders)).toEqual(blocks.slice(0, 34).map(() => 0));
+	});
+
 	it("excludes empty blocks from semantic viewport capacity (issue 9483)", () => {
 		const transcript = new TranscriptContainer();
 		// Text blocks interleaved with empty (hidden tool-activity) blocks that
@@ -845,6 +1017,97 @@ describe("TranscriptContainer", () => {
 	});
 });
 
+describe("TranscriptContainer progressive assistant retirement", () => {
+	const WIDTH = 60;
+	const ROOM = 4;
+	const paragraph = (label: string, index: number): string =>
+		`${label} ${index} weighs **retirement** against native scrollback, with enough words to wrap.\n\n`;
+	// Two reasoning bursts publish multiple stable paragraphs before the
+	// answer closes thinking. Answer text remains the mutable live suffix.
+	const steps: AssistantMessage[] = [];
+	let reasoning = "";
+	for (let index = 0; index < 16; index++) {
+		reasoning += paragraph("Thought", index);
+		steps.push({ ...finalAnswer, content: [{ type: "thinking", thinking: `${reasoning}Pending` }] });
+	}
+	let answer = "";
+	for (let index = 0; index < 8; index++) {
+		answer += paragraph("Answer", index);
+		steps.push({
+			...finalAnswer,
+			content: [
+				{ type: "thinking", thinking: reasoning.trim() },
+				{ type: "text", text: `${answer}Pending` },
+			],
+		});
+	}
+
+	beforeAll(async () => {
+		await initTheme(false);
+	});
+
+	/** With `observe`, the transcript composes every update; otherwise only the block renders. */
+	function apply(
+		transcript: TranscriptContainer,
+		component: AssistantMessageComponent,
+		updates: readonly AssistantMessage[],
+		observe: boolean,
+	): void {
+		for (const update of updates) {
+			component.updateContent(update, { transient: true });
+			if (observe) transcript.renderViewport(WIDTH, 1000, frame);
+			else component.render(WIDTH);
+		}
+	}
+
+	function retire(transcript: TranscriptContainer, width: number): readonly string[] {
+		const batch = transcript.peekFinalizedBatch(width, ROOM);
+		if (!batch) throw new Error("Expected a stable-row batch");
+		transcript.acknowledgeFinalizedBatch(batch.id);
+		return batch.rows;
+	}
+
+	it("retires several published prefixes per batch as exactly the block's leading rows", () => {
+		const runs = [true, false].map(observe => {
+			const transcript = new TranscriptContainer();
+			const component = new AssistantMessageComponent();
+			transcript.addChild(component);
+			apply(transcript, component, steps.slice(0, 8), observe);
+			const first = retire(transcript, WIDTH);
+			const [firstCount = 0] = transcript.emittedStableRows();
+			apply(transcript, component, steps.slice(8), observe);
+			const second = retire(transcript, WIDTH);
+			const [secondCount = 0] = transcript.emittedStableRows();
+
+			expect(firstCount).toBeGreaterThan(1);
+			expect(secondCount - firstCount).toBeGreaterThan(1);
+			const live = transcript.renderViewport(WIDTH, 1000, frame);
+			expect([...first, ...second, ...live]).toEqual([...trimBlankEdges(component.render(WIDTH))]);
+			return { first, second, firstCount, secondCount };
+		});
+		// Whether or not the transcript saw each prefix as it published, the
+		// batches are the same rows.
+		expect(runs[1]).toEqual(runs[0]!);
+	});
+
+	it("retires further published prefixes after a resize as the new width's leading rows", () => {
+		const transcript = new TranscriptContainer();
+		const component = new AssistantMessageComponent();
+		transcript.addChild(component);
+		apply(transcript, component, steps.slice(0, 8), true);
+		retire(transcript, WIDTH);
+		apply(transcript, component, steps.slice(8), true);
+		const [emitted = 0] = transcript.emittedStableRows();
+
+		const narrow = 44;
+		const emittedRows = component.renderTranscriptStableRows(emitted, narrow);
+		const next = retire(transcript, narrow);
+		expect(transcript.emittedStableRows()[0]! - emitted).toBeGreaterThan(1);
+		const live = transcript.renderViewport(narrow, 1000, frame);
+		expect([...emittedRows, ...next, ...live]).toEqual([...trimBlankEdges(component.render(narrow))]);
+	});
+});
+
 describe("TranscriptContainer viewport click spans", () => {
 	it("maps uncapped viewport rows to their blocks, skipping separators", () => {
 		const transcript = new TranscriptContainer();
@@ -872,11 +1135,6 @@ describe("TranscriptContainer viewport click spans", () => {
 		expect(transcript.renderViewport(80, 5, frame)).toEqual(["", "b1", "b2", "b3", "b4"]);
 		expect(transcript.getLastViewportSpans()).toEqual([{ component: second, start: 1, end: 5 }]);
 	});
-
-	// Removed: the "N more transcript blocks active" emergency summary row no longer
-	// exists. Fork commit d1854122ce ("preserve complete transcript handoffs") deleted
-	// the allocation/emergency-summary machinery from renderViewport in favour of global
-	// tail clipping, which keeps only the tail rows of the deepest blocks.
 
 	it("clears spans when the tail is empty or cleared", () => {
 		const transcript = new TranscriptContainer();

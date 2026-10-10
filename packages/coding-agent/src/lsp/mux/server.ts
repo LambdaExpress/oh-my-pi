@@ -99,6 +99,8 @@ class ServerInstance {
 	nextId = 1;
 	nextClientId = 1;
 	lingerTimer?: NodeJS.Timeout;
+	exitPromise?: Promise<void>;
+	stopPromise?: Promise<void>;
 	stopping = false;
 
 	constructor(key: string, params: MuxConnectParams) {
@@ -107,6 +109,7 @@ class ServerInstance {
 			cwd: params.cwd,
 			stdin: "pipe",
 			env: { ...Bun.env, ...params.env },
+			detached: process.platform !== "win32",
 		});
 	}
 
@@ -451,7 +454,10 @@ export class LspMuxServer {
 		const server = new ServerInstance(key, params);
 		this.#servers.add(server);
 		void this.#readServer(server);
-		server.proc.exited.then(
+		// The normalized exit can wait indefinitely for stderr inherited by a
+		// descendant. Observe the root directly so that tree cleanup can run.
+		void server.proc.exited.catch(() => {});
+		server.exitPromise = server.proc.proc.exited.then(
 			async exitCode => {
 				await server.proc.waitForStderrDrain(250);
 				this.#serverExited(server, exitCode);
@@ -659,8 +665,12 @@ export class LspMuxServer {
 		if (session.closed) return;
 		session.closed = true;
 		this.#sessions.delete(session);
+		if (this.#sessions.size === 0) this.#armMuxIdle();
 		const server = session.server;
 		if (server) {
+			// Keep the closed session bound until its overlay cleanup finishes,
+			// but start its resource lifetime now, not after a possibly stuck flush.
+			this.#armServerLinger(server);
 			// Teardown writes are best-effort: the language server may already
 			// have exited (crash or mux restart) and writing its stdin then
 			// rejects. #writeServer already logs those failures — a rejection
@@ -685,18 +695,23 @@ export class LspMuxServer {
 			}
 			server.initializeWaiters.delete(session);
 			server.sessions.delete(session);
-			if (server.sessions.size === 0 && !server.stopping) {
-				server.lingerTimer = setTimeout(() => {
-					if (server.sessions.size === 0) void this.#stopServer(server);
-				}, SERVER_LINGER_MS);
-			}
 		}
-		if (this.#sessions.size === 0) this.#armMuxIdle();
+	}
+
+	#armServerLinger(server: ServerInstance): void {
+		if (server.stopping || server.lingerTimer) return;
+		for (const session of server.sessions) if (!session.closed) return;
+		server.lingerTimer = setTimeout(() => {
+			for (const session of server.sessions) if (!session.closed) return;
+			void this.#stopServer(server);
+		}, SERVER_LINGER_MS);
 	}
 
 	#serverExited(server: ServerInstance, exitCode = server.proc.exitCode ?? -1): void {
-		server.stopping = true;
-		this.#servers.delete(server);
+		if (!this.#servers.delete(server)) return;
+		// A wrapper can exit without its language-server descendants. ptree
+		// retains the Windows root handle or the detached POSIX process group.
+		this.#killServer(server);
 		if (server.lingerTimer) clearTimeout(server.lingerTimer);
 		server.pending.clear();
 		const params: MuxServerExitParams = { exitCode, stderr: server.proc.peekStderr() };
@@ -707,27 +722,45 @@ export class LspMuxServer {
 		server.sessions.clear();
 	}
 
-	async #stopServer(server: ServerInstance): Promise<void> {
-		if (server.stopping) return;
+	#stopServer(server: ServerInstance): Promise<void> {
+		if (server.stopPromise) return server.stopPromise;
+		if (server.stopping) return Promise.resolve();
+		server.stopPromise = this.#performServerStop(server);
+		return server.stopPromise;
+	}
+
+	async #performServerStop(server: ServerInstance): Promise<void> {
 		server.stopping = true;
 		if (server.lingerTimer) clearTimeout(server.lingerTimer);
 		const id = server.muxId();
 		const { promise, resolve } = Promise.withResolvers<void>();
 		server.pending.set(id, { resolveInternal: resolve });
+		// The budget covers queued writes as well as the shutdown response;
+		// otherwise a server that stops reading stdin can prevent its own kill.
+		const timeout = Promise.withResolvers<void>();
+		const timer = setTimeout(timeout.resolve, SHUTDOWN_BUDGET_MS);
 		try {
-			await this.#writeServer(server, { jsonrpc: "2.0", id, method: "shutdown", params: null });
-			const timeout = Promise.withResolvers<void>();
-			const timer = setTimeout(timeout.resolve, SHUTDOWN_BUDGET_MS);
-			try {
-				await Promise.race([promise, timeout.promise]);
-			} finally {
-				clearTimeout(timer);
-			}
-			await this.#writeServer(server, { jsonrpc: "2.0", method: "exit" });
+			await Promise.race([
+				this.#writeServer(server, { jsonrpc: "2.0", id, method: "shutdown", params: null })
+					.then(() => promise)
+					.then(() => this.#writeServer(server, { jsonrpc: "2.0", method: "exit" })),
+				timeout.promise,
+			]);
 		} catch (error) {
 			logger.warn("LSP mux graceful server shutdown failed", { server: server.key, error: String(error) });
 		} finally {
+			clearTimeout(timer);
+			server.pending.delete(id);
 			this.#killServer(server);
+			// The daemon may exit as soon as shutdown resolves. Give the raw-exit
+			// handler time to finish its descendant sweep before that happens.
+			const killed = Promise.withResolvers<void>();
+			const killTimer = setTimeout(killed.resolve, SHUTDOWN_BUDGET_MS);
+			try {
+				await Promise.race([server.exitPromise, killed.promise]);
+			} finally {
+				clearTimeout(killTimer);
+			}
 		}
 	}
 

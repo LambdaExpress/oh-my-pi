@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -11,8 +11,10 @@ import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
-import { getProjectAgentDir, getProjectDir, setProjectDir, removeWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import * as shellSnapshot from "@oh-my-pi/pi-coding-agent/utils/shell-snapshot";
+import { getProjectAgentDir, getProjectDir, removeWithRetries, setProjectDir, Snowflake } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
+import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
 function textContent(result: { content?: Array<{ type: string; text?: string }> }): string {
 	return (
@@ -27,10 +29,17 @@ function textContent(result: { content?: Array<{ type: string; text?: string }> 
 
 describe("createAgentSession cwd after /move", () => {
 	const tempDirs: string[] = [];
+	let settingsState: SettingsTestState | undefined;
+
+	beforeEach(() => {
+		settingsState = beginSettingsTest();
+	});
 
 	afterEach(async () => {
+		restoreSettingsTestState(settingsState);
+		settingsState = undefined;
 		for (const tempDir of tempDirs.splice(0)) {
-			await removeWithRetries(tempDir).catch(() => {});
+			await removeWithRetries(tempDir);
 		}
 	});
 
@@ -87,7 +96,7 @@ describe("createAgentSession cwd after /move", () => {
 					),
 				);
 				const settings = await Settings.loadIsolated({ cwd: cwdA, agentDir });
-				const sessionManager = SessionManager.create(cwdA, path.join(tempDir, "sessions"));
+				const sessionManager = SessionManager.create(cwdA, SessionManager.getDefaultSessionDir(cwdA, agentDir));
 				authStorage.keys.setRuntime("openai", "test-key");
 				({ session } = await createAgentSession({
 					cwd: cwdA,
@@ -119,6 +128,7 @@ describe("createAgentSession cwd after /move", () => {
 
 				moved = true;
 				await sessionManager.moveTo(cwdB);
+				expect(sessionManager.getSessionDir().startsWith(`${agentDir}${path.sep}`)).toBe(true);
 				await settings.reloadForCwd(cwdB);
 				// Rebinding must clear memory without depending on a later skill/tool refresh.
 				await rebindMemoryBackendForCwd(session);
@@ -134,9 +144,12 @@ describe("createAgentSession cwd after /move", () => {
 					expect(prompt).toContain("# Memory");
 				}
 			} finally {
-				await session?.dispose();
-				authStorage.close();
-				await server.stop(true);
+				try {
+					await session?.dispose();
+				} finally {
+					authStorage.close();
+					await server.stop(true);
+				}
 			}
 		},
 	);
@@ -150,21 +163,23 @@ describe("createAgentSession cwd after /move", () => {
 		fs.mkdirSync(cwdB, { recursive: true });
 		fs.writeFileSync(path.join(cwdA, "marker.txt"), "source\n", "utf8");
 		fs.writeFileSync(path.join(cwdB, "marker.txt"), "moved\n", "utf8");
+		const agentDir = path.join(tempDir, "agent");
 
-		const sessionManager = SessionManager.create(cwdA, path.join(tempDir, "sessions"));
+		const sessionManager = SessionManager.create(cwdA, SessionManager.getDefaultSessionDir(cwdA, agentDir));
 		const authStorage = createInMemoryAuthStorage();
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
+		const settings = Settings.isolated({
+			"async.enabled": false,
+			"bash.autoBackground.enabled": false,
+			"bashInterceptor.enabled": false,
+		});
 		const { session } = await createAgentSession({
 			cwd: cwdA,
-			agentDir: tempDir,
+			agentDir,
 			sessionManager,
 			authStorage,
 			modelRegistry,
-			settings: Settings.isolated({
-				"async.enabled": false,
-				"bash.autoBackground.enabled": false,
-				"bashInterceptor.enabled": false,
-			}),
+			settings,
 			model: getBundledModel("openai", "gpt-4o-mini"),
 			disableExtensionDiscovery: true,
 			skills: [],
@@ -179,8 +194,12 @@ describe("createAgentSession cwd after /move", () => {
 			toolNames: ["read", "bash"],
 		});
 
+		// Keep executor settings and the user snapshot cache isolated while executing the real shell.
+		const settingsInit = vi.spyOn(Settings, "init").mockResolvedValue(settings);
+		const snapshot = vi.spyOn(shellSnapshot, "getOrCreateSnapshot").mockResolvedValue(null);
 		try {
 			await sessionManager.moveTo(cwdB);
+			expect(sessionManager.getSessionDir().startsWith(`${agentDir}${path.sep}`)).toBe(true);
 
 			const readTool = session.getToolByName("read");
 			if (!readTool) throw new Error("Expected read tool");
@@ -190,10 +209,14 @@ describe("createAgentSession cwd after /move", () => {
 
 			const bashTool = session.getToolByName("bash");
 			if (!bashTool) throw new Error("Expected bash tool");
-			const pwdResult = await bashTool.execute("pwd-after-move", { command: "pwd" });
+			const bashResult = await bashTool.execute("bash-after-move", { command: "cat marker.txt" });
 
-			expect(textContent(pwdResult)).toContain(cwdB);
+			const bashLines = textContent(bashResult).split(/\r?\n/);
+			expect(bashLines).toContain("moved");
+			expect(bashLines).not.toContain("source");
 		} finally {
+			settingsInit.mockRestore();
+			snapshot.mockRestore();
 			try {
 				await session.dispose();
 			} finally {
@@ -220,7 +243,7 @@ describe("createAgentSession cwd after /move", () => {
 			),
 		);
 		const settings = await Settings.loadIsolated({ cwd: cwdA, agentDir });
-		const sessionManager = SessionManager.create(cwdA, path.join(tempDir, "sessions"));
+		const sessionManager = SessionManager.create(cwdA, SessionManager.getDefaultSessionDir(cwdA, agentDir));
 		const authStorage = createInMemoryAuthStorage();
 		const { session } = await createAgentSession({
 			cwd: cwdA,
@@ -247,20 +270,17 @@ describe("createAgentSession cwd after /move", () => {
 		try {
 			expect(session.getHindsightSessionState()).toBeUndefined();
 			expect(session.getMnemopiSessionState()).toBeUndefined();
-			const output: string[] = [];
 			await executeAcpBuiltinSlashCommand("/move " + cwdB, {
 				session,
 				sessionManager,
 				settings,
 				cwd: cwdA,
-				output: text => {
-					output.push(text);
-				},
+				output: () => {},
 				refreshCommands: () => {},
 				reloadPlugins: async () => {},
 			});
-			expect(output.join("\n")).toContain("Moved to ");
 			expect(sessionManager.getCwd()).toBe(cwdB);
+			expect(sessionManager.getSessionDir().startsWith(`${agentDir}${path.sep}`)).toBe(true);
 			expect(session.getHindsightSessionState()).toBeUndefined();
 			expect(session.getMnemopiSessionState()).toBeUndefined();
 			// Explicit backend reapplication must preserve the same startup policy.

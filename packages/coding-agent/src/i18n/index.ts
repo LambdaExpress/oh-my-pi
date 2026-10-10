@@ -13,7 +13,7 @@ const CATALOGS: Record<Exclude<Locale, "en">, Record<string, string>> = { "zh-CN
  * follows the OS UI language on Windows (Bun resolves it via ICU).
  */
 export function detectSystemLocale(): Locale {
-	const envLang = process.env.LANG ?? process.env.LC_ALL ?? process.env.LC_MESSAGES ?? "";
+	const envLang = process.env.LC_ALL || process.env.LC_MESSAGES || process.env.LANG || "";
 	if (/^zh/i.test(envLang)) return "zh-CN";
 	// A non-C locale env var is authoritative (e.g. en_US.UTF-8).
 	if (envLang && !/^C\b|^POSIX\b/i.test(envLang)) return "en";

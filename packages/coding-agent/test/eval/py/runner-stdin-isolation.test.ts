@@ -24,7 +24,10 @@ interface RunnerFrame {
 	evalue?: string;
 }
 
-const pythonPath = Bun.env.PYTHON ?? ($which("python3") ? "python3" : "python");
+const pythonPath =
+	Bun.env.PYTHON ??
+	(process.platform === "win32" ? ($which("python") ?? $which("python3")) : ($which("python3") ?? $which("python"))) ??
+	"python";
 const gitPath = $which("git");
 const runnerPath = path.resolve(import.meta.dir, "../../../src/eval/py/runner.py");
 const encoder = new TextEncoder();
@@ -93,6 +96,7 @@ async function runCell(code: string, cwd?: string): Promise<{ frames: RunnerFram
 		} catch {
 			// Process already exited.
 		}
+		await proc.exited;
 	}
 }
 
@@ -148,7 +152,7 @@ describe.skipIf(!pythonPath)("Python runner stdin isolation", () => {
 				"import subprocess, time",
 				`repo = ${JSON.stringify(repo.dir)}`,
 				"t0 = time.monotonic()",
-				"p = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=repo, text=True, encoding='utf-8', errors='replace', capture_output=True)",
+				`p = subprocess.run([${JSON.stringify(gitPath)}, 'rev-parse', '--show-toplevel'], cwd=repo, text=True, encoding='utf-8', errors='replace', capture_output=True)`,
 				"print('ELAPSED', round(time.monotonic() - t0, 2), 'rc', p.returncode, 'out', repr(p.stdout.strip()))",
 			].join("\n");
 			const { frames, elapsedMs } = await runCell(code);

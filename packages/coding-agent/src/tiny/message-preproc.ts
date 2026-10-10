@@ -106,7 +106,7 @@ export function preprocessTinyMessage(message: string): string {
  *  ends so ordinary user text merely containing a chat snippet never matches. */
 const CHAT_CONTEXT_ENVELOPE = /^\s*<chat>[\s\S]*<\/chat>\s*$/;
 /** Structural tags emitted by {@link formatTitleConversationContext}. */
-const CHAT_SCAFFOLD_TAG = /<\/?(?:chat|user)>/g;
+const CHAT_SCAFFOLD_TAG = /<\/?(?:chat|user|assistant)>/g;
 
 /** True when `message` is a preformatted replan context from
  *  {@link formatTitleConversationContext} — already cleaned per turn and
@@ -129,20 +129,22 @@ export function formatTitleUserMessage(message: string): string {
 	return `<user>\n${preprocessTinyMessage(message)}\n</user>`;
 }
 
-/** One recent user-authored turn supplied to title refresh after replanning. */
+/** One recent title-context turn; omitted roles remain user-authored. */
 export interface TitleConversationTurn {
 	text?: string;
+	role?: "user" | "assistant";
 }
 
-/** Format preprocessed recent user context for title generation after a todo replan. */
+/** Format bounded conversation context for title generation. */
 export function formatTitleConversationContext(turns: readonly TitleConversationTurn[]): string {
 	const formattedTurns: string[] = [];
 	for (const turn of turns) {
 		// Clean raw content before adding structural tags so paired-tag stripping
-		// cannot consume the `<user>` scaffolding added below.
+		// cannot consume the role scaffolding added below.
 		const text = cleanTinyMessage(turn.text ?? "").trim();
 		if (!text) continue;
-		formattedTurns.push(`<user>\n${text}\n</user>`);
+		const role = turn.role ?? "user";
+		formattedTurns.push(`<${role}>\n${text}\n</${role}>`);
 	}
 	if (formattedTurns.length === 0) return "";
 	return truncateTinyMessage(`<chat>\n${formattedTurns.join("\n\n")}\n</chat>`);

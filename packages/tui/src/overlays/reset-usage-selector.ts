@@ -8,8 +8,39 @@ import { OverlayPanel } from "../chrome/overlay-box";
 import { MenuSelection } from "../components/menu-selection";
 import { centeredViewportRange } from "../components/scroll-viewport";
 import { formatUsageResetWindow } from "./usage-display";
+import { formatKeyHint } from "../app-keybindings";
+import { editorKey, editorKeys } from "../chrome/keybinding-hints";
+import { node, span, text } from "../native/describe";
+import type { NativeNode, NativeUiEvent } from "../native/node";
+import { actionHint, hintsRow, overlayCard } from "../native/overlay";
 
 const RESET_SELECTOR_MAX_VISIBLE = 10;
+
+const oneLine = (value: string): string => sanitizeText(value.replace(/[\r\n\t]+/g, " "));
+
+/** Reset count, usability, expiry and unavailability of an account row, or its error. */
+function accountCountLabel(account: ResetUsageAccount): string {
+	if (account.error) return oneLine(account.error);
+	let countLabel = t(account.availableCount === 1 ? "{count} saved reset" : "{count} saved resets", {
+		count: account.availableCount,
+	});
+	if (account.redeemableCount !== account.availableCount) {
+		countLabel += ` · ${t("{count} usable now", { count: account.redeemableCount })}`;
+	}
+	if (account.expiresAt) {
+		const expiryMs = Date.parse(account.expiresAt);
+		if (!Number.isNaN(expiryMs)) {
+			countLabel +=
+				expiryMs > Date.now()
+					? ` · ${t("expires in {duration}", { duration: formatDuration(expiryMs - Date.now()) })}`
+					: ` · ${t("expired")}`;
+		}
+	}
+	if (account.redeemableCount <= 0 && account.unavailableReason) {
+		countLabel += ` · ${oneLine(account.unavailableReason)}`;
+	}
+	return countLabel;
+}
 
 /** One account row with its redeemable rate-limit reset credits. */
 export interface ResetUsageAccount {
@@ -46,9 +77,12 @@ export class ResetUsageSelectorComponent extends OverlayPanel {
 	#statusMessage: string | undefined;
 	#onSelectCallback: (account: ResetUsageAccount) => void;
 	#onCancelCallback: () => void;
+	#nativeItems: readonly NativeNode[] | undefined;
+	#nativeHints: NativeNode | undefined;
+	#nativeRoot: NativeNode | undefined;
 
 	constructor(accounts: ResetUsageAccount[], onSelect: (account: ResetUsageAccount) => void, onCancel: () => void) {
-		super(t("Spend a saved rate-limit reset"));
+		super(t("Spend a saved rate-limit reset"), "omp.overlay.reset-usage");
 		this.#onSelectCallback = onSelect;
 		this.#onCancelCallback = onCancel;
 		const firstRedeemable = accounts.find(account => account.redeemableCount > 0);
@@ -70,8 +104,8 @@ export class ResetUsageSelectorComponent extends OverlayPanel {
 	}
 
 	#updateList(): void {
+		this.#nativeRoot = undefined;
 		this.#listContainer.clear();
-		const oneLine = (value: string): string => sanitizeText(value.replace(/[\r\n\t]+/g, " "));
 
 		const items = this.#menu.visibleItems;
 		const total = items.length;
@@ -84,28 +118,7 @@ export class ResetUsageSelectorComponent extends OverlayPanel {
 			if (!account) continue;
 			const isSelected = i === this.#menu.selectedIndex;
 			const redeemable = account.redeemableCount > 0;
-			let countLabel: string;
-			if (account.error) {
-				countLabel = oneLine(account.error);
-			} else {
-				countLabel =
-					account.availableCount === 1
-						? t("{count} saved reset", { count: account.availableCount })
-						: t("{count} saved resets", { count: account.availableCount });
-				if (account.redeemableCount !== account.availableCount) {
-					countLabel += ` · ${account.redeemableCount} usable now`;
-				}
-				if (account.expiresAt) {
-					const expiryMs = Date.parse(account.expiresAt);
-					if (!Number.isNaN(expiryMs)) {
-						countLabel +=
-							expiryMs > Date.now() ? ` · expires in ${formatDuration(expiryMs - Date.now())}` : " · expired";
-					}
-				}
-				if (!redeemable && account.unavailableReason) {
-					countLabel += ` · ${oneLine(account.unavailableReason)}`;
-				}
-			}
+			const countLabel = accountCountLabel(account);
 			const countText = account.error
 				? theme.fg("error", countLabel)
 				: redeemable
@@ -146,7 +159,10 @@ export class ResetUsageSelectorComponent extends OverlayPanel {
 		const pending = items.find(item => this.#menu.isPending(item));
 		const hint = pending
 			? theme.fg("warning", oneLine(this.#confirmationMessage(pending)))
-			: theme.fg("muted", t("↑/↓ select · ↵ spend a reset · Esc cancel"));
+			: theme.fg(
+					"muted",
+					`${editorKeys("tui.select.up", "tui.select.down")} ${t("select")} · ${formatKeyHint("enter")} ${t("spend a reset")} · ${editorKey("tui.select.cancel")} ${t("cancel")}`,
+				);
 		this.#listContainer.addChild(new Text(hint, 0, 0));
 
 		if (this.#statusMessage) {
@@ -156,17 +172,26 @@ export class ResetUsageSelectorComponent extends OverlayPanel {
 	}
 
 	#confirmationMessage(account: ResetUsageAccount): string {
-		const subject = account.credit?.title ? `“${account.credit.title}”` : "1 saved reset";
-		const messages = [`Press Enter again to spend ${subject} for ${account.label} (${account.providerLabel}).`];
+		const subject = account.credit?.title ? `“${account.credit.title}”` : t("{count} saved reset", { count: 1 });
+		const messages = [
+			t("Press {key} again to spend {subject} for {label} ({provider}).", {
+				key: formatKeyHint("enter"),
+				subject,
+				label: account.label,
+				provider: account.providerLabel,
+			}),
+		];
 		if (account.credit?.program === "juniper_tide") {
-			messages.push("This resets Claude's 5h session limit only; weekly limits stay unchanged.");
+			messages.push(t("This resets Claude's 5h session limit only; weekly limits stay unchanged."));
 		} else if (account.credit?.clears?.length) {
-			messages.push(`Covers ${account.credit.clears.map(formatUsageResetWindow).join(", ")}.`);
+			messages.push(
+				t("Covers {windows}.", { windows: account.credit.clears.map(formatUsageResetWindow).join(", ") }),
+			);
 		}
 		if (account.credit?.requiresLimit === false) {
-			messages.push("Optional early use: this can be spent before the covered limit is reached.");
+			messages.push(t("Optional early use: this can be spent before the covered limit is reached."));
 		}
-		messages.push("Esc cancels.");
+		messages.push(t("{key} cancels.", { key: editorKey("tui.select.cancel") }));
 		return messages.join(" ");
 	}
 
@@ -202,25 +227,86 @@ export class ResetUsageSelectorComponent extends OverlayPanel {
 			this.#statusMessage = undefined;
 			this.#updateList();
 		} else if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
-			const account = this.#menu.selectedItem;
-			if (!account) return;
-			if (account.redeemableCount <= 0) {
-				this.#statusMessage = account.unavailableReason
-					? t("That account's saved resets are unavailable: {reason}", { reason: account.unavailableReason })
-					: t("That account has no saved resets usable right now.");
-				this.#updateList();
-				return;
-			}
-			const result = this.#menu.requestActivation();
-			if (result.kind === "pending") {
-				this.#statusMessage = undefined;
-				this.#updateList();
-				return;
-			}
-			if (result.kind === "confirmed") {
-				this.#onSelectCallback(result.item);
-				return;
-			}
+			this.#activateSelection();
 		}
+	}
+
+	#activateSelection(): void {
+		const account = this.#menu.selectedItem;
+		if (!account) return;
+		if (account.redeemableCount <= 0) {
+			this.#statusMessage = account.unavailableReason
+				? t("That account's saved resets are unavailable: {reason}", { reason: account.unavailableReason })
+				: t("That account has no saved resets usable right now.");
+			this.#updateList();
+			return;
+		}
+		const result = this.#menu.requestActivation();
+		if (result.kind === "pending") {
+			this.#statusMessage = undefined;
+			this.#updateList();
+			return;
+		}
+		if (result.kind === "confirmed") {
+			this.#onSelectCallback(result.item);
+		}
+	}
+
+	override describe(): NativeNode {
+		if (this.#nativeRoot) return this.#nativeRoot;
+		this.#nativeItems ??= this.#menu.visibleItems.map(account => {
+			const redeemable = account.redeemableCount > 0;
+			const detail = [span(`${oneLine(account.providerLabel)} · #${account.target.credentialId}`, "muted")];
+			if (account.active) detail.push(span(` (${t("active")})`, "muted"));
+			return node(
+				"item",
+				{
+					label: redeemable ? oneLine(account.label) : [span(oneLine(account.label), "dim")],
+					detail,
+					value: [span(accountCountLabel(account), account.error ? "error" : redeemable ? "success" : "dim")],
+				},
+				undefined,
+				this.#menu.adapter.getKey(account),
+			);
+		});
+		const pending = this.#menu.visibleItems.find(item => this.#menu.isPending(item));
+		const children: NativeNode[] = [
+			node(
+				"list",
+				{
+					selected: this.#menu.selectedKey ?? null,
+					empty: [span(t("No provider accounts with saved resets"), "muted")],
+					max: { lines: RESET_SELECTOR_MAX_VISIBLE },
+				},
+				this.#nativeItems,
+				"list",
+			),
+			pending
+				? text([span(oneLine(this.#confirmationMessage(pending)), "warning")])
+				: (this.#nativeHints ??= hintsRow([
+						actionHint(["tui.select.up", "tui.select.down"], t("select")),
+						{ keys: ["enter"], label: t("spend a reset") },
+						actionHint("tui.select.cancel", t("cancel")),
+					])),
+		];
+		if (this.#statusMessage) children.push(text([span(oneLine(this.#statusMessage), "warning")]));
+		this.#nativeRoot = overlayCard(this.nativeRole, this.title, children);
+		return this.#nativeRoot;
+	}
+
+	/**
+	 * A click (or double-click) on an account highlights it and presses Enter:
+	 * moving to another account drops a pending confirmation, so spending a
+	 * reset still takes a second activation of the same account.
+	 */
+	handleNativeEvent(event: NativeUiEvent): void {
+		if ((event.type !== "select" && event.type !== "activate") || event.key !== "list") return;
+		if (this.#menu.selectedKey !== event.item) {
+			this.#menu.cancelConfirmation();
+			this.#menu.setSelectedKey(event.item);
+			if (this.#menu.selectedKey !== event.item) return;
+			this.#statusMessage = undefined;
+		}
+		this.#activateSelection();
 	}
 }

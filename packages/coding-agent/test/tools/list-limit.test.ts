@@ -7,7 +7,6 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { GlobTool } from "../../src/tools/glob";
 import { applyListLimit } from "@oh-my-pi/pi-tui/tools/list-limit";
-import { formatOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 
 const manyItems = Array.from({ length: 6000 }, (_, i) => `item-${i}`);
 
@@ -106,7 +105,7 @@ describe("glob limit plumbing", () => {
 		}
 	});
 
-	it("hints at the capped suggestion instead of a limit the tool cannot honor", async () => {
+	it("truncates at the hard cap without offering an unusable larger limit", async () => {
 		const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "glob-hint-"));
 		try {
 			const files = Array.from({ length: 6000 }, (_, i) => `file-${i}.txt`);
@@ -116,9 +115,7 @@ describe("glob limit plumbing", () => {
 
 			expect(result.details?.fileCount).toBe(5000);
 			expect(result.details?.resultLimitReached).toBe(5000);
-			const notice = formatOutputNotice(result.details?.meta);
-			expect(notice).toContain("5000 results limit reached. Use limit=5000 for more");
-			expect(notice).not.toContain("Use limit=10000");
+			expect(result.details?.meta?.limits?.resultLimit).toEqual({ reached: 5000 });
 		} finally {
 			await removeWithRetries(tmpDir);
 		}

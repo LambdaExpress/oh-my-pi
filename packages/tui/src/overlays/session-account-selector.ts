@@ -30,7 +30,7 @@ export class SessionAccountSelectorComponent extends OverlayPanel {
 		onSelect: (account: SessionPinAccount) => void,
 		onCancel: () => void,
 	) {
-		super(t("Select a {providerName} account for this session", { providerName }));
+		super(t("Select a {providerName} account for this session", { providerName }), "omp.overlay.session-account");
 		const accountsByValue = new Map<string, SessionPinAccount>();
 		const items: SelectItem[] = accounts.map(account => {
 			const value = String(account.credentialId);

@@ -89,6 +89,7 @@ describe("async speculative compaction", () => {
 			"compaction.keepRecentTokens": 1,
 			"compaction.autoContinue": false,
 			"compaction.experimentalContextManagement": options.experimental ?? false,
+			"memory.backend": "off",
 		});
 		maintenanceSettings = settings;
 		const host = {
@@ -705,20 +706,33 @@ describe("async speculative compaction", () => {
 		const bundled = getBundledModel("anthropic", "claude-sonnet-4-6");
 		if (!bundled) throw new Error("Expected compaction-capable Anthropic model");
 		model = { ...bundled, contextWindow: CONTEXT_WINDOW };
+		vi.spyOn(modelRegistry, "getAvailable").mockReturnValue([model]);
 		maintenance = createMaintenance({ methodOrder: ["remote", "snapcompact"] });
+	}
+
+	function mockFailedNativeCompaction(cause: Error) {
+		const nativeSpy = vi.fn(async () => {
+			throw new compactionModule.NativeCompactionError(cause);
+		});
+		const localSpy = vi.fn(async () => {
+			throw new Error("Local summarization unavailable");
+		});
+		vi.spyOn(compactionModule, "compact").mockImplementation(
+			async (_preparation, _model, _key, _instructions, _signal, options) =>
+				options?.forceLocal ? localSpy() : nativeSpy(),
+		);
+		return { nativeSpy, localSpy };
 	}
 
 	it("falls back without re-sending a native speculation that failed for good", async () => {
 		useNativeCompactionModel();
 		// The on-demand compaction ran out of output tokens: the same request
-		// fails the same way at every later boundary.
-		const compactSpy = vi
-			.spyOn(compactionModule, "compact")
-			.mockRejectedValue(
-				new compactionModule.NativeCompactionError(
-					new Error("Anthropic compaction response carried no compaction block (stop reason: length)"),
-				),
-			);
+		// fails the same way at every later boundary. Its immediate local
+		// fallback is unavailable too, so the next configured method must own
+		// recovery without resending the dead native request.
+		const { nativeSpy, localSpy } = mockFailedNativeCompaction(
+			new Error("Anthropic compaction response carried no compaction block (stop reason: length)"),
+		);
 		const snapSpy = vi.spyOn(snapcompactModule, "compact").mockImplementation(async preparation => ({
 			summary: "snapcompact archive",
 			firstKeptEntryId: preparation.firstKeptEntryId,
@@ -727,7 +741,8 @@ describe("async speculative compaction", () => {
 
 		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
 		await maintenance.speculationCompletion;
-		expect(compactSpy).toHaveBeenCalledTimes(1);
+		expect(nativeSpy).toHaveBeenCalledTimes(1);
+		expect(localSpy).toHaveBeenCalledTimes(1);
 
 		// Later boundaries neither re-send it nor hold the threshold pass for it.
 		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START + 500, CONTEXT_WINDOW);
@@ -739,44 +754,114 @@ describe("async speculative compaction", () => {
 		});
 		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
 		expect(entry?.type === "compaction" ? entry.method : undefined).toBe("snapcompact");
+		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("snapcompact archive");
 		expect(snapSpy).toHaveBeenCalledTimes(1);
-		expect(compactSpy).toHaveBeenCalledTimes(1);
+		expect(nativeSpy).toHaveBeenCalledTimes(1);
+		expect(localSpy).toHaveBeenCalledTimes(1);
 
 		// The committed compaction starts a new cycle with a fresh native attempt.
 		appendSummarizableConversation();
 		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
 		expect(maintenance.speculationState).toBe("running");
 		await maintenance.speculationCompletion;
-		expect(compactSpy).toHaveBeenCalledTimes(2);
+		expect(nativeSpy).toHaveBeenCalledTimes(2);
+		expect(localSpy).toHaveBeenCalledTimes(2);
+	});
+
+	it("arms and commits a local speculative summary without repeating failed native compaction", async () => {
+		useNativeCompactionModel();
+		const nativeSpy = vi.fn(async () => {
+			throw new compactionModule.NativeCompactionError(new Error("Native compaction output budget exhausted"));
+		});
+		const localSpy = vi.fn(async (preparation: compactionModule.CompactionPreparation) => ({
+			summary: "local speculative recovery",
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: preparation.tokensBefore,
+		}));
+		vi.spyOn(compactionModule, "compact").mockImplementation(
+			async (preparation, _model, _key, _instructions, _signal, options) =>
+				options?.forceLocal ? localSpy(preparation) : nativeSpy(),
+		);
+
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
+		await waitForState("armed");
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START + 500, CONTEXT_WINDOW);
+		expect(maintenance.deferThresholdCompactionToSpeculation(THRESHOLD + 1_000, CONTEXT_WINDOW)).toBe(false);
+		await maintenance.runAutoCompaction("threshold", false, false, false, {
+			triggerContextTokens: THRESHOLD + 1_000,
+		});
+
+		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
+		expect(entry?.type === "compaction" ? entry.method : undefined).toBe("soft");
+		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("local speculative recovery");
+		expect(nativeSpy).toHaveBeenCalledTimes(1);
+		expect(localSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("speculates the next configured method after a native speculation failed for good", async () => {
+		useNativeCompactionModel();
+		maintenance = createMaintenance({ methodOrder: ["remote", "soft"] });
+		const nativeSpy = vi.fn(async () => {
+			throw new compactionModule.NativeCompactionError(
+				new Error("Anthropic compaction response carried no compaction block (stop reason: length)"),
+			);
+		});
+		const softSpy = vi
+			.fn(async (preparation: compactionModule.CompactionPreparation) => ({
+				summary: "soft summary",
+				firstKeptEntryId: preparation.firstKeptEntryId,
+				tokensBefore: preparation.tokensBefore,
+				details: {},
+			}))
+			.mockRejectedValueOnce(new Error("Local summarization temporarily unavailable"));
+		vi.spyOn(compactionModule, "compact").mockImplementation(
+			async (preparation, _model, _key, _instructions, _signal, options) =>
+				options?.forceLocal || preparation.settings.remoteEnabled === false ? softSpy(preparation) : nativeSpy(),
+		);
+
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
+		await maintenance.speculationCompletion;
+		expect(nativeSpy).toHaveBeenCalledTimes(1);
+		expect(softSpy).toHaveBeenCalledTimes(1);
+		expect(maintenance.speculationState).toBe("idle");
+
+		// The failed native method is skipped; soft still runs in the background
+		// instead of on the blocking threshold pass.
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START + 500, CONTEXT_WINDOW);
+		expect(maintenance.speculationState).toBe("running");
+		expect(maintenance.deferThresholdCompactionToSpeculation(THRESHOLD + 1_000, CONTEXT_WINDOW)).toBe(true);
+		await waitForState("armed");
+
+		await maintenance.runAutoCompaction("threshold", false, false, false, {
+			triggerContextTokens: THRESHOLD + 1_000,
+		});
+		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
+		expect(entry?.type === "compaction" ? entry.method : undefined).toBe("soft");
+		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("soft summary");
+		expect(nativeSpy).toHaveBeenCalledTimes(1);
+		expect(softSpy).toHaveBeenCalledTimes(2);
 	});
 
 	it("keeps speculating natively after a failure a retry can clear", async () => {
 		useNativeCompactionModel();
-		const compactSpy = vi
-			.spyOn(compactionModule, "compact")
-			.mockRejectedValue(
-				new compactionModule.NativeCompactionError(
-					new AIError.ProviderHttpError("Anthropic compaction failed: Overloaded", 529),
-				),
-			);
+		const { nativeSpy, localSpy } = mockFailedNativeCompaction(
+			new AIError.ProviderHttpError("Anthropic compaction failed: Overloaded", 529),
+		);
 
 		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
 		await maintenance.speculationCompletion;
 		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START + 500, CONTEXT_WINDOW);
 		expect(maintenance.speculationState).toBe("running");
 		await maintenance.speculationCompletion;
-		expect(compactSpy).toHaveBeenCalledTimes(2);
+		expect(nativeSpy).toHaveBeenCalledTimes(2);
+		expect(localSpy).toHaveBeenCalledTimes(2);
 	});
 
 	it("gives a new session a fresh native speculation", async () => {
 		useNativeCompactionModel();
-		const compactSpy = vi
-			.spyOn(compactionModule, "compact")
-			.mockRejectedValue(
-				new compactionModule.NativeCompactionError(
-					new Error("Anthropic compaction response carried no compaction block (stop reason: length)"),
-				),
-			);
+		const { nativeSpy, localSpy } = mockFailedNativeCompaction(
+			new Error("Anthropic compaction response carried no compaction block (stop reason: length)"),
+		);
 
 		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
 		await maintenance.speculationCompletion;
@@ -785,7 +870,8 @@ describe("async speculative compaction", () => {
 		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
 		expect(maintenance.speculationState).toBe("running");
 		await maintenance.speculationCompletion;
-		expect(compactSpy).toHaveBeenCalledTimes(2);
+		expect(nativeSpy).toHaveBeenCalledTimes(2);
+		expect(localSpy).toHaveBeenCalledTimes(2);
 	});
 
 	it("discards an armed summary when post-snapshot branch growth prevents recovery headroom", async () => {

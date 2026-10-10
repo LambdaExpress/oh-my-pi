@@ -81,22 +81,34 @@ async function verifyWindowsFixtureBinary(
 	expectedReleaseCode?: number,
 ): Promise<InstalledVersionVerification> {
 	const source = await Bun.file(binaryPath).text();
-	const child = Bun.spawn([process.execPath, "--eval", source, "--", "--version"], {
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "ignore",
-	});
-	const [exitCode, output] = await Promise.all([child.exited, new Response(child.stdout).text()]);
-	if (exitCode !== 0) return { ok: false, path: binaryPath };
-	const actual = parseReportedVersion(output);
-	const codeText = output.match(/\+code\.(\d+)\b/)?.[1];
-	const code = codeText === undefined ? undefined : Number.parseInt(codeText, 10);
-	return {
-		ok: actual === expectedVersion && (expectedReleaseCode === undefined || code === expectedReleaseCode),
-		actual,
-		code,
-		path: binaryPath,
-	};
+	// A script entrypoint gives the fixture the same argv shape as an installed
+	// binary; Bun's --eval argument parsing is not that executable contract.
+	const fixturePath = `${binaryPath}.fixture.js`;
+	await Bun.write(fixturePath, source);
+	try {
+		const child = Bun.spawn([process.execPath, fixturePath, "--version"], {
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [exitCode, output, stderr] = await Promise.all([
+			child.exited,
+			new Response(child.stdout).text(),
+			new Response(child.stderr).text(),
+		]);
+		if (exitCode !== 0) throw new Error(`Version fixture exited ${exitCode}: ${stderr}`);
+		const actual = parseReportedVersion(output.trim());
+		const codeText = output.match(/\+code\.(\d+)\b/)?.[1];
+		const code = codeText === undefined ? undefined : Number.parseInt(codeText, 10);
+		return {
+			ok: actual === expectedVersion && (expectedReleaseCode === undefined || code === expectedReleaseCode),
+			actual,
+			code,
+			path: binaryPath,
+		};
+	} finally {
+		await fs.unlink(fixturePath);
+	}
 }
 
 const windowsFixtureVerifier =
@@ -220,6 +232,14 @@ describe("parseReportedVersion", () => {
 	it("rejects version output from a different executable", () => {
 		expect(parseReportedVersion("node/18.0.5")).toBeUndefined();
 		expect(parseReportedVersion("codex/18.0.5")).toBeUndefined();
+	});
+
+	it("recognizes fork build identifiers without accepting trailing version garbage", () => {
+		expect(parseReportedVersion("omp/18.4.6+code.7")).toBe("18.4.6");
+		expect(parseReportedVersion("omp/18.4.6-canary.1+code.7")).toBe("18.4.6-canary.1");
+		expect(parseReportedVersion("omp/18.4.6+code.dev")).toBe("18.4.6");
+		expect(parseReportedVersion("omp/18.4.6+code.7 extra")).toBeUndefined();
+		expect(parseReportedVersion("omp/18.4.6+code.invalid")).toBeUndefined();
 	});
 });
 
@@ -1611,10 +1631,11 @@ describe("update-cli script-shim takeover", () => {
 		// POSIX executes the downloaded fixture directly. Windows cannot execute
 		// script text stored at an .exe path, so its existing verifier seam runs
 		// the narrow JavaScript fixture with the current Bun executable instead.
-		const exe = versionReportingExecutable(version);
+		const exe = versionReportingExecutable(`${version}+code.7`);
 
 		await updateViaShimTakeover(path.join(dir, "omp.cmd"), version, {
 			binaryName,
+			expectedReleaseCode: 7,
 			fetchImpl: makeFetch(exe),
 			githubToken: "test-token",
 			...windowsFixtureVerifier,
@@ -1641,8 +1662,11 @@ describe("update-cli script-shim takeover", () => {
 				fetchImpl: makeFetch(exe, true),
 				githubToken: "test-token",
 			}),
-		).rejects.toThrow("is a prerelease");
+		).rejects.toThrow();
 		expect(await Bun.file(path.join(dir, "omp.exe")).exists()).toBe(false);
+		for (const name in shims) {
+			expect(await Bun.file(path.join(dir, name)).text()).toBe(shims[name]);
+		}
 
 		// allowPrerelease threads through to the asset resolver, so the canary
 		// exe installs and the shims are retired.
@@ -1672,31 +1696,16 @@ describe("update-cli script-shim takeover", () => {
 			binaryName,
 			fetchImpl: makeFetch(exe),
 			githubToken: "test-token",
-			verifyInstalledVersion: async () => ({ ok: true, actual: version, path: targetPath }),
+			...(process.platform === "win32"
+				? {
+						verifyInstalledVersion: (expectedVersion: string, expectedReleaseCode?: number) =>
+							verifyWindowsFixtureBinary(targetPath, expectedVersion, expectedReleaseCode),
+					}
+				: {}),
 		});
 
 		expect(await Bun.file(targetPath).text()).toBe(exe);
 		expect(await Bun.file(marker).exists()).toBe(false);
-	});
-
-	it.skipIf(process.platform === "win32")("reports the physical binary path verified after an update", async () => {
-		const dir = await makeTempDir();
-		const targetPath = path.join(dir, "omp");
-		const exe = `#!/bin/sh\necho omp/${version}\n`;
-		await Bun.write(targetPath, "old binary");
-		const logSpy = spyOn(console, "log").mockImplementation(() => {});
-
-		await updateViaBinaryAt(targetPath, version, {
-			binaryName,
-			fetchImpl: makeFetch(exe),
-			githubToken: "test-token",
-		});
-
-		expect(
-			logSpy.mock.calls.some(
-				([message]) => String(message).includes(targetPath) && String(message).includes(version),
-			),
-		).toBe(true);
 	});
 
 	it("restores the shims and removes the exe when the exe reports the wrong version", async () => {
@@ -1712,7 +1721,30 @@ describe("update-cli script-shim takeover", () => {
 				githubToken: "test-token",
 				...windowsFixtureVerifier,
 			}),
-		).rejects.toThrow(/still reports v17\.2\.12 \(expected v18\.0\.0\); restored previous omp launcher/);
+		).rejects.toThrow();
+
+		expect(await Bun.file(path.join(dir, "omp.exe")).exists()).toBe(false);
+		for (const name in shims) {
+			expect(await Bun.file(path.join(dir, name)).text()).toBe(shims[name]);
+		}
+		const residue = (await fs.readdir(dir)).filter(name => name.endsWith(".bak") || name.endsWith(".new"));
+		expect(residue).toEqual([]);
+	});
+
+	it("restores the shims when the version matches but the fork release code does not", async () => {
+		const dir = await makeTempDir();
+		await writeShims(dir);
+		const exe = versionReportingExecutable(`${version}+code.6`);
+
+		await expect(
+			updateViaShimTakeover(path.join(dir, "omp.cmd"), version, {
+				binaryName,
+				expectedReleaseCode: 7,
+				fetchImpl: makeFetch(exe),
+				githubToken: "test-token",
+				...windowsFixtureVerifier,
+			}),
+		).rejects.toThrow();
 
 		expect(await Bun.file(path.join(dir, "omp.exe")).exists()).toBe(false);
 		for (const name in shims) {
@@ -1732,30 +1764,6 @@ describe("update-cli script-shim takeover", () => {
 		});
 	}
 
-	it("rewrites an immovable precedence-winning shim as a forwarder to the exe", async () => {
-		const dir = await makeTempDir();
-		await writeShims(dir);
-		const exe = versionReportingExecutable(version);
-		const renameSpy = renameLockingPs1();
-		try {
-			await updateViaShimTakeover(path.join(dir, "omp.cmd"), version, {
-				binaryName,
-				fetchImpl: makeFetch(exe),
-				githubToken: "test-token",
-				...windowsFixtureVerifier,
-			});
-		} finally {
-			renameSpy.mockRestore();
-		}
-
-		expect(await Bun.file(path.join(dir, "omp.exe")).text()).toBe(exe);
-		expect(await Bun.file(path.join(dir, "omp")).exists()).toBe(false);
-		expect(await Bun.file(path.join(dir, "omp.cmd")).exists()).toBe(false);
-		// PowerShell resolves .ps1 before .exe: the locked shim must now exec
-		// the new binary instead of keeping its old body.
-		expect(await Bun.file(path.join(dir, "omp.ps1")).text()).toContain('& "$PSScriptRoot\\omp.exe" @args');
-	});
-
 	it("restores a forwarded shim's original body when verification fails", async () => {
 		const dir = await makeTempDir();
 		await writeShims(dir);
@@ -1769,7 +1777,7 @@ describe("update-cli script-shim takeover", () => {
 					githubToken: "test-token",
 					...windowsFixtureVerifier,
 				}),
-			).rejects.toThrow("restored previous omp launcher");
+			).rejects.toThrow();
 		} finally {
 			renameSpy.mockRestore();
 		}

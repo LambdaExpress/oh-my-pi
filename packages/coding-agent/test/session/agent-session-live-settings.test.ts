@@ -42,6 +42,7 @@ describe("AgentSession live settings", () => {
 	});
 
 	afterAll(() => {
+		modelRegistry.authStorage.close();
 		removeSyncWithRetries(authDir);
 	});
 

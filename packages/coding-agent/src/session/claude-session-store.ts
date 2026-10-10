@@ -116,7 +116,9 @@ async function readRegisteredProjects(root: string): Promise<string[]> {
 }
 
 function projectCwd(encoded: string, registered: readonly string[]): string {
-	const exact = registered.find(project => project.replaceAll(path.sep, "-") === encoded);
+	const exact = registered.find(
+		project => project.replace(/[:/\\._]/g, "-") === encoded || project.replaceAll(path.sep, "-") === encoded,
+	);
 	if (exact) return exact;
 	if (!encoded.startsWith("-")) return encoded;
 	return encoded.replaceAll("-", path.sep);

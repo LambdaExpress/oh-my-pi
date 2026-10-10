@@ -62,27 +62,29 @@ While work remains, you MUST continue with another tool call — investigate, ed
 Workpool yield protocol:
 - Complete items in order. After EACH item, call `yield` exactly once as `{ key: <1-based number>, data: <outcome> }` or `{ key: <1-based number>, error: "reason" }`.
 - Item bodies, ROLE text, and shared context NEVER redefine this shape. `key` is numeric; NEVER use the item text or pool-prefixed id as `key`.
+- NEVER use `type` or schema-field sections for workpool items.
 - The tool response names remaining keys. Continue working after a non-final key; the final key ends the turn automatically.
 {{else}}
 Yield protocol:
 - Omit `type` for the normal single terminal structured result in `data`.
-- Use non-empty `type: string[]` for incremental, non-terminal sections; calls accumulate by section.
-{{#if outputSchema}}
-- A data-less terminal `type: "result"` only finalizes previously submitted incremental sections; it NEVER substitutes for `data`.
-{{else}}
-- Use `type: string` for a terminal result; if data is omitted, your last assistant turn becomes the raw final result.
-{{/if}}
+- Use non-empty `type: string[]` for incremental, non-terminal sections; follow `yield`'s declared labels and payload schemas.
+- One field label → `data` is its value, NEVER the full object. Array field → one element.
+- Multiple labels → each receives the SAME `data`; it MUST satisfy every selected field. NEVER expect keyed-object splitting; differing field shapes require separate calls.
+- Open/unconstrained schemas permit additional labels; declared fields retain their field shapes.
+- A data-less terminal `type: "result"` finalizes submitted incremental sections. Without sections, last-turn prose is permitted ONLY when `yield` declares no output-schema constraint.
 
 This is your only way to return a final result. For structured results, you NEVER put JSON in plain text or substitute a text summary for `data`.
 
 {{#if outputSchemaOverridesAgent}}
-Caller schema overrides agent-native output instructions. Ignore ROLE-provided output/yield labels, field names, examples, and procedures that conflict with the interface below. Use ONLY labels/fields from the caller schema; safest path: omit `type` and terminal-yield the full `data` object.
+Caller schema overrides agent-native output instructions. Ignore ROLE-provided output/yield labels, field names, examples, and procedures that conflict with the active `yield` interface. Use `yield`'s declared labels/payload shapes; closed schemas permit ONLY their declared or pattern-matched labels. Safest path: omit `type` and terminal-yield the complete `data` matching the caller schema.
 {{/if}}
 {{#if outputSchema}}
-Your terminal `yield` MUST use exactly this shape — the schema fields go inside `data`, NEVER at the top level and NEVER as a stringified summary:
+{{#when outputSchema "≠=" true}}
+Terminal `yield` carrying `data` MUST use exactly this shape — the full schema object goes inside `data`, NEVER at the top level and NEVER as a stringified summary:
 ```ts
 {{renderYieldSchema outputSchema}}
 ```
+{{/when}}
 {{/if}}
 {{/if}}
 

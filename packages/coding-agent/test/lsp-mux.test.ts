@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
 import { MessageFramer } from "../src/jsonrpc/message-framing";
 import {
 	MUX_CONNECT_METHOD,
@@ -165,6 +166,7 @@ async function withTimeout<T>(promise: Promise<T>, description: string, timeoutM
 }
 
 const fixturePath = path.join(import.meta.dir, "fixtures", "fake-lsp-server.ts");
+const framingModuleUrl = new URL("../src/jsonrpc/message-framing.ts", import.meta.url).href;
 const initializeParams = (processId = 424242): Record<string, unknown> => ({
 	processId,
 	rootUri: null,
@@ -219,6 +221,148 @@ describe("LspMuxServer", () => {
 		clients.push(client);
 		const connected = await client.request<MuxConnectResult>(MUX_CONNECT_METHOD, connectParams);
 		return { client, connected };
+	}
+
+	function backpressuredServer(): void {
+		connectParams.args = [
+			"-e",
+			`
+				import { MessageFramer } from ${JSON.stringify(framingModuleUrl)};
+				setInterval(() => {}, 1_000);
+				const framer = new MessageFramer(Buffer.alloc(0));
+				for await (const chunk of Bun.stdin.stream()) {
+					framer.push(Buffer.from(chunk));
+					for (const text of framer.drain(() => {})) {
+						const message = JSON.parse(text);
+						if (message.method !== "initialize") continue;
+						const json = JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+						await Bun.write(Bun.stdout, "Content-Length: " + Buffer.byteLength(json) + "\\r\\n\\r\\n" + json);
+						await new Promise(() => {});
+					}
+				}
+			`,
+		];
+	}
+
+	async function blockServerInput(client: MuxTestClient): Promise<void> {
+		await initialize(client);
+		client.notify("textDocument/didOpen", {
+			textDocument: {
+				uri: "file:///backpressured.ts",
+				languageId: "typescript",
+				version: 1,
+				text: "x".repeat(4 * 1024 * 1024),
+			},
+		});
+		// A mux-local reply proves the full document reached the mux even though
+		// forwarding it cannot finish while the language server refuses stdin.
+		expect(await client.request<string>(MUX_PING_METHOD)).toBe("pong");
+	}
+
+	it("reaps a disconnected server even when orphan document cleanup cannot flush", async () => {
+		const realSetTimeout = globalThis.setTimeout;
+		const lingerStarted = Promise.withResolvers<void>();
+		const timers = spyOn(globalThis, "setTimeout").mockImplementation(((
+			handler: () => void,
+			ms?: number,
+			...args: unknown[]
+		) => {
+			if (ms !== 5 * 60 * 1_000) return realSetTimeout(handler, ms, ...args);
+			return realSetTimeout(() => {
+				handler();
+				lingerStarted.resolve();
+			}, 50);
+		}) as typeof globalThis.setTimeout);
+		let child: Process | null = null;
+		try {
+			backpressuredServer();
+			const { client, connected } = await link();
+			child = Process.fromPid(connected.pid!);
+			expect(child?.status()).toBe(ProcessStatus.Running);
+			await blockServerInput(client);
+			client.destroy();
+
+			await withTimeout(lingerStarted.promise, "disconnected server linger expiry");
+			// Mux shutdown must join an already-started reap, not return early
+			// just because that server has entered the stopping state.
+			await withTimeout(server.shutdown(), "in-flight server reap during mux shutdown");
+			expect(child?.status()).not.toBe(ProcessStatus.Running);
+			expect(server.serverKeys).toEqual([]);
+			expect(server.sessionCount).toBe(0);
+		} finally {
+			child?.killTree();
+			timers.mockRestore();
+		}
+	}, 10_000);
+
+	it("bounds shutdown while a language server write is backpressured", async () => {
+		let child: Process | null = null;
+		try {
+			backpressuredServer();
+			const { client, connected } = await link();
+			child = Process.fromPid(connected.pid!);
+			expect(child?.status()).toBe(ProcessStatus.Running);
+			await blockServerInput(client);
+
+			await withTimeout(server.shutdown(), "backpressured mux shutdown");
+			expect(child?.status()).not.toBe(ProcessStatus.Running);
+			expect(server.serverKeys).toEqual([]);
+		} finally {
+			child?.killTree();
+		}
+	}, 10_000);
+
+	for (const exitCode of [0, 7]) {
+		it(`reaps inherited-pipe descendants after a wrapper exits with code ${exitCode}`, async () => {
+			let descendant: Process | null = null;
+			try {
+				connectParams.args = [
+					"-e",
+					`
+						import { MessageFramer } from ${JSON.stringify(framingModuleUrl)};
+						const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1_000)"], {
+							stdin: "ignore",
+							stdout: "inherit",
+							stderr: "inherit",
+							windowsHide: true,
+							detached: process.platform === "win32",
+						});
+						const framer = new MessageFramer(Buffer.alloc(0));
+						for await (const chunk of Bun.stdin.stream()) {
+							framer.push(Buffer.from(chunk));
+							for (const text of framer.drain(() => {})) {
+								const message = JSON.parse(text);
+								if (message.method === "test/wrapperReady") {
+									const json = JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { pid: child.pid } });
+									await Bun.write(Bun.stdout, "Content-Length: " + Buffer.byteLength(json) + "\\r\\n\\r\\n" + json);
+								} else if (message.method === "test/exitWrapper") {
+									await Bun.write(Bun.stderr, "wrapper diagnostic\\n");
+									process.exit(${exitCode});
+								}
+							}
+						}
+					`,
+				];
+				const { client } = await link();
+				const ready = await client.request<{ pid: number }>("test/wrapperReady");
+				descendant = Process.fromPid(ready.pid);
+				expect(descendant?.status()).toBe(ProcessStatus.Running);
+				client.notify("test/exitWrapper");
+
+				expect(await client.nextNotification<MuxServerExitParams>(MUX_SERVER_EXIT_METHOD)).toEqual({
+					exitCode,
+					stderr: "wrapper diagnostic\n",
+				});
+				await client.waitForClose();
+				await pollUntil(
+					() => Promise.resolve(descendant?.status() !== ProcessStatus.Running),
+					"wrapper descendant termination",
+				);
+				expect(server.serverKeys).toEqual([]);
+			} finally {
+				descendant?.killTree();
+			}
+		}, 10_000);
 	}
 
 	it("forwards the real server exit diagnostic before closing the link", async () => {

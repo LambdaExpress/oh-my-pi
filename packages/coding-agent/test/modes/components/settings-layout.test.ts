@@ -68,18 +68,6 @@ describe("settings layout", () => {
 		}
 	});
 
-	it("exposes steering operation skipping as a boolean input setting", () => {
-		const def = getSettingsForTab(createSettingsHost().entries, "interaction").find(
-			def => def.path === "steeringSkipPendingOperations",
-		);
-
-		expect(def).toMatchObject({
-			type: "boolean",
-			label: "Skip Pending Operations on Steering",
-			group: "Input",
-		});
-	});
-
 	it("places the editable extended-context window immediately after its toggle", () => {
 		const defs = getSettingsForTab(createSettingsHost().entries, "context");
 		const toggleIndex = defs.findIndex(def => def.path === "extendedContext");

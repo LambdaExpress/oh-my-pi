@@ -26,10 +26,13 @@ import { isEexist, isEnoent } from "./fs-error";
  * without a compiled binary.
  */
 
-/** Conditions honored when resolving an `exports` map for a CommonJS `require`. */
-const RUNTIME_CONDITIONS: Record<string, true> = { node: true, require: true, default: true };
+/** Conditions follow declaration order in the export map, not this list. */
+const RUNTIME_CONDITIONS = {
+	require: new Set(["node", "require", "default"]),
+	import: new Set(["bun", "node", "import", "default"]),
+};
 
-/** Extension probes appended to a `main`/`exports` target that lacks one. */
+/** Extension probes for legacy `main` and file requests (not export targets). */
 const RUNTIME_EXTENSIONS: readonly string[] = [".js", ".cjs", ".mjs", ".json", ".node"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -39,26 +42,32 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * Walk a conditional `exports` target (string, array of fallbacks, or a
  * condition object) and return the first relative path that matches a runtime
- * condition in declaration order. Returns `null` when nothing applies (e.g.
- * an `import`-only entry).
+ * condition in declaration order. Returns null for a blocked or unmatched target.
  */
-export function selectConditionalTarget(target: unknown): string | null {
+export function selectConditionalTarget(target: unknown, mode: "require" | "import" = "require"): string | null {
+	return resolveConditionalTarget(target, mode) ?? null;
+}
+
+// Keep "no condition matched" distinct from an explicit null while descending:
+// an enclosing condition may continue only for the former.
+function resolveConditionalTarget(target: unknown, mode: "require" | "import"): string | null | undefined {
 	if (typeof target === "string") return target;
+	if (target === null) return null;
 	if (Array.isArray(target)) {
 		for (const entry of target) {
-			const resolved = selectConditionalTarget(entry);
+			const resolved = resolveConditionalTarget(entry, mode);
 			if (resolved) return resolved;
 		}
 		return null;
 	}
 	if (isRecord(target)) {
 		for (const condition in target) {
-			if (!RUNTIME_CONDITIONS[condition]) continue;
-			const resolved = selectConditionalTarget(target[condition]);
-			if (resolved) return resolved;
+			if (!RUNTIME_CONDITIONS[mode].has(condition)) continue;
+			const resolved = resolveConditionalTarget(target[condition], mode);
+			if (resolved !== undefined) return resolved;
 		}
 	}
-	return null;
+	return undefined;
 }
 
 /** Resolve a relative target inside a package to a concrete file path, probing extensions and `index`. */
@@ -82,25 +91,62 @@ function resolveFileTarget(pkgDir: string, relative: string): string | null {
 
 function resolveExportsEntry(
 	pkgDir: string,
-	exports: Record<string, unknown>,
+	exports: unknown,
 	subpath: string | undefined,
+	mode: "require" | "import" = "require",
 ): string | null {
-	let subpathMap = false;
-	for (const key in exports) {
-		subpathMap = key === "." || key.startsWith("./");
-		break;
+	const key = subpath ? `./${subpath}` : ".";
+	let entry = exports;
+	let replacement: string | undefined;
+	if (isRecord(exports) && Object.keys(exports).some(key => key.startsWith("."))) {
+		if (Object.hasOwn(exports, key) && !key.includes("*")) {
+			entry = exports[key];
+		} else {
+			let matchedKey: string | undefined;
+			let matchedPrefixLength = -1;
+			for (const pattern of Object.keys(exports)) {
+				const star = pattern.indexOf("*");
+				if (star === -1 || pattern.indexOf("*", star + 1) !== -1) continue;
+				if (!key.startsWith(pattern.slice(0, star)) || !key.endsWith(pattern.slice(star + 1))) continue;
+				if (key.length < pattern.length) continue;
+				if (
+					star < matchedPrefixLength ||
+					(star === matchedPrefixLength && matchedKey !== undefined && pattern.length <= matchedKey.length)
+				) {
+					continue;
+				}
+				matchedKey = pattern;
+				matchedPrefixLength = star;
+				replacement = key.slice(star, key.length - (pattern.length - star - 1));
+			}
+			if (matchedKey === undefined) return null;
+			entry = exports[matchedKey];
+		}
+	} else if (subpath) {
+		return null;
 	}
-	if (subpathMap) {
-		const key = subpath ? `./${subpath}` : ".";
-		if (!(key in exports)) return null;
-		const target = selectConditionalTarget(exports[key]);
-		return target ? resolveFileTarget(pkgDir, target) : null;
+	let target = selectConditionalTarget(entry, mode);
+	if (!target?.startsWith("./")) return null;
+	if (replacement !== undefined) target = target.replaceAll("*", replacement);
+	// Export targets cannot escape the package or reach a nested dependency.
+	// Decode for validation only: percent escapes must not hide forbidden segments.
+	let decoded: string;
+	try {
+		decoded = decodeURIComponent(target.slice(2));
+	} catch {
+		return null;
 	}
-	// A bare condition map only describes the package root, so a subpath
-	// request falls through to plain path joining at the call site.
-	if (subpath) return null;
-	const target = selectConditionalTarget(exports);
-	return target ? resolveFileTarget(pkgDir, target) : null;
+	if (decoded.split(/[\\/]/).some(segment => segment === ".." || segment === "." || segment === "node_modules")) {
+		return null;
+	}
+	const filename = path.resolve(pkgDir, target);
+	const relative = path.relative(pkgDir, filename);
+	if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+	try {
+		return fs.statSync(filename).isFile() ? filename : null;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -117,21 +163,21 @@ export function splitBareSpecifier(specifier: string): { packageName: string; su
 
 /**
  * Resolve a bare specifier against an installed `node_modules` directory,
- * honoring `exports` (CommonJS conditions), then `main`, then `index.js`.
+ * honoring `exports` for the requested mode, or `main`/`index.js` when no
+ * export map exists. An export map never falls through to private files.
  * Returns an absolute file path, or `null` when the package/entry is absent.
  */
-export function resolveRuntimeModule(runtimeNodeModules: string, specifier: string): string | null {
+export function resolveRuntimeModule(
+	runtimeNodeModules: string,
+	specifier: string,
+	mode: "require" | "import" = "require",
+): string | null {
 	const { packageName, subpath } = splitBareSpecifier(specifier);
 	const pkgDir = path.join(runtimeNodeModules, ...packageName.split("/"));
 	const manifest = readManifest(pkgDir);
-	if (!manifest) return subpath ? resolveFileTarget(pkgDir, subpath) : null;
+	if (!manifest) return resolveFileTarget(pkgDir, subpath ?? "index");
 
-	const { exports } = manifest;
-	if (typeof exports === "string" || isRecord(exports)) {
-		const map = typeof exports === "string" ? { ".": exports } : exports;
-		const resolved = resolveExportsEntry(pkgDir, map, subpath);
-		if (resolved) return resolved;
-	}
+	if (Object.hasOwn(manifest, "exports")) return resolveExportsEntry(pkgDir, manifest.exports, subpath, mode);
 	if (subpath) return resolveFileTarget(pkgDir, subpath);
 	if (typeof manifest.main === "string") {
 		const resolved = resolveFileTarget(pkgDir, manifest.main);

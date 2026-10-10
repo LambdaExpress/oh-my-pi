@@ -7,7 +7,7 @@ import type { AgentToolResult, RenderResultOptions } from "@oh-my-pi/pi-agent-co
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { preloadPluginRoots } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import { restoreEnvValue } from "../helpers/settings-test-state";
-import { LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
+import { createLspWritethrough, LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
 import * as lspClient from "@oh-my-pi/pi-coding-agent/lsp/client";
 import * as lspConfig from "@oh-my-pi/pi-coding-agent/lsp/config";
 import {
@@ -61,8 +61,8 @@ import { clampTimeout } from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
 import * as piUtils from "@oh-my-pi/pi-utils";
 import { sanitizeText, TempDir } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
+import { setLocale } from "../../src/i18n";
 import DEFAULTS from "../../src/lsp/defaults.json" with { type: "json" };
-import { renderResult as renderLocalResult } from "@oh-my-pi/pi-tui/tools/lsp";
 import { getLanguageFromPath } from "@oh-my-pi/pi-tui/lang-from-path";
 
 const lspTestSettings = Settings.isolated();
@@ -284,6 +284,14 @@ function installHandshakeLsp(): FakeLspServer {
 	});
 }
 
+/** Read `textDocument.uri` out of a document notification the fake server received. */
+function documentUri(params: unknown): string | undefined {
+	if (!params || typeof params !== "object" || !("textDocument" in params)) return undefined;
+	const doc = params.textDocument;
+	if (!doc || typeof doc !== "object" || !("uri" in doc) || typeof doc.uri !== "string") return undefined;
+	return doc.uri;
+}
+
 type BunSpawnOptions = Bun.SpawnOptions.SpawnOptions<
 	Bun.SpawnOptions.Writable,
 	Bun.SpawnOptions.Readable,
@@ -347,6 +355,7 @@ let lspHomeOverride: string | undefined;
 let lspOriginalHome: string | undefined;
 
 beforeEach(() => {
+	setLocale("en");
 	lspOriginalHome = process.env.HOME;
 	lspHomeOverride = fs.mkdtempSync(path.join(os.tmpdir(), "omp-lsp-test-home-"));
 	process.env.HOME = lspHomeOverride;
@@ -356,8 +365,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	if (lspOriginalHome === undefined) delete process.env.HOME;
-	else process.env.HOME = lspOriginalHome;
+	vi.restoreAllMocks();
+	setLocale(null);
+	restoreEnvValue("HOME", lspOriginalHome);
 	if (lspHomeOverride) fs.rmSync(lspHomeOverride, { recursive: true, force: true });
 	lspHomeOverride = undefined;
 });
@@ -399,6 +409,7 @@ describe("lsp regressions", () => {
 
 	it("clamps LSP timeouts to the supported bounds", () => {
 		expect(clampTimeout("lsp", 1)).toBe(5);
+		expect(clampTimeout("lsp", 120)).toBe(120);
 		expect(clampTimeout("lsp", 1000)).toBe(300);
 	});
 
@@ -670,6 +681,71 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("reclaims unused indexes by default while honoring a workspace idle opt-out", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-default-idle-");
+		const config: ServerConfig = {
+			command: "fake-lsp-default-idle",
+			fileTypes: [".ts"],
+			rootMarkers: [],
+		};
+		try {
+			lspClient.setIdleTimeout(null);
+			configCache.set(tempDir.path(), { servers: {} });
+			const server = installHandshakeLsp();
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			client.lastActivity = Date.now() - 30 * 60_000;
+
+			configCache.set(tempDir.path(), { servers: {}, idleTimeoutMs: 0 });
+			await lspClient.checkIdleClients();
+			expect(client.proc.exitCode).toBeNull();
+			expect(lspClient.getActiveClients().some(active => active.name === config.command)).toBe(true);
+
+			configCache.set(tempDir.path(), { servers: {} });
+			await lspClient.checkIdleClients();
+			expect(client.proc.exitCode).toBe(0);
+			expect(lspClient.getActiveClients().some(active => active.name === config.command)).toBe(false);
+			expect(server.killed).toBe(false);
+
+			installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			expect(replacement).not.toBe(client);
+			expect(replacement.status).toBe("ready");
+			expect(replacement.proc.exitCode).toBeNull();
+		} finally {
+			await lspClient.shutdownAll();
+			configCache.delete(tempDir.path());
+			tempDir.removeSync();
+		}
+	});
+
+	it("starts a fresh idle window after a long background indexing cycle", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-index-idle-");
+		try {
+			const server = installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					srv.send({ jsonrpc: "2.0", method: "$/progress", params: { token: "index", value: { kind: "begin" } } });
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+			const config: ServerConfig = { command: "fake-index-idle", fileTypes: [".ts"], rootMarkers: [] };
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			client.lastActivity = Date.now() - 30 * 60_000;
+			server.send({ jsonrpc: "2.0", method: "$/progress", params: { token: "index", value: { kind: "end" } } });
+			await client.projectLoaded;
+
+			expect(client.activeProgressTokens.size).toBe(0);
+			expect(lspClient.isIdleClient(client, Date.now(), 60_000)).toBe(false);
+		} finally {
+			await lspClient.shutdownAll();
+			configCache.delete(tempDir.path());
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload applies timeout-only config changes without restarting the client (#8389)", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-rearm-config-");
 		const config: ServerConfig = {
@@ -692,7 +768,6 @@ describe("lsp regressions", () => {
 				1_000,
 			);
 			const tool = new LspTool(makeLspSession(tempDir.path()));
-			expect(lspClient.isIdleCheckerRunning()).toBe(false);
 
 			await Bun.write(configPath, JSON.stringify({ ...workspaceConfig, idleTimeoutMs: 5_000 }));
 			await tool.execute("reload-add-timeout", { action: "reload" });
@@ -700,7 +775,6 @@ describe("lsp regressions", () => {
 
 			await Bun.write(configPath, JSON.stringify(workspaceConfig));
 			await tool.execute("reload-remove-timeout", { action: "reload", file: "*" });
-			expect(lspClient.isIdleCheckerRunning()).toBe(false);
 			client.lastActivity = Date.now() - 6_000;
 			await lspClient.checkIdleClients();
 			expect(lspClient.getActiveClients().map(active => active.name)).toContain(config.command);
@@ -717,6 +791,35 @@ describe("lsp regressions", () => {
 			lspClient.setIdleTimeout(null);
 			configCache.delete(tempDir.path());
 			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("reuses a client and tears down stale configuration across equivalent workspace paths", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-path-identity-");
+		try {
+			const config: ServerConfig = { command: "fake-path-identity", fileTypes: [".ts"], rootMarkers: [] };
+			installHandshakeLsp();
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			const aliases = [`${tempDir.path()}${path.sep}.`];
+			if (process.platform === "win32") {
+				aliases.push(tempDir.path().replaceAll("\\", "/"), tempDir.path().toUpperCase());
+			}
+			for (const cwd of aliases) {
+				expect(await lspClient.getOrCreateClient(config, cwd, 1_000)).toBe(client);
+			}
+			expect(lspClient.getActiveClients().filter(active => active.name === config.command)).toHaveLength(1);
+
+			const replacementConfig: ServerConfig = { ...config, args: ["--fresh-config"] };
+			expect(await lspClient.shutdownStaleClients(aliases.at(-1)!, [replacementConfig])).toEqual([config.command]);
+			expect(client.proc.exitCode).toBe(0);
+			installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(replacementConfig, tempDir.path(), 1_000);
+			expect(replacement).not.toBe(client);
+			expect(lspClient.getActiveClients().filter(active => active.name === config.command)).toHaveLength(1);
+		} finally {
+			await lspClient.shutdownAll();
+			configCache.delete(tempDir.path());
 			tempDir.removeSync();
 		}
 	});
@@ -743,7 +846,7 @@ describe("lsp regressions", () => {
 
 			const startingClient = lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
 			await server.waitFor(message => message.method === "initialize");
-			const existingClient = lspClient.getActiveOrPendingClient(config, tempDir.path());
+			const existingClient = lspClient.getActiveOrPendingClient(config, `${tempDir.path()}${path.sep}.`);
 			let settled = false;
 			void existingClient.then(() => {
 				settled = true;
@@ -1491,6 +1594,63 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("目录分支和嵌套花括号选择真实文件，并准确处理文件限制边界", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-directory-braces-");
+		try {
+			const expected = [
+				"src/chat/read-tool-group.ts",
+				"src/tools/fetch.ts",
+				"src/tools/line-ranges.ts",
+				"src/tools/read.ts",
+			];
+			await Promise.all(expected.map(file => Bun.write(path.join(tempDir.path(), file), "export {};\n")));
+			await Bun.write(path.join(tempDir.path(), ".gitignore"), "src/tools/read.ts\n");
+			await fsp.mkdir(path.join(tempDir.path(), "src/tools/placeholder.ts"), { recursive: true });
+			await Bun.write(path.join(tempDir.path(), "src/tools/placeholder.ts/nested.ts"), "export {};\n");
+			const pattern = "src/{tools/{line-ranges,read,fetch,placeholder},chat/read-tool-group}.ts";
+
+			const exact = await resolveDiagnosticTargets(pattern, tempDir.path(), 4);
+			expect(exact.matches.map(file => file.replaceAll("\\", "/")).sort()).toEqual(expected);
+			expect(exact.truncated).toBe(false);
+
+			const limited = await resolveDiagnosticTargets(pattern, tempDir.path(), 3);
+			expect(limited.matches).toHaveLength(3);
+			expect(limited.matches.every(file => expected.includes(file.replaceAll("\\", "/")))).toBe(true);
+			expect(limited.truncated).toBe(true);
+
+			const alternatives = await resolveDiagnosticTargets(
+				"src/{tools/read,chat/read-tool-group}.ts",
+				tempDir.path(),
+				4,
+			);
+			expect(alternatives.matches.map(file => file.replaceAll("\\", "/")).sort()).toEqual([
+				"src/chat/read-tool-group.ts",
+				"src/tools/read.ts",
+			]);
+			expect(alternatives.truncated).toBe(false);
+
+			const absolute = await resolveDiagnosticTargets(path.join(tempDir.path(), pattern), tempDir.path(), 4);
+			expect(absolute.matches.every(file => path.isAbsolute(file))).toBe(true);
+			expect(absolute.matches.map(file => path.relative(tempDir.path(), file).replaceAll("\\", "/")).sort()).toEqual(
+				expected,
+			);
+			expect(absolute.truncated).toBe(false);
+
+			const directChildren = await collectGlobMatches("src/tools/*.ts", tempDir.path(), 4);
+			expect(directChildren.matches.map(file => file.replaceAll("\\", "/")).sort()).toEqual(expected.slice(1));
+			expect(directChildren.truncated).toBe(false);
+
+			const missing = await resolveDiagnosticTargets("missing/**/*.ts", tempDir.path(), 4);
+			expect(missing).toEqual({ matches: [], truncated: false });
+			await expect(collectGlobMatches("*.ts", path.join(tempDir.path(), expected[0]), 4)).rejects.toHaveProperty(
+				"code",
+				"ENOTDIR",
+			);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
 	it("treats existing bracket paths as literal diagnostic targets", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-bracket-path-");
 		try {
@@ -2203,7 +2363,7 @@ describe("lsp regressions", () => {
 
 	it("sanitizes expanded generic error output (#7041)", async () => {
 		const theme = await getThemeByName("dark");
-		const result = renderLocalResult(
+		const result = renderResult(
 			{
 				content: [{ type: "text", text: `Error:\nserver\tstderr ${"x".repeat(200)}` }],
 			},
@@ -2476,6 +2636,119 @@ describe("lsp regressions", () => {
 
 			expect(await waitForDiagnostics(client, sourceUri, { timeoutMs: 1_000, settleMs: 0 })).toEqual([]);
 		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("reloads TypeScript projects after create before opening the new module", async () => {
+		// #12924/#12925: tsserver pins a failed import resolution when the new
+		// module is opened before its filesystem watcher observes the create.
+		// The write path must await reloadProjects, not rely on watcher latency.
+		const tempDir = TempDir.createSync("@omp-lsp-write-create-order-");
+		const config: ServerConfig = { command: "fake-lsp", fileTypes: ["ts"], rootMarkers: [] };
+		try {
+			const sourcePath = path.join(tempDir.path(), "UsesMissing.ts");
+			const modulePath = path.join(tempDir.path(), "MissingClass.ts");
+			const sourceUri = fileToUri(sourcePath);
+			const moduleUri = fileToUri(modulePath);
+			await Bun.write(
+				sourcePath,
+				'import { MissingClass } from "./MissingClass";\nexport const value = new MissingClass();\n',
+			);
+
+			const missingModuleDiagnostic: Diagnostic = {
+				message: "Cannot find module './MissingClass' or its corresponding type declarations.",
+				severity: 1,
+				code: 2307,
+				range: {
+					start: { line: 0, character: 29 },
+					end: { line: 0, character: 45 },
+				},
+			};
+			let projectsReloaded = false;
+			let modulePinnedMissing = false;
+			const fakeServer = installFakeLsp((message, server) => {
+				const publish = (uri: string, diagnostics: Diagnostic[]) =>
+					server.send({
+						jsonrpc: "2.0",
+						method: "textDocument/publishDiagnostics",
+						params: { uri, diagnostics },
+					});
+				const publishSource = () =>
+					publish(
+						sourceUri,
+						projectsReloaded && !modulePinnedMissing && fs.existsSync(modulePath)
+							? []
+							: [missingModuleDiagnostic],
+					);
+				if (message.method === "initialize") {
+					server.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: {
+							capabilities: {
+								executeCommandProvider: { commands: ["typescript.tsserverRequest"] },
+							},
+						},
+					});
+				} else if (message.method === "textDocument/didOpen") {
+					const uri = documentUri(message.params);
+					if (uri === moduleUri) {
+						modulePinnedMissing ||= !fs.existsSync(modulePath) || !projectsReloaded;
+						publish(moduleUri, []);
+					} else {
+						publishSource();
+					}
+				} else if (
+					message.method === "textDocument/didChange" ||
+					message.method === "textDocument/didSave" ||
+					message.method === "workspace/didChangeWatchedFiles"
+				) {
+					publishSource();
+					publish(moduleUri, []);
+				} else if (message.method === "workspace/executeCommand") {
+					projectsReloaded = fs.existsSync(modulePath);
+					server.send({ jsonrpc: "2.0", id: message.id, result: { success: projectsReloaded } });
+				} else if (message.method === "shutdown") {
+					server.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					server.exit(0);
+				}
+			});
+
+			configCache.set(tempDir.path(), { servers: { "fake-lsp": config }, idleTimeoutMs: undefined });
+			const client = await lspClient.getOrCreateClient(config, tempDir.path());
+			await lspClient.ensureFileOpen(client, sourcePath);
+			expect(await waitForDiagnostics(client, sourceUri, { timeoutMs: 1_000, settleMs: 0 })).toEqual([
+				missingModuleDiagnostic,
+			]);
+
+			const writethrough = createLspWritethrough(tempDir.path(), {
+				enableFormat: true,
+				enableDiagnostics: false,
+			});
+			await writethrough(modulePath, "export class MissingClass {}\n");
+
+			expect(projectsReloaded).toBe(true);
+			expect(fakeServer.received).toContainEqual(
+				expect.objectContaining({
+					method: "workspace/executeCommand",
+					params: {
+						command: "typescript.tsserverRequest",
+						arguments: [
+							"reloadProjects",
+							{},
+							{ executionTarget: 0, expectsResult: true, isAsync: false, lowPriority: false },
+						],
+					},
+				}),
+			);
+
+			expect(modulePinnedMissing).toBe(false);
+			expect(await waitForDiagnostics(client, sourceUri, { timeoutMs: 1_000, settleMs: 0 })).toEqual([]);
+		} finally {
+			configCache.delete(tempDir.path());
 			await lspClient.shutdownAll();
 			tempDir.removeSync();
 		}
@@ -6004,6 +6277,40 @@ describe("lsp regressions", () => {
 			}
 		});
 
+		it("forces teardown when the exit notification cannot drain", async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-exit-drain-");
+			try {
+				const server = installFakeLsp((message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				});
+				const config: ServerConfig = { command: "fake-exit-drain", fileTypes: [".ts"], rootMarkers: [] };
+				const client = await lspClient.getOrCreateClient(config, tempDir.path());
+				const deadline = new AbortController();
+				vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+				const blocked = Promise.withResolvers<void>();
+				vi.spyOn(server.proc.stdin, "flush").mockImplementation(() =>
+					server.received.at(-1)?.method === "exit" ? blocked.promise : 0,
+				);
+
+				const shutdown = lspClient.shutdownClientInstance(client);
+				await server.waitFor(message => message.method === "exit");
+				deadline.abort(new Error("shutdown deadline"));
+
+				expect(await shutdown).toBe(true);
+				expect(server.killed).toBe(true);
+				expect(lspClient.getActiveClients().some(active => active.name === config.command)).toBe(false);
+				blocked.resolve();
+			} finally {
+				vi.restoreAllMocks();
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
 		it("shutdownClientInstance reports a failed teardown when the process outlives the kill", async () => {
 			const tempDir = TempDir.createSync("@omp-lsp-teardown-delayed-");
 			try {
@@ -6452,148 +6759,283 @@ describe("lsp regressions", () => {
 	});
 });
 
-/**
- * tsserver answers file-specific requests with `<semantic> TypeScript Server
- * Error` + `No Project.` when the queried file has no ScriptInfo in the server
- * or when its project's language service is disabled (a JavaScript project over
- * the non-TS file-size budget, for example). The server dump that OMP forwarded
- * verbatim told users nothing they could act on, so a matched failure must keep
- * the dump and add the condition plus the real remedies.
- */
-describe("lsp typescript no project hint", () => {
-	afterEach(() => {
-		vi.restoreAllMocks();
-	});
+describe("lsp TypeScript semantic project readiness", () => {
+	interface ProjectFixture {
+		tool: LspTool;
+		server: FakeLspServer;
+		source: string;
+		project: string;
+		tsserverPath: string;
+		setDisabled(disabled: boolean): void;
+	}
 
-	/**
-	 * Route one mocked server to a JavaScript fixture and run `references` so
-	 * the server answers with the configured JSON-RPC error.
-	 */
-	async function referencesError(options: {
-		serverName: string;
-		command: string;
-		message: string;
-	}): Promise<{ text: string; requestCount: number }> {
-		const tempDir = TempDir.createSync("@omp-lsp-ts-no-project-");
+	async function withProject(
+		options: {
+			disabled?: boolean;
+			referencesError?: string;
+			serverName?: string;
+			advertiseProjectInfo?: boolean;
+			abortProjectInfo?: AbortController;
+		},
+		run: (fixture: ProjectFixture) => Promise<void>,
+	): Promise<void> {
+		const tempDir = TempDir.createSync("@omp-lsp-semantic-project-");
+		const root = tempDir.path();
 		try {
-			await Bun.write(
-				path.join(tempDir.path(), "widget.js"),
-				"export function renderWidget() {}\nrenderWidget();\n",
-			);
+			const projectRoot = path.join(root, "client");
+			const source = path.join(projectRoot, "src", "service.js");
+			const consumer = path.join(projectRoot, "src", "consumer.js");
+			const project = path.join(projectRoot, "jsconfig.json");
+			const tsserverPath = path.join(root, "compiler", "tsserver.js");
+			await Bun.write(path.join(root, "package.json"), "{}\n");
+			await Bun.write(path.join(root, "other", "package.json"), "{}\n");
+			await Bun.write(project, '{"include":["src/**/*.js"]}\n');
+			await Bun.write(source, "export const updateRegion = () => {};\n");
+			await Bun.write(consumer, 'import { updateRegion } from "./service.js";\nupdateRegion();\n');
+
+			const advertiseProjectInfo = options.advertiseProjectInfo ?? true;
+			let disabled = options.disabled ?? false;
+			let workspaceUri = "";
+			let semanticProjectLoaded = !advertiseProjectInfo;
+			const openDocuments = new Set<string>();
 			const server = installFakeLsp((message, srv) => {
 				if (message.method === "initialize") {
-					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
-					// Settle the client's projectLoaded promise so the request does
-					// not wait out the auto-resolve timeout.
+					workspaceUri = (message.params as { rootUri: string }).rootUri;
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: {
+							capabilities: {
+								executeCommandProvider: {
+									commands: advertiseProjectInfo ? ["typescript.tsserverRequest"] : ["unrelated.command"],
+								},
+							},
+						},
+					});
+					if (advertiseProjectInfo) {
+						srv.send({
+							jsonrpc: "2.0",
+							method: "window/logMessage",
+							params: {
+								type: 3,
+								message: `Using Typescript version (user-setting) 5.9.3 from path "${tsserverPath}"`,
+							},
+						});
+						srv.send({
+							jsonrpc: "2.0",
+							method: "$/typescriptVersion",
+							params: { version: "5.9.3", source: "user-setting" },
+						});
+					}
+					// Initial progress has finished before didOpen. It cannot establish
+					// that the lazily opened file has a usable semantic project.
 					srv.send({
 						jsonrpc: "2.0",
 						method: "$/progress",
-						params: { token: "ts", value: { kind: "begin" } },
+						params: { token: "startup", value: { kind: "end" } },
 					});
-					srv.send({ jsonrpc: "2.0", method: "$/progress", params: { token: "ts", value: { kind: "end" } } });
+				} else if (message.method === "textDocument/didOpen") {
+					const uri = documentUri(message.params);
+					if (uri) openDocuments.add(uri);
+				} else if (message.method === "workspace/executeCommand") {
+					const params = message.params as {
+						command: string;
+						arguments: [string, unknown, { executionTarget?: number }];
+					};
+					if (options.abortProjectInfo) {
+						options.abortProjectInfo.abort();
+						return;
+					}
+					if (
+						!advertiseProjectInfo ||
+						params.command !== "typescript.tsserverRequest" ||
+						params.arguments[0] !== "projectInfo" ||
+						params.arguments[2]?.executionTarget !== 0
+					) {
+						srv.send({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Unsupported" } });
+					} else if (workspaceUri !== fileToUri(projectRoot) || !openDocuments.has(fileToUri(source))) {
+						srv.send({ jsonrpc: "2.0", id: message.id, error: { code: 1, message: "No Project." } });
+					} else {
+						semanticProjectLoaded = true;
+						srv.send({
+							jsonrpc: "2.0",
+							id: message.id,
+							result: { body: { configFileName: project, languageServiceDisabled: disabled } },
+						});
+					}
 				} else if (message.method === "textDocument/references") {
-					srv.send({ jsonrpc: "2.0", id: message.id, error: { code: 1, message: options.message } });
+					if (disabled || !semanticProjectLoaded || options.referencesError) {
+						srv.send({
+							jsonrpc: "2.0",
+							id: message.id,
+							error: { code: 1, message: options.referencesError ?? "<semantic> No Project." },
+						});
+					} else {
+						srv.send({
+							jsonrpc: "2.0",
+							id: message.id,
+							result: [
+								{
+									uri: fileToUri(source),
+									range: { start: { line: 0, character: 13 }, end: { line: 0, character: 25 } },
+								},
+								{
+									uri: fileToUri(consumer),
+									range: { start: { line: 1, character: 0 }, end: { line: 1, character: 12 } },
+								},
+							],
+						});
+					}
+				} else if (message.method === "textDocument/documentSymbol") {
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: [
+							{
+								name: "updateRegion",
+								kind: 13,
+								range: { start: { line: 0, character: 0 }, end: { line: 0, character: 37 } },
+								selectionRange: { start: { line: 0, character: 13 }, end: { line: 0, character: 25 } },
+							},
+						],
+					});
 				} else if (message.method === "shutdown") {
 					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
 				} else if (message.method === "exit") {
 					srv.exit(0);
 				}
 			});
-
+			const serverName = options.serverName ?? "typescript-language-server";
 			const serverConfig: ServerConfig = {
-				command: options.command,
-				resolvedCommand: options.command,
+				command: serverName,
+				resolvedCommand: serverName,
 				fileTypes: [".js"],
-				rootMarkers: [],
+				rootMarkers: ["jsconfig.json", "package.json"],
 			};
-			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
-				servers: { [options.serverName]: serverConfig },
-				idleTimeoutMs: undefined,
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: { [serverName]: serverConfig } });
+			const tool = new LspTool(makeLspSession(root));
+			await run({
+				tool,
+				server,
+				source,
+				project,
+				tsserverPath,
+				setDisabled(value) {
+					disabled = value;
+				},
 			});
-			vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([[options.serverName, serverConfig]]);
-
-			const result = await new LspTool(makeLspSession(tempDir.path())).execute("no-project", {
-				action: "references",
-				file: "widget.js",
-				line: 1,
-				symbol: "renderWidget",
-				timeout: 20,
-			});
-			return {
-				text: textResult(result),
-				requestCount: server.received.filter(message => message.method === "textDocument/references").length,
-			};
 		} finally {
 			await lspClient.shutdownAll();
+			configCache.delete(root);
 			tempDir.removeSync();
 		}
 	}
 
-	it("explains the tsserver No Project failure while keeping the server dump", async () => {
-		const { text, requestCount } = await referencesError({
-			serverName: "typescript-language-server",
-			command: "typescript-language-server",
-			message:
-				"<semantic> TypeScript Server Error (5.9.3)\nNo Project.\n    at ProjectService.getDefaultProjectForFile (tsserver.js:1:1)",
-		});
+	const referencesParams = {
+		action: "references" as const,
+		file: "client/src/service.js",
+		line: 1,
+		symbol: "updateRegion",
+		timeout: 20,
+	};
 
-		// Original information survives: error prefix, JSON-RPC code, server text.
-		expect(text).toContain("LSP error: LSP error 1: <semantic> TypeScript Server Error (5.9.3)");
-		expect(text).toContain("No Project.");
-		expect(text).toContain("at ProjectService.getDefaultProjectForFile");
-		// The failing server is named next to the explanation.
-		expect(text).toContain("[typescript-language-server]");
-		// Actionable reading: the two server-side conditions and the real remedies.
-		expect(text).toContain("has no project open for this file");
-		expect(text).toContain("language service is disabled");
-		expect(text).toContain("tsconfig.json/jsconfig.json include");
-		expect(text).toContain("public/fontawesome/js");
-		// Project-side remedy: `compilerOptions.disableSizeLimit` is a real
-		// tsconfig editor-support option, not a server switch.
-		expect(text).toContain("compilerOptions.disableSizeLimit");
-		expect(text).toContain(".lsp.json initOptions");
-		expect(text).toContain("maxTsServerMemory");
-		expect(text).toContain("tsserver.path");
-		// Never advertise .lsp.json initOptions the server does not have: the
-		// hint closes with exactly the switches typescript-language-server
-		// accepts, so no invented option can ride along with the supported ones.
-		expect(text.slice(text.indexOf(".lsp.json initOptions"))).toBe(
-			".lsp.json initOptions; typescript-language-server supports maxTsServerMemory, tsserver.path and tsserver.fallbackPath.",
-		);
-		expect(requestCount).toBeGreaterThan(0);
+	function projectStates(project: string) {
+		return lspClient.getActiveClients().find(client => client.cwd === path.dirname(project))?.semanticProjects;
+	}
+
+	it("returns cross-file references after opening the nested client's semantic project", async () => {
+		await withProject({}, async ({ tool, source, project }) => {
+			const result = await tool.execute("nested-js-references", referencesParams);
+			const output = textResult(result).replaceAll("\\", "/");
+			expect(result.details?.success).toBe(true);
+			expect(output).toContain("client/src/service.js");
+			expect(output).toContain("client/src/consumer.js");
+			expect(output).toContain("updateRegion();");
+			expect(projectStates(project)).toMatchObject([
+				{ file: source, project, status: "available", languageServiceDisabled: false },
+			]);
+		});
 	});
 
-	it("matches the phrase case-insensitively with collapsed whitespace", async () => {
-		const { text } = await referencesError({
-			serverName: "typescript-language-server",
-			command: "typescript-language-server",
-			message: "TypeScript Server Error\nno   PROJECT\n",
-		});
+	it("identifies a disabled project before issuing references and reports its nested status", async () => {
+		await withProject({ disabled: true }, async ({ tool, server, source, project, tsserverPath }) => {
+			const result = await tool.execute("disabled-js-references", referencesParams);
+			expect(result.details?.success).toBe(false);
+			expect(textResult(result)).toContain(project);
+			expect(textResult(result)).toContain(tsserverPath);
+			expect(server.received.filter(message => message.method === "textDocument/references")).toHaveLength(0);
+			expect(projectStates(project)).toMatchObject([
+				{ file: source, project, status: "unavailable", languageServiceDisabled: true },
+			]);
+			const status = await tool.execute("disabled-project-status", { action: "status" });
+			expect(textResult(status)).toContain("semantic unavailable in client");
+			expect(textResult(status)).toContain(project);
+			expect(textResult(status)).not.toContain("configured, not started)");
 
-		expect(text).toContain("no   PROJECT");
-		expect(text).toContain("has no project open for this file");
+			// Disabling semantics must not disable the server's syntax-only surface.
+			const symbols = await tool.execute("disabled-project-syntax", {
+				action: "symbols",
+				file: referencesParams.file,
+			});
+			expect(symbols.details?.success).toBe(true);
+			expect(textResult(symbols)).toContain("updateRegion @ line 1");
+			expect(projectStates(project)?.[0]?.languageServiceDisabled).toBe(true);
+		});
 	});
 
-	it("leaves unrelated TypeScript server errors unchanged", async () => {
-		const { text } = await referencesError({
-			serverName: "typescript-language-server",
-			command: "typescript-language-server",
-			message: "Some unrelated server failure",
+	it("rechecks the project after its semantic service is re-enabled", async () => {
+		await withProject({ disabled: true }, async ({ tool, source, project, setDisabled }) => {
+			const unavailable = await tool.execute("disabled-before-config-change", referencesParams);
+			expect(unavailable.details?.success).toBe(false);
+			setDisabled(false);
+			const available = await tool.execute("enabled-after-config-change", referencesParams);
+			expect(available.details?.success).toBe(true);
+			expect(textResult(available).replaceAll("\\", "/")).toContain("client/src/consumer.js");
+			expect(projectStates(project)).toMatchObject([
+				{ file: source, project, status: "available", languageServiceDisabled: false },
+			]);
 		});
-
-		expect(text).toBe("LSP error: LSP error 1: Some unrelated server failure");
-		expect(text).not.toContain("tsconfig.json");
 	});
 
-	it("leaves the same error from a non-TypeScript server unchanged", async () => {
-		const { text } = await referencesError({
-			serverName: "csharp-ls",
-			command: "csharp-ls",
-			message: "No Project.",
+	it("preserves a real No Project diagnosis and does not retry the failing references", async () => {
+		const diagnosis =
+			"<semantic> TypeScript Server Error (5.9.3)\nno   PROJECT\n    at getReferences (tsserver.js:1:1)";
+		await withProject({ referencesError: diagnosis }, async ({ tool, server, source, project }) => {
+			const result = await tool.execute("unavailable-real-diagnosis", referencesParams);
+			expect(result.details?.success).toBe(false);
+			expect(textResult(result).startsWith(`LSP error: LSP error 1: ${diagnosis}`)).toBe(true);
+			expect(server.received.filter(message => message.method === "textDocument/references")).toHaveLength(1);
+			expect(projectStates(project)).toMatchObject([
+				{
+					file: source,
+					project,
+					status: "unavailable",
+					languageServiceDisabled: undefined,
+					error: `LSP error 1: ${diagnosis}`,
+				},
+			]);
 		});
+	});
 
-		expect(text).toBe("LSP error: LSP error 1: No Project.");
-		expect(text).not.toContain("tsconfig.json");
+	for (const serverName of ["typescript-native", "csharp-ls"]) {
+		it(`keeps ${serverName} references working without a TLS-specific command`, async () => {
+			await withProject({ serverName, advertiseProjectInfo: false }, async ({ tool, server }) => {
+				const result = await tool.execute("other-server-references", referencesParams);
+				expect(result.details?.success).toBe(true);
+				expect(textResult(result).replaceAll("\\", "/")).toContain("client/src/consumer.js");
+				expect(server.received.filter(message => message.method === "workspace/executeCommand")).toHaveLength(0);
+			});
+		});
+	}
+
+	it("honors caller cancellation while waiting for semantic projectInfo", async () => {
+		const controller = new AbortController();
+		await withProject({ abortProjectInfo: controller }, async ({ tool, server }) => {
+			await expect(tool.execute("abort-project-info", referencesParams, controller.signal)).rejects.toBeInstanceOf(
+				ToolAbortError,
+			);
+			expect(server.received.filter(message => message.method === "textDocument/references")).toHaveLength(0);
+		});
 	});
 });
 
@@ -6659,7 +7101,6 @@ describe("ty python lsp", () => {
 			tempDir.removeSync();
 		}
 	});
-
 	it("coexists with ruff: ty is primary, ruff is linter, both auto-detected", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-ty-ruff-");
 		const resolvedTy = path.join(tempDir.path(), "bin", "ty");

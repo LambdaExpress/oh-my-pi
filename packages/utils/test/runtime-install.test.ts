@@ -146,6 +146,74 @@ describe("resolveRuntimeModule", () => {
 		expect(resolveRuntimeModule(nodeModules, "esm-only")).toBeNull();
 	});
 
+	test("resolves import-only wildcard exports and preserves condition order", async () => {
+		const nodeModules = await makeNodeModules({
+			workspace: {
+				manifest: {
+					exports: {
+						".": { types: "./types.d.ts", import: "./src/index.ts", require: "./index.cjs" },
+						"./tools/*": { import: "./src/tools/*.ts" },
+						"./tools/special": "./src/exact.ts",
+						"./features/*.js": "./src/features/*.ts",
+						"./ordered": { node: "./node.js", import: "./import.js" },
+					},
+				},
+				files: [
+					"src/index.ts",
+					"index.cjs",
+					"src/tools/read.ts",
+					"src/tools/special.ts",
+					"src/exact.ts",
+					"src/features/sample.ts",
+					"node.js",
+					"import.js",
+				],
+			},
+		});
+		expect(resolveRuntimeModule(nodeModules, "workspace", "import")).toBe(
+			path.join(nodeModules, "workspace/src/index.ts"),
+		);
+		expect(resolveRuntimeModule(nodeModules, "workspace")).toBe(path.join(nodeModules, "workspace/index.cjs"));
+		expect(resolveRuntimeModule(nodeModules, "workspace/tools/read", "import")).toBe(
+			path.join(nodeModules, "workspace/src/tools/read.ts"),
+		);
+		expect(resolveRuntimeModule(nodeModules, "workspace/tools/special", "import")).toBe(
+			path.join(nodeModules, "workspace/src/exact.ts"),
+		);
+		expect(resolveRuntimeModule(nodeModules, "workspace/features/sample.js", "import")).toBe(
+			path.join(nodeModules, "workspace/src/features/sample.ts"),
+		);
+		expect(resolveRuntimeModule(nodeModules, "workspace/ordered", "import")).toBe(
+			path.join(nodeModules, "workspace/node.js"),
+		);
+	});
+
+	test("does not bypass export encapsulation through main, private files or broader patterns", async () => {
+		const nodeModules = await makeNodeModules({
+			encapsulated: {
+				manifest: {
+					main: "./index.js",
+					exports: {
+						".": { import: "./entry.mjs" },
+						"./tools/*": "./tools/*.js",
+						"./tools/private/*": null,
+						"./blocked": { node: null, default: "./index.js" },
+					},
+				},
+				files: ["entry.mjs", "index.js", "private.js", "tools/private/value.js"],
+			},
+		});
+		expect(resolveRuntimeModule(nodeModules, "encapsulated")).toBeNull();
+		for (const specifier of [
+			"encapsulated/private.js",
+			"encapsulated/tools/private/value",
+			"encapsulated/tools/../index",
+			"encapsulated/blocked",
+		]) {
+			expect(resolveRuntimeModule(nodeModules, specifier, "import")).toBeNull();
+		}
+	});
+
 	test("falls back to index.js when manifest has no usable entry", async () => {
 		const nodeModules = await makeNodeModules({
 			bare: { manifest: {}, files: ["index.js"] },

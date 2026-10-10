@@ -15,6 +15,7 @@ import type { CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
@@ -34,6 +35,7 @@ function createMockSession(onPrompt: (params: { emit: (event: AgentSessionEvent)
 		sessionManager: { appendSessionInit: () => {} },
 		getActiveToolNames: () => ["read", "yield"],
 		getEnabledToolNames: () => ["read", "yield"],
+		getMountedXdevToolNames: () => [],
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			listeners.push(listener);
 			return () => {
@@ -43,6 +45,7 @@ function createMockSession(onPrompt: (params: { emit: (event: AgentSessionEvent)
 		},
 		prompt: async (_text: string, _options?: PromptOptions) => {
 			onPrompt({ emit });
+			return true;
 		},
 	};
 	return session as unknown as AgentSession;
@@ -81,9 +84,18 @@ const baseAgent: AgentDefinition = {
 
 describe("structured output sidecar lifecycle", () => {
 	let artifactsDir: string | undefined;
+	const sessionManagers: SessionManager[] = [];
+
+	function mockSession(session: AgentSession): void {
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			if (options?.sessionManager) sessionManagers.push(options.sessionManager);
+			return createSessionResult(session);
+		});
+	}
 
 	afterEach(async () => {
 		vi.restoreAllMocks();
+		for (const manager of sessionManagers.splice(0)) await manager.close();
 		if (artifactsDir) await fs.rm(artifactsDir, { recursive: true, force: true });
 		artifactsDir = undefined;
 	});
@@ -95,25 +107,26 @@ describe("structured output sidecar lifecycle", () => {
 		await fs.writeFile(sidecarPath, JSON.stringify({ summary: "stale from an earlier turn" }));
 
 		const session = yieldEmittingSession({ ok: true });
-		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		mockSession(session);
 
 		const originalWrite = Bun.write.bind(Bun);
 		vi.spyOn(Bun, "write").mockImplementation(((dest: unknown, ...rest: unknown[]) => {
-			if (typeof dest === "string" && dest.includes(`${id}.json.tmp-`)) {
+			if (typeof dest === "string" && dest.startsWith(`${sidecarPath}.tmp-`)) {
 				return Promise.reject(new Error("simulated disk failure"));
 			}
 			return (originalWrite as (...args: unknown[]) => unknown)(dest, ...rest);
 		}) as typeof Bun.write);
 
 		const result = await runSubprocess({
-			cwd: "/tmp",
+			cwd: artifactsDir,
 			agent: baseAgent,
 			task: "do work",
 			index: 0,
 			id,
 			settings: Settings.isolated(),
-			modelRegistry: { refresh: async () => {} } as unknown as ModelRegistry,
+			modelRegistry: { authStorage: {}, refresh: async () => {} } as unknown as ModelRegistry,
 			enableLsp: false,
+			enableIrc: false,
 			artifactsDir,
 			outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
 		});
@@ -138,35 +151,30 @@ describe("structured output sidecar lifecycle", () => {
 		const sidecarPath = path.join(artifactsDir, `${id}.json`);
 		await fs.writeFile(sidecarPath, JSON.stringify({ summary: "stale from an earlier turn" }));
 
-		const session = yieldEmittingSession({ ok: true });
-		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const data = { ok: true };
+		const session = yieldEmittingSession(data);
+		mockSession(session);
 
 		const originalStringify = JSON.stringify.bind(JSON);
 		vi.spyOn(JSON, "stringify").mockImplementation(((value: unknown, ...rest: unknown[]) => {
-			// Narrowly target only the yielded `{ ok: true }` payload so other
-			// concurrent JSON.stringify calls in the pipeline are unaffected.
-			if (
-				value !== null &&
-				typeof value === "object" &&
-				!Array.isArray(value) &&
-				Object.keys(value).length === 1 &&
-				"ok" in value &&
-				value.ok === true
-			) {
+			// Only this run's payload fails serialization, not similar objects
+			// in another session or the persistence pipeline.
+			if (value === data) {
 				return undefined as unknown as string;
 			}
 			return (originalStringify as (...args: unknown[]) => unknown)(value, ...rest) as string;
 		}) as typeof JSON.stringify);
 
 		const result = await runSubprocess({
-			cwd: "/tmp",
+			cwd: artifactsDir,
 			agent: baseAgent,
 			task: "do work",
 			index: 0,
 			id,
 			settings: Settings.isolated(),
-			modelRegistry: { refresh: async () => {} } as unknown as ModelRegistry,
+			modelRegistry: { authStorage: {}, refresh: async () => {} } as unknown as ModelRegistry,
 			enableLsp: false,
+			enableIrc: false,
 			artifactsDir,
 			outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
 		});
@@ -185,17 +193,18 @@ describe("structured output sidecar lifecycle", () => {
 		// `ok` is a string, not a boolean — violates the schema below, but the
 		// data still parses and must be preserved.
 		const session = yieldEmittingSession({ ok: "not-a-boolean" });
-		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		mockSession(session);
 
 		const result = await runSubprocess({
-			cwd: "/tmp",
+			cwd: artifactsDir,
 			agent: baseAgent,
 			task: "do work",
 			index: 0,
 			id,
 			settings: Settings.isolated(),
-			modelRegistry: { refresh: async () => {} } as unknown as ModelRegistry,
+			modelRegistry: { authStorage: {}, refresh: async () => {} } as unknown as ModelRegistry,
 			enableLsp: false,
+			enableIrc: false,
 			artifactsDir,
 			outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
 		});

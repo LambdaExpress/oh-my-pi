@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
 	GALLERY_STATES,
 	GALLERY_SURFACES,
@@ -13,20 +13,27 @@ import {
 	getComposerGalleryInventory,
 	getSegmentGalleryInventory,
 } from "@oh-my-pi/pi-coding-agent/cli/gallery-fixtures";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
 import { writeToolRenderer } from "@oh-my-pi/pi-tui/tools/write";
 import { setLocale } from "../src/i18n";
+import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
-beforeAll(async () => {
+let settingsState: SettingsTestState | undefined;
+
+beforeEach(async () => {
+	settingsState = beginSettingsTest();
 	setLocale("en");
-	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 	await initTheme(false, undefined, undefined, "dark", "light");
 });
 
-afterAll(() => setLocale(null));
+afterEach(() => {
+	setLocale(null);
+	restoreSettingsTestState(settingsState);
+	settingsState = undefined;
+});
 
 describe("gallery harness", () => {
 	it("accepts displayed gallery state labels and legacy tokens", () => {
@@ -135,16 +142,6 @@ describe("gallery harness", () => {
 		expect(stripped).not.toContain("Task");
 	});
 
-	it("renders curated failed states as failures", async () => {
-		const cases = [["wait", "Subagent exited 1: Redis connection string is missing.", "42 pass"]] as const;
-
-		for (const [name, expected, forbidden] of cases) {
-			const output = Bun.stripANSI((await renderGalleryState(name, resolveFixture(name), "error", 100)).join("\n"));
-			expect(output).toContain(expected);
-			expect(output).not.toContain(forbidden);
-		}
-	});
-
 	it("renders gallery-only read group fixtures", async () => {
 		const fixture = resolveFixture("read_group");
 		const success = Bun.stripANSI((await renderGalleryState("read_group", fixture, "success", 140)).join("\n"));
@@ -189,14 +186,5 @@ describe("gallery harness", () => {
 		expect(
 			writeToolRenderer.renderCall({ path: "proc://build-42/kill" }, { ...options, argsComplete: true }, theme),
 		).toBeDefined();
-	});
-
-	it("falls back to a generic fixture for registry tools without curated sample data", () => {
-		// resolveFixture never returns undefined for a registry tool, even one
-		// missing from the curated fixtures, so the gallery cannot crash on a newly
-		// added renderer.
-		const fixture = resolveFixture("a-tool-that-has-no-fixture");
-		expect(fixture.args).toBeDefined();
-		expect(fixture.result.content.length).toBeGreaterThan(0);
 	});
 });

@@ -15,10 +15,13 @@ import {
 	ReadToolGroupComponent,
 	readTranscriptShape,
 } from "@oh-my-pi/pi-tui/chat/read-tool-group";
+import { RecapNotice } from "@oh-my-pi/pi-tui/chat/recap-notice";
 import { TodoReminderComponent } from "@oh-my-pi/pi-tui/chat/todo-reminder";
+import { isNativeRendering } from "@oh-my-pi/pi-tui/native/state";
 import { ToolExecutionComponent, type ToolExecutionHandle, toolRenderName } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TtsrNotificationComponent } from "@oh-my-pi/pi-tui/chat/ttsr-notification";
-import { createUsageRowBlock, turnElapsedMs } from "@oh-my-pi/pi-tui/overlays/usage-row";
+import { createUsageRowBlock, TurnUsageTally, turnElapsedMs } from "@oh-my-pi/pi-tui/overlays/usage-row";
+import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { getSymbolTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "../../modes/types";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
@@ -75,12 +78,13 @@ import {
 	cfgDisplayShowTurnTime,
 	cfgDisplaySmoothStreaming,
 	cfgErrorNotify,
+	cfgReadToolResultPreview,
 	cfgRecap,
 	cfgTerminalShowImages,
 	cfgTerminalShowProgress,
 } from "../settings";
 import { cfgCompaction } from "../../session/context-settings";
-import { cfgReadToolResultPreview, cfgToolsApproval, cfgToolsApprovalMode } from "../../tools/settings";
+import { cfgToolsApproval, cfgToolsApprovalMode } from "../../tools/settings";
 import { cfgSpeechEnabled, cfgSpeechMode } from "../../tts/settings";
 
 type AgentSessionEventKind = AgentSessionEvent["type"];
@@ -116,6 +120,31 @@ function hasNestedTodo(details: unknown): boolean {
 		Array.isArray(details.statusEvents) &&
 		details.statusEvents.some(event => isRecord(event) && event.op === "todo" && event.committed === true)
 	);
+}
+
+interface AsyncResultJob {
+	jobId?: string;
+	type?: string;
+	label?: string;
+	durationMs?: number;
+}
+
+/**
+ * Toast text for an `async-result` delivery whose jobs are all background
+ * task spawns, or undefined when it is anything else (bash jobs keep their
+ * transcript rows). Native rendering only: the task call's agent nodes carry
+ * the outcome, so the delivery needs no transcript block of its own.
+ */
+function nativeTaskJobToast(message: { role: string; customType?: string; details?: unknown }): string | undefined {
+	if (message.role !== "custom" || message.customType !== "async-result" || !isRecord(message.details)) return;
+	const details = message.details as AsyncResultJob & { jobs?: AsyncResultJob[] };
+	const jobs = details.jobs && details.jobs.length > 0 ? details.jobs : [details];
+	if (!jobs.every(job => job.type === "task")) return;
+	if (jobs.length > 1) return `${jobs.length} background tasks completed`;
+	const job = jobs[0]!;
+	const name = sanitizeText(job.label ?? job.jobId ?? "task").trim() || "task";
+	const took = typeof job.durationMs === "number" ? ` · ${formatDuration(job.durationMs)}` : "";
+	return `Background task ${name} completed${took}`;
 }
 
 function exposesRawPartialJson(toolName: string, rawInput: boolean, tool: unknown): boolean {
@@ -296,6 +325,8 @@ export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
 	/** Timestamp of the current turn's user prompt; drives the usage row's prompt→yield delta. */
 	#turnStartedAt: number | undefined = undefined;
+	/** The running turn's token and cost totals, shown under its last answer on a TSP terminal. */
+	readonly #turnUsage = new TurnUsageTally();
 	/** When the last completed run ended; stale `#turnStartedAt` anchors are cleared against it. */
 	#lastAgentEndAt: number | undefined = undefined;
 	// Count of visible assistant content blocks (rendered non-empty text/thinking)
@@ -407,6 +438,10 @@ export class EventController {
 	#prevHideThinking = false;
 	#handlers: AgentSessionEventHandlers;
 	#terminalProgressActive = false;
+	/** Bumped at every `agent_start`; an async-wait watch stands down once a new run begins. */
+	#runEpoch = 0;
+	/** Epoch of the in-flight {@link #finishWhenAsyncWorkDrains} watch, if any. */
+	#asyncDrainWatchEpoch: number | undefined = undefined;
 	#activeCompletedRun: ActiveCompletedRun | undefined;
 	// Runs interrupted by an Enter force-flush whose spans must stay fully
 	// expanded (and out of native scrollback) while the force-flushed
@@ -537,6 +572,8 @@ export class EventController {
 			auto_compaction_end: e => this.#handleAutoCompactionEnd(e),
 			auto_retry_start: e => this.#handleAutoRetryStart(e),
 			auto_retry_end: e => this.#handleAutoRetryEnd(e),
+			cache_warming_start: async () => {},
+			cache_warming_end: async () => {},
 			retry_fallback_applied: e => this.#handleRetryFallbackApplied(e),
 			retry_fallback_succeeded: e => this.#handleRetryFallbackSucceeded(e),
 			ttsr_triggered: e => this.#handleTtsrTriggered(e),
@@ -587,6 +624,11 @@ export class EventController {
 				this.ctx.ui.requestRender(true);
 			},
 			goal_updated: async () => {},
+			// The TUI already refreshes the pending-messages bar at every queue
+			// mutation call site (`updatePendingMessagesDisplay()` in ui-helpers.ts);
+			// this event exists for RPC/ACP clients that have no equivalent local
+			// call site to hook, so there is nothing additional to do here.
+			queue_update: async () => {},
 		} satisfies AgentSessionEventHandlers;
 	}
 
@@ -1136,6 +1178,7 @@ export class EventController {
 		this.#readToolCallAssistantComponents.clear();
 		this.#lastAssistantComponent = undefined;
 		this.#turnStartedAt = undefined;
+		this.#turnUsage.reset();
 		this.#lastAgentEndAt = undefined;
 		this.#pinnedErrorComponent = undefined;
 		this.#pinnedErrorMessage = undefined;
@@ -1197,11 +1240,13 @@ export class EventController {
 
 	#setTerminalProgress(active: boolean): void {
 		if (active) {
-			if (
-				this.#terminalProgressActive ||
-				(this.ctx.settings ? cfgTerminalShowProgress.get(this.ctx.settings) : undefined) !== true
-			)
-				return;
+			// Tern reads the progress as the pane's busy state (its tab's live
+			// dot), so it gets it whatever the setting says. Tern's panes carry
+			// `KITTY_WINDOW_ID`, so `TERMINAL.id` says kitty there.
+			const wanted =
+				Bun.env.TERM_PROGRAM?.toLowerCase() === "tern" ||
+				(this.ctx.settings ? cfgTerminalShowProgress.get(this.ctx.settings) : undefined) === true;
+			if (this.#terminalProgressActive || !wanted) return;
 			this.ctx.ui.terminal.setProgress(true);
 			this.#terminalProgressActive = true;
 			return;
@@ -1248,6 +1293,7 @@ export class EventController {
 	}
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
+		this.#runEpoch += 1;
 		// Commit only records parked by this controller's preceding event stream.
 		// Session listeners are fire-and-forget, so this handler may process an old
 		// agent_start after newer turns already reached persisted history. Recovering
@@ -1361,6 +1407,12 @@ export class EventController {
 	async #handleMessageStart(event: Extract<AgentSessionEvent, { type: "message_start" }>): Promise<void> {
 		this.#ensureWorkingLoaderWhileStreaming();
 		if (event.message.role === "hookMessage" || event.message.role === "custom") {
+			if (event.message.role === "custom" && !this.ctx.initialChatRendered && !this.ctx.viewSession.isStreaming) {
+				// Idle custom appends persist before this event. Until the initial
+				// transcript commits, its staged replay owns their paint; rendering
+				// them live too would duplicate startup extension messages.
+				return;
+			}
 			// A directly-invoked `/skill:` or writable-collab custom prompt initiates a
 			// user-attributed turn, so it anchors the completed run exactly like a user
 			// message: the span it starts has to collapse once it settles.
@@ -1372,6 +1424,8 @@ export class EventController {
 			) {
 				this.ctx.clearOptimisticCustomMessage();
 				if (!request) return;
+				this.#turnStartedAt = request.timestamp;
+				this.#turnUsage.reset();
 				// The optimistic row already is this request's transcript row (custom
 				// prompts persist before their `message_start`), so the boundary close
 				// repaints it from the transcript whenever that rebuilds.
@@ -1380,6 +1434,7 @@ export class EventController {
 				// The user invoked this prompt, so it is the submission a held
 				// startup notice was waiting for.
 				this.ctx.flushDeferredInjectNotice();
+				if (readQueueChipText(event.message.details)) this.ctx.updatePendingMessagesDisplay();
 				return;
 			}
 			const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}`;
@@ -1399,12 +1454,14 @@ export class EventController {
 			let replayedRequest = false;
 			if (request) {
 				this.#turnStartedAt = event.message.timestamp;
+				this.#turnUsage.reset();
 				// Only an open anchored span needs the boundary commit; the common case
 				// stays synchronous so later fire-and-forget events cannot reorder rows.
 				if (this.#activeCompletedRun?.initialUserMessage) {
 					replayedRequest = await this.#closeCompletedRunAtRequest(request);
 				}
 			}
+			const taskJobToast = isNativeRendering() ? nativeTaskJobToast(event.message) : undefined;
 			if (replayedRequest) {
 				if (
 					event.message.role === "custom" &&
@@ -1419,6 +1476,11 @@ export class EventController {
 				isUserInvokedSkillPrompt(event.message)
 			) {
 				this.ctx.reconcileOptimisticSkillMessage(event.message);
+			} else if (taskJobToast) {
+				// Native: the task call's `agent` nodes already settled in place
+				// (its terminal async update); a toast replaces the appended
+				// "Background job completed" rows.
+				this.ctx.showStatus(taskJobToast);
 			} else {
 				this.ctx.addMessageToChat(event.message);
 			}
@@ -1448,7 +1510,10 @@ export class EventController {
 			}
 			// Only genuinely user-attributed prompts anchor the delta; a mid-run
 			// agent-attributed `user` message (advisor tool-loop redirect) must not.
-			if (event.message.attribution !== "agent") this.#turnStartedAt = event.message.timestamp;
+			if (event.message.attribution !== "agent") {
+				this.#turnStartedAt = event.message.timestamp;
+				this.#turnUsage.reset();
+			}
 			const signature = userMessageSubmissionSignature(event.message);
 
 			this.#resetReadGroup();
@@ -1501,6 +1566,7 @@ export class EventController {
 				// turn's own prompt: anchor the delta to it instead of clearing.
 				if (event.message.userInitiated) this.#turnStartedAt = event.message.timestamp;
 				else this.#turnStartedAt = undefined;
+				this.#turnUsage.reset();
 			}
 		} else if (event.message.role === "fileMention") {
 			this.#resetReadGroup();
@@ -1751,7 +1817,9 @@ export class EventController {
 				this.#streamingReveal.resyncVisibility();
 			}
 			this.ctx.streamingMessage = event.message;
-			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
+			const timeline = splitAssistantMessageToolTimeline(
+				assistantContentAfterPrefix(this.ctx.streamingMessage, this.#assistantDisplayPrefix),
+			);
 			this.#streamingReveal.setTarget(timeline.beforeTools, timeline.hasToolCalls);
 
 			const visibleBlockCount = this.ctx.streamingMessage.content.filter(
@@ -1794,12 +1862,13 @@ export class EventController {
 				this.#streamedToolCallIdByIndex.set(contentIndex, content.id);
 				const tool = this.ctx.viewSession.getToolByName(content.name);
 				const renderToolName = toolRenderName(content.name, tool);
+				const partialJson = getStreamingPartialJson(content);
 				if (renderToolName === "read") {
 					// Defer until the path can no longer change, so the routing below reads a
 					// settled target: a streamed prefix (`"s"`, `"skill:"`) has no scheme yet and
 					// would lock a `skill://` read into the group. Creating either component early
 					// freezes the shape — nothing re-routes a card that already exists.
-					const shape = readTranscriptShape(content.arguments, getStreamingPartialJson(content) !== undefined);
+					const shape = readTranscriptShape(content.arguments, partialJson !== undefined);
 					if (shape === undefined) continue;
 					if (shape) {
 						const existing = this.ctx.pendingTools.get(content.id);
@@ -1816,6 +1885,7 @@ export class EventController {
 							this.#toolTimelineComponents.set(content.id, group);
 							this.#settleHeldCompletionIfPresent(content.id, group);
 						}
+						if (partialJson === undefined) this.ctx.pendingTools.get(content.id)?.setArgsComplete(content.id);
 						continue;
 					}
 					// Other internal-URL reads fall through to ToolExecutionComponent below.
@@ -1828,7 +1898,6 @@ export class EventController {
 				// delivers large batches); once it closes, the final args render
 				// as-is — mirroring how assistant text snaps at message_end.
 				let renderArgs: Record<string, unknown>;
-				const partialJson = getStreamingPartialJson(content);
 				const rawInput = content.customWireName !== undefined;
 				if (partialJson) {
 					renderArgs = this.#toolArgsReveal.setTarget(content.id, partialJson, {
@@ -1882,6 +1951,7 @@ export class EventController {
 						this.#toolArgsReveal.bind(content.id, component);
 					}
 				}
+				if (partialJson === undefined) this.ctx.pendingTools.get(content.id)?.setArgsComplete(content.id);
 			}
 			for (const [toolCallId, segment] of timeline.afterToolCalls) {
 				if (this.#postToolAssistantComponents.get(toolCallId)?.isTranscriptBlockFinalized()) continue;
@@ -1948,7 +2018,12 @@ export class EventController {
 				}
 			}
 		}
-		if (event.message.role === "user") return;
+		if (event.message.role === "user") {
+			// Live steering stays listed until the agent appends it, which follows
+			// message_start: drop its Steering chip now.
+			this.ctx.updatePendingMessagesDisplay();
+			return;
+		}
 		const unlockedThinkingVisibility =
 			event.message.role === "assistant" && this.ctx.noteDisplayableThinkingContent(event.message);
 		if (unlockedThinkingVisibility && this.ctx.streamingComponent) {
@@ -2025,6 +2100,7 @@ export class EventController {
 				const supersededByRewind =
 					this.ctx.streamingMessage.stopReason === "aborted" && this.ctx.viewSession.isTtsrAbortPending;
 				if (supersededByRewind) {
+					this.ctx.streamingComponent.markRewound();
 					for (const [toolCallId, component] of Array.from(this.ctx.pendingTools.entries())) {
 						if (this.#backgroundToolCallIds.has(toolCallId)) continue;
 						if (
@@ -2068,6 +2144,8 @@ export class EventController {
 				if (component) lastPostToolAssistantComponent = component;
 			}
 			this.#lastAssistantComponent = lastPostToolAssistantComponent ?? this.ctx.streamingComponent;
+			const turnUsage = this.#turnUsage.add(event.message, this.#turnStartedAt);
+			if (turnUsage) this.#lastAssistantComponent.setTurnUsage(turnUsage);
 			if (cfgDisplayShowTokenUsage.get(settings) && assistantUsageIsBilled(event.message.usage)) {
 				const readCallIds = groupedReadUsageCallIds(event.message);
 				const turnElapsed = cfgDisplayShowTurnTime.get(settings)
@@ -2145,11 +2223,13 @@ export class EventController {
 				}
 			}
 			// Args are final here, so the shape is decidable.
-			if (readTranscriptShape(event.args, false) === true) {
+			if (renderToolName === "read" && readTranscriptShape(event.args, false) === true) {
 				this.#trackReadToolCall(event.toolCallId, event.args);
 				if (!this.#toolTimelineComponents.has(event.toolCallId)) {
 					const group = this.#getReadGroup();
 					group.updateArgs(event.args, event.toolCallId);
+					group.setExecutionStarted(event.toolCallId);
+					this.#executionStartedCallIds.add(event.toolCallId);
 					this.ctx.pendingTools.set(event.toolCallId, group);
 					this.#toolTimelineComponents.set(event.toolCallId, group);
 					this.#settleHeldCompletionIfPresent(event.toolCallId, group);
@@ -2562,16 +2642,26 @@ export class EventController {
 		// then). Mirrors the collab guest's !isStreaming loader reconciler.
 		if (this.ctx.session.isStreaming) return;
 		// A non-terminal settle (`isTerminal: false`) is a scheduling pause, not the
-		// end of the run: an unsuppressed async job (a `/vibe` worker turn, a bash
-		// `async` job, etc.) will re-wake the loop when its result is delivered.
-		// `AgentSession` tags this on the deferred event (see `#hasPendingAsyncWake`
-		// in agent-session.ts). Skip the idle title/loader teardown so the tab keeps
-		// reading "working"; the later terminal `agent_end` performs it. Still flush
-		// a deferred model switch — the plan-mode reconciler queues it to apply once
-		// the current stream ends, and `#finishAgentEnd` is otherwise its only flush
-		// site, so the automatic continuation would otherwise run on the old
-		// model/thinking level until the terminal settle.
+		// end of the run: the agent's own continuation (reminder, retry, queued
+		// steer/follow-up, IRC wake) follows, or background work may re-wake it.
+		// Skip the idle title/loader teardown; the later terminal `agent_end`
+		// performs it. Still flush a deferred model switch — the plan-mode
+		// reconciler queues it to apply once the current stream ends, and
+		// `#finishAgentEnd` is otherwise its only flush site, so the automatic
+		// continuation would otherwise run on the old model/thinking level until
+		// the terminal settle.
 		if (event.isTerminal === false) {
+			// `awaitingAsyncWork`: the model handed control back and only a
+			// background-job result can resume it. The title tracks the model, so it
+			// goes idle now — before any await, so a wake landing mid-flush keeps the
+			// `working` its `agent_start` sets. That wake is not guaranteed (a
+			// cancelled job enqueues no delivery; acknowledged/watched ones are
+			// suppressed), so the loader/progress teardown waits out the background
+			// work instead of a terminal `agent_end` that may never come.
+			if (event.awaitingAsyncWork === true) {
+				setTerminalTitleState("idle");
+				void this.#finishWhenAsyncWorkDrains(event);
+			}
 			await this.ctx.flushPendingModelSwitch();
 			// Reaching here means the first guard passed, so `isStreaming` is already
 			// false: a command issued from now on mounts immediately. Leaving earlier
@@ -2780,6 +2870,39 @@ export class EventController {
 		this.ctx.chatContainer.addChild(gate);
 	}
 
+	/**
+	 * Terminal teardown for an async-wait settle whose wake never arrives. Mirrors
+	 * `RpcSessionSettleWatcher`: wait out owner-scoped background work, then — if
+	 * no new run started and the session is quiet — run the same teardown a
+	 * terminal `agent_end` would. A real wake starts a run (bumping the epoch)
+	 * whose own `agent_end` finalizes it instead.
+	 */
+	async #finishWhenAsyncWorkDrains(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
+		const epoch = this.#runEpoch;
+		if (this.#asyncDrainWatchEpoch === epoch) return;
+		this.#asyncDrainWatchEpoch = epoch;
+		const session = this.ctx.session;
+		// No `hasAdmittedSubmission` gate: this very settle is emitted while the
+		// prompt that produced it is still admitted, and a new submission starts a
+		// run whose `agent_start` bumps the epoch anyway.
+		const superseded = () => this.#runEpoch !== epoch || this.ctx.session !== session || session.isStreaming;
+		try {
+			while (!superseded() && session.hasPendingAsyncWork()) {
+				await session.settleAsyncWork();
+			}
+			await this.#runSerialized(async () => {
+				if (superseded() || session.hasPendingAsyncWork()) return;
+				setTerminalTitleState("idle");
+				await this.#finishAgentEnd(event);
+				if (this.ctx.shutdownRequested) this.ctx.requestShutdown();
+			});
+		} catch (error) {
+			logger.warn("Async-wait settle teardown failed", { error: String(error) });
+		} finally {
+			if (this.#asyncDrainWatchEpoch === epoch) this.#asyncDrainWatchEpoch = undefined;
+		}
+	}
+
 	async #finishAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
 		this.#setTerminalProgress(false);
 		this.ctx.statusLine.markActivityEnd();
@@ -2858,7 +2981,9 @@ export class EventController {
 	 * label carries no dangling whitespace.
 	 */
 	#maintenanceEscHint(): string {
-		return this.ctx.focusedAgentId ? "" : ` ${t("(esc to cancel)")}`;
+		return this.ctx.focusedAgentId
+			? ""
+			: ` ${t("({key} to cancel)", { key: appKey(this.ctx.keybindings, "app.interrupt") })}`;
 	}
 
 	async #handleAutoCompactionStart(
@@ -2893,6 +3018,16 @@ export class EventController {
 			text => theme.fg("muted", text),
 			`${reasonText}${actionLabel}…${this.#maintenanceEscHint()}`,
 			getSymbolTheme().spinnerFrames,
+		);
+		const compactionStartMs = Date.now();
+		this.ctx.autoCompactionLoader.setWorkingRow(
+			() => ({
+				label: `${reasonText}${actionLabel}…`,
+				startedAt: compactionStartMs,
+				variant: { kind: "compaction" },
+				interruptKey: this.ctx.maintenanceInterruptKey(),
+			}),
+			() => this.ctx.interruptFromPointer(),
 		);
 		this.ctx.statusContainer.addChild(this.ctx.autoCompactionLoader);
 		this.ctx.ui.requestRender();
@@ -2946,14 +3081,9 @@ export class EventController {
 			this.ctx.lastAssistantUsage = undefined;
 			this.ctx.rebuildChatFromMessages({ reuseSettledComponents: true });
 			this.ctx.statusLine.invalidate();
-			// When history collapses behind the summary divider, the frame
-			// shrinks far below the committed row count; without clearing, the
-			// differential renderer's "duplication, never loss" resync repaints
-			// the whole collapsed transcript (welcome box included) BELOW the
-			// stale pre-compaction scrollback. Compaction is an intentional
-			// transcript replacement then — same as auto-handoff below. With
-			// Completed-run collapse also keeps the full persisted transcript and
-			// projects it reversibly, so the resync handles it without clearing.
+			// Collapsed history intentionally replaces the old terminal tape.
+			// Full-history rebuilds preserve equivalent retired rows; the rebuild
+			// wrapper clears/replays if it cannot transfer that retirement safely.
 			if (
 				shouldCollapseCompactedHistoryForDisplay(
 					cfgDisplayCollapseCompacted.get(this.ctx.settings),
@@ -3032,6 +3162,15 @@ export class EventController {
 				});
 			},
 			getSymbolTheme().spinnerFrames,
+		);
+		this.ctx.retryLoader.setWorkingRow(
+			() => ({
+				label: `Retrying · attempt ${event.attempt} of ${event.maxAttempts}`,
+				startedAt: retryStartMs,
+				variant: { kind: "retry", attempt: event.attempt, max: event.maxAttempts, delayMs: event.delayMs },
+				interruptKey: this.ctx.maintenanceInterruptKey(),
+			}),
+			() => this.ctx.interruptFromPointer(),
 		);
 		this.ctx.statusContainer.addChild(this.ctx.retryLoader);
 		this.ctx.ui.requestRender();
@@ -3219,8 +3358,8 @@ export class EventController {
 
 	/**
 	 * Generate the idle recap with an ephemeral side-channel turn over the
-	 * current conversation (same pipeline as `/btw`), surface it as a status
-	 * line, and journal it to history.db (`session_recaps`) for the session that
+	 * current conversation (same pipeline as `/btw`), surface it in the transcript
+	 * ({@link RecapNotice}), and journal it to history.db (`session_recaps`) for the session that
 	 * produced it. Live goal/title and the active todo task are passed as anchoring
 	 * hints because the snapshot only carries conversation history, not the
 	 * controller's todo/goal state. The request is abortable: any activity
@@ -3246,7 +3385,7 @@ export class EventController {
 			const recap = previewLine(replyText, TRUNCATE_LENGTHS.RECAP);
 			if (!recap) return;
 			session.sessionManager.recordRecap(replyText);
-			this.ctx.showStatus(theme.fg("dim", theme.italic(`※ ${t("recap: {recap}", { recap })}`)), { dim: false });
+			this.ctx.present(new RecapNotice(recap));
 		} catch (error) {
 			if (!abort.signal.aborted) logger.debug("Idle recap turn failed", { error: String(error) });
 		} finally {

@@ -18,6 +18,12 @@ import { centerLine } from "../utils";
 import { t } from "../i18n";
 import { theme } from "../theme/theme";
 import { matchesAppInterrupt } from "../keybinding-matchers";
+import { formatKeyHint } from "../app-keybindings";
+import { boundKeys, interruptKey } from "../chrome/keybinding-hints";
+import type { NativeNode, NativeUiEvent } from "../native/node";
+import { col, node, row, span, text } from "../native/describe";
+import { actionBar, actionButton } from "../native/overlay";
+import { isNativeRendering } from "../native/state";
 
 /**
  * Slice of `InteractiveModeContext` the pause screen drives. Narrow so tests
@@ -51,7 +57,6 @@ const BODY_LINES = [
 	"Main agent, subagents, and advisor hold at their next step.",
 	"In-flight calls finish; nothing new starts until you resume.",
 ] as const;
-const RESUME_HINT = "esc · enter · space — resume";
 
 /** Live hold clock, seconds-precise: `0:07`, `12:34`, `1:02:03`. */
 function formatClock(ms: number): string {
@@ -70,6 +75,8 @@ function formatClock(ms: number): string {
 export function renderPauseScreen(width: number, height: number, elapsedMs: number, sessionName?: string): string[] {
 	const compact = width < MIN_FULL_WIDTH || height < MIN_FULL_HEIGHT;
 	const content: string[] = [];
+	// Resume keys mirror PauseScreenComponent#handleInput: `app.interrupt` (raw Escape when unbound), Enter, Space.
+	const esc = interruptKey();
 
 	if (compact) {
 		if (sessionName) {
@@ -81,7 +88,7 @@ export function renderPauseScreen(width: number, height: number, elapsedMs: numb
 		content.push(
 			centerLine(theme.fg("dim", t("paused for {time}", { time: formatClock(elapsedMs) })), width).trimEnd(),
 		);
-		content.push(centerLine(theme.fg("dim", t("esc to resume")), width).trimEnd());
+		content.push(centerLine(theme.fg("dim", t("{key} to resume", { key: esc })), width).trimEnd());
 	} else {
 		if (sessionName) {
 			content.push(centerLine(theme.bold(sessionName), width).trimEnd());
@@ -104,7 +111,10 @@ export function renderPauseScreen(width: number, height: number, elapsedMs: numb
 			centerLine(theme.fg("dim", t("paused for {time}", { time: formatClock(elapsedMs) })), width).trimEnd(),
 		);
 		content.push("");
-		content.push(centerLine(theme.fg("dim", t(RESUME_HINT)), width).trimEnd());
+		const resumeHint = t("{keys} — resume", {
+			keys: `${esc} · ${formatKeyHint("enter")} · ${formatKeyHint("space")}`,
+		});
+		content.push(centerLine(theme.fg("dim", resumeHint), width).trimEnd());
 	}
 
 	const topPad = Math.max(0, Math.floor((height - content.length) / 2));
@@ -121,15 +131,20 @@ export class PauseScreenComponent implements Component, OverlayFocusOwner {
 	#done = Promise.withResolvers<void>();
 	#disposed = false;
 	#startedAt = Date.now();
+	#native: NativeNode | undefined;
 
 	constructor(readonly host: PauseScreenHost) {}
 
 	/** Start the clock; resolves once the user asks to resume. */
 	run(): Promise<void> {
 		this.#startedAt = agentPauseGate.pausedAt ?? Date.now();
-		this.#timer ??= setInterval(() => {
-			if (!this.#disposed) this.host.ui.requestRender();
-		}, TICK_MS);
+		this.#native = undefined;
+		// The tick only repaints the hold clock; natively the `elapsed` node counts on its own.
+		if (!isNativeRendering()) {
+			this.#timer ??= setInterval(() => {
+				if (!this.#disposed) this.host.ui.requestRender();
+			}, TICK_MS);
+		}
 		this.host.ui.requestRender();
 		return this.#done.promise;
 	}
@@ -159,6 +174,48 @@ export class PauseScreenComponent implements Component, OverlayFocusOwner {
 		) {
 			if (!this.#disposed) this.#done.resolve();
 		}
+	}
+
+	invalidate(): void {
+		this.#native = undefined;
+	}
+
+	/** A glass sheet titled "Paused" (not the whole pane: the transcript stays visible, frozen). */
+	readonly nativeOverlay = { role: "omp.overlay.pause", size: "md", anchor: "center", head: t("Paused") } as const;
+
+	describe(): NativeNode {
+		if (this.#native) return this.#native;
+		const children: NativeNode[] = [];
+		if (this.host.sessionName) children.push(text([span(this.host.sessionName, "strong")]));
+		const resumeKey = boundKeys("app.interrupt", ["escape"])[0] ?? "escape";
+		children.push(
+			text(
+				BODY_LINES.map((line, index) => span(index === 0 ? t(line) : `\n${t(line)}`, "muted")),
+				{ wrap: "word" },
+			),
+			row(
+				[
+					text([span(t("Paused for"), "dim")]),
+					node("elapsed", { age: Date.now() - this.#startedAt, format: "clock" }),
+				],
+				{ gap: "xs", align: "baseline" },
+			),
+			actionBar([
+				null,
+				actionButton(t("Resume"), "resume", {
+					keys: resumeKey,
+					tone: "accent",
+					title: `${t("Resume")}  ${formatKeyHint(resumeKey)} · ${formatKeyHint("enter")} · ${formatKeyHint("space")}`,
+				}),
+			]),
+		);
+		this.#native = col(children, { gap: "md" });
+		return this.#native;
+	}
+
+	/** Resume runs what Esc/Enter/Space run. */
+	handleNativeEvent(event: NativeUiEvent): void {
+		if (event.type === "action" && event.act === "resume" && !this.#disposed) this.#done.resolve();
 	}
 
 	render(width: number): readonly string[] {

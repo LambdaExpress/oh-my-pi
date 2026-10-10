@@ -10,7 +10,12 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
-import { type ArchiveMemberContent, writeArchive } from "@oh-my-pi/pi-utils/ar";
+import {
+	type ArchiveMemberContent,
+	archiveFormatFromPath,
+	parseArchivePathCandidates,
+	writeArchive,
+} from "@oh-my-pi/pi-utils/ar";
 
 const enc = (value: string): Uint8Array => new TextEncoder().encode(value);
 
@@ -79,6 +84,47 @@ describe("read archive binary members", () => {
 		await removeWithRetries(testDir);
 	});
 
+	it.each(["unitypackage", "UNITYPACKAGE", "tar.gz", "tgz"])(
+		"lists gzip TAR Unity assets and reads pathname members through .%s",
+		async extension => {
+			const guid = "0123456789abcdef0123456789abcdef";
+			const assetPath = "Assets/Clothing/Lime&Chiffon.prefab";
+			const bundlePath = path.join(testDir, `EveningGlow_Lime&Chiffon.${extension}`);
+			await writeArchive(bundlePath, "tar.gz", [
+				[`${guid}/asset`, "%YAML 1.1\n--- !u!1 &1000\nGameObject:\n  m_Name: EveningGlow\n"],
+				[`${guid}/asset.meta`, `fileFormatVersion: 2\nguid: ${guid}\n`],
+				[`${guid}/pathname`, assetPath],
+			]);
+			const tool = new ReadTool(makeSession(testDir));
+
+			const overview = await tool.execute("overview", { path: bundlePath });
+			expect(overview.details?.isDirectory).toBe(true);
+			expect(joinText(overview.content)).toBe(`${guid}/`);
+
+			const directory = await tool.execute("directory", { path: `${bundlePath}:${guid}` });
+			expect(directory.details?.isDirectory).toBe(true);
+			expect(joinText(directory.content)).toContain("asset.meta");
+			expect(joinText(directory.content)).toContain("pathname");
+
+			const pathname = await tool.execute("pathname", { path: `${bundlePath}:${guid}/pathname` });
+			expect(pathname.details?.displayContent?.text).toBe(assetPath);
+
+			const rawPathname = await tool.execute("raw-pathname", { path: `${bundlePath}:${guid}/pathname:raw` });
+			expect(joinText(rawPathname.content)).toBe(assetPath);
+		},
+	);
+
+	it("requires a complete archive extension before a member selector or end of path", () => {
+		for (const extension of ["unitypackage", "tar.gz", "tgz"]) {
+			const archivePath = `EveningGlow_Lime&Chiffon.${extension}`;
+			expect(archiveFormatFromPath(`${archivePath}.txt`)).toBeUndefined();
+			expect(parseArchivePathCandidates(`${archivePath}.txt:pathname`)).toEqual([]);
+			expect(parseArchivePathCandidates(`${archivePath}:0123456789abcdef/pathname`)).toEqual([
+				{ archivePath, subPath: "0123456789abcdef/pathname" },
+			]);
+		}
+	});
+
 	it("decodes a PNG member into an inline image block", async () => {
 		const bundlePath = await writeBundle(testDir, { "clifford.png": TINY_PNG });
 		const tool = new ReadTool(makeSession(testDir));
@@ -114,6 +160,52 @@ describe("read archive binary members", () => {
 		expect(text).toContain("| Name | Age |");
 		expect(text).not.toContain("Cannot read binary archive entry");
 		expect(text).not.toContain("<?xml");
+	});
+
+	it("lists ASAR archives and reads small member ranges beside an oversized member", async () => {
+		const packageJson = enc('{\n  "name": "asar-fixture",\n  "main": "dist/app.js"\n}\n');
+		const script = enc('const before = "before";\nconst selected = "selected";\nconst after = "after";\n');
+		const largeSize = 65 * 1024 * 1024;
+		const json = enc(
+			JSON.stringify({
+				files: {
+					"package.json": { size: packageJson.byteLength, offset: "0" },
+					dist: { files: { "app.js": { size: script.byteLength, offset: String(packageJson.byteLength) } } },
+					"geoip-city.dat": { size: largeSize, offset: String(packageJson.byteLength + script.byteLength) },
+				},
+			}),
+		);
+		const paddedJsonSize = json.byteLength + ((4 - (json.byteLength % 4)) % 4);
+		const header = Buffer.alloc(16 + paddedJsonSize);
+		header.writeUInt32LE(4, 0);
+		header.writeUInt32LE(header.byteLength - 8, 4);
+		header.writeUInt32LE(header.byteLength - 12, 8);
+		header.writeUInt32LE(json.byteLength, 12);
+		header.set(json, 16);
+		const bundlePath = path.join(testDir, "bundle.asar");
+		await Bun.write(bundlePath, Buffer.concat([header, packageJson, script]));
+		// Extend on disk without allocating or serializing the unrelated payload.
+		await fs.truncate(bundlePath, header.byteLength + packageJson.byteLength + script.byteLength + largeSize);
+		const tool = new ReadTool(makeSession(testDir));
+
+		const overview = joinText((await tool.execute("overview", { path: bundlePath })).content);
+		expect(overview).toContain("dist/");
+		expect(overview).toContain("package.json");
+		expect(overview).toContain("geoip-city.dat");
+
+		const packageRange = joinText(
+			(await tool.execute("package", { path: `${bundlePath}:package.json:2-3` })).content,
+		);
+		expect(packageRange).toContain('"name": "asar-fixture"');
+		expect(packageRange).toContain('"main": "dist/app.js"');
+		const scriptRange = joinText((await tool.execute("script", { path: `${bundlePath}:dist/app.js:2-2` })).content);
+		expect(scriptRange).toContain('const selected = "selected";');
+		expect(scriptRange).not.toContain('const before = "before";');
+		expect(scriptRange).not.toContain('const after = "after";');
+
+		await expect(tool.execute("large", { path: `${bundlePath}:geoip-city.dat:1-2` })).rejects.toThrow(
+			"Archive member 'geoip-city.dat' is too large to extract in memory",
+		);
 	});
 
 	it("keeps unknown binary members opaque", async () => {

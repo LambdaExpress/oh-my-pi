@@ -636,20 +636,6 @@ describe("write resolves conflicts via conflict://N", () => {
 		expect(after).toBe("A-resolved\nmiddle\nB-resolved\ntail\n");
 	});
 
-	it("accepts `@ours`/`@theirs`/`@both` content tokens as shorthand", async () => {
-		const filePath = path.join(tempDir, "tokens.ts");
-		await Bun.write(filePath, TWO_WAY);
-		const session = createTestSession(tempDir);
-		const read = await getTool(session, "read");
-		const write = await getTool(session, "write");
-
-		await read.execute("read-tokens", { path: "tokens.ts" });
-		await write.execute("write-tokens", { path: "conflict://1", content: "@theirs" });
-
-		const after = await Bun.file(filePath).text();
-		expect(after).toBe("line 1\nnewApi(x)\nline N\n");
-	});
-
 	it("expands `@both` to ours then theirs without re-typing either side", async () => {
 		const filePath = path.join(tempDir, "both.ts");
 		await Bun.write(filePath, TWO_WAY);
@@ -790,7 +776,7 @@ describe("write resolves conflicts via conflict://N", () => {
 		expect(session.conflictHistory?.entries()).toHaveLength(0);
 	});
 
-	it("maps a bulk write-stage open failure to a path-specific ToolError without committing state", async () => {
+	it("reports a path-specific bulk write failure and keeps registered conflicts retryable", async () => {
 		const filePath = path.join(tempDir, "bulk-open-error.ts");
 		await Bun.write(filePath, TWO_WAY);
 		const session = createTestSession(tempDir);
@@ -800,20 +786,31 @@ describe("write resolves conflicts via conflict://N", () => {
 		await read.execute("read-bulk-open-error", { path: "bulk-open-error.ts:conflicts" });
 		const beforeHistory = session.conflictHistory?.entries() ?? [];
 		const openError = Object.assign(new Error("Failed to open destination"), { code: "EUNKNOWN" });
-		const writeSpy = spyOn(Bun, "write").mockRejectedValueOnce(openError);
+		const writeSpy = spyOn(Bun, "write").mockImplementation(target => {
+			if (typeof target !== "string" || target !== filePath) {
+				throw new Error("Unexpected destination in bulk write-stage failure fixture");
+			}
+			return Promise.reject(openError);
+		});
 		try {
-			await expect(
-				write.execute("write-bulk-open-error", {
-					path: "conflict://*",
-					content: "@ours",
-				}),
-			).rejects.toThrow(/bulk-open-error\.ts.*write stage.*EUNKNOWN.*Failed to open destination/);
+			const failedWrite = write.execute("write-bulk-open-error", {
+				path: "conflict://*",
+				content: "@ours",
+			});
+			await expect(failedWrite).rejects.toThrow(/bulk-open-error\.ts.*\bEUNKNOWN\b/);
 		} finally {
 			writeSpy.mockRestore();
 		}
 
 		expect(await Bun.file(filePath).text()).toBe(TWO_WAY);
 		expect(session.conflictHistory?.entries()).toEqual(beforeHistory);
+
+		await write.execute("retry-bulk-open-error", {
+			path: "conflict://*",
+			content: "@ours",
+		});
+		expect(await Bun.file(filePath).text()).toBe("line 1\noldApi(x)\nline N\n");
+		expect(session.conflictHistory?.entries()).toEqual([]);
 	});
 
 	it("`write conflict://*` errors when no conflicts are registered", async () => {

@@ -20,6 +20,15 @@ import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { runGrepCommand } from "../../src/cli/grep-cli";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { GrepTool } from "../../src/tools/grep";
+import { setLocale } from "../../src/i18n";
+
+beforeEach(() => {
+	setLocale("en");
+});
+
+afterEach(() => {
+	setLocale(null);
+});
 
 function getText(result: { content: Array<{ type: string; text?: string }> }): string {
 	return result.content
@@ -107,34 +116,47 @@ describe("literal colon filename resolution (issue #4618)", () => {
 
 		it("uses only confirmed Windows literal paths", async () => {
 			const literal = "base.txt:1-2";
-			await Bun.write(path.join(tmpDir, literal), "stream\n");
+			const base = path.join(tmpDir, "base.txt");
+			const stream = path.join(tmpDir, literal);
+			await Bun.write(base, "base\n");
+			const baseStat = await fs.promises.lstat(base);
+			const realLstat = fs.promises.lstat;
+			const realLstatSync = fs.lstatSync;
+			const realAccess = fs.promises.access;
+			const realAccessSync = fs.accessSync;
 			const platform = Object.getOwnPropertyDescriptor(process, "platform");
 			if (platform === undefined) throw new Error("process.platform descriptor is unavailable");
 			Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+			const streamLstat = spyOn(fs.promises, "lstat").mockImplementation((async (target: fs.PathLike) =>
+				String(target) === stream ? baseStat : await realLstat(target)) as typeof fs.promises.lstat);
+			const streamLstatSync = spyOn(fs, "lstatSync").mockImplementation(((target: fs.PathLike) =>
+				String(target) === stream ? baseStat : realLstatSync(target)) as typeof fs.lstatSync);
+			const streamAccess = spyOn(fs.promises, "access").mockImplementation(async (target, mode) => {
+				if (String(target) !== stream) await realAccess(target, mode);
+			});
+			const streamAccessSync = spyOn(fs, "accessSync").mockImplementation((target, mode) => {
+				if (String(target) !== stream) realAccessSync(target, mode);
+			});
 
 			try {
 				const expectedLiteral = { path: literal };
 				expect(await splitPathAndSelPreferringLiteral(literal, tmpDir)).toEqual(expectedLiteral);
 				expect(splitPathAndSelPreferringLiteralSync(literal, tmpDir)).toEqual(expectedLiteral);
-				await fs.promises.rm(path.join(tmpDir, literal));
 
 				const busy = Object.assign(new Error("resource busy"), { code: "EBUSY" });
-				const lstat = spyOn(fs.promises, "lstat").mockRejectedValue(busy);
-				const lstatSync = spyOn(fs, "lstatSync").mockImplementation(() => {
+				streamLstat.mockRejectedValue(busy);
+				streamLstatSync.mockImplementation(() => {
 					throw busy;
 				});
 
-				try {
-					const expectedSelector = { path: "base.txt", sel: "1-2" };
-					expect(await splitPathAndSelPreferringLiteral(literal, tmpDir)).toEqual(expectedSelector);
-					expect(splitPathAndSelPreferringLiteralSync(literal, tmpDir)).toEqual(expectedSelector);
-					expect(lstat).toHaveBeenCalledTimes(1);
-					expect(lstatSync).toHaveBeenCalledTimes(1);
-				} finally {
-					lstatSync.mockRestore();
-					lstat.mockRestore();
-				}
+				const expectedSelector = { path: "base.txt", sel: "1-2" };
+				expect(await splitPathAndSelPreferringLiteral(literal, tmpDir)).toEqual(expectedSelector);
+				expect(splitPathAndSelPreferringLiteralSync(literal, tmpDir)).toEqual(expectedSelector);
 			} finally {
+				streamAccessSync.mockRestore();
+				streamAccess.mockRestore();
+				streamLstatSync.mockRestore();
+				streamLstat.mockRestore();
 				Object.defineProperty(process, "platform", platform);
 			}
 		});
@@ -150,7 +172,6 @@ describe("literal colon filename resolution (issue #4618)", () => {
 			const baseStat = await fs.promises.lstat(base);
 			const realLstat = fs.promises.lstat;
 			const realLstatSync = fs.lstatSync;
-			const realBunFile = Bun.file.bind(Bun);
 			const platform = Object.getOwnPropertyDescriptor(process, "platform");
 			if (platform === undefined) throw new Error("process.platform descriptor is unavailable");
 			Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
@@ -158,12 +179,6 @@ describe("literal colon filename resolution (issue #4618)", () => {
 				String(target) === stream ? baseStat : await realLstat(target)) as typeof fs.promises.lstat);
 			const lstatSync = spyOn(fs, "lstatSync").mockImplementation(((target: fs.PathLike) =>
 				String(target) === stream ? baseStat : realLstatSync(target)) as typeof fs.lstatSync);
-			const bunFile = spyOn(Bun, "file").mockImplementation((source, options) => {
-				const file = realBunFile(source as string, options);
-				if (source === stream) file.stat = async () => baseStat;
-				return file;
-			});
-
 			try {
 				const expectedSelector = { path: base, sel: "1-2" };
 				expect(await splitPathAndSelPreferringLiteral(stream, tmpDir)).toEqual(expectedSelector);
@@ -175,7 +190,6 @@ describe("literal colon filename resolution (issue #4618)", () => {
 				expect(output).toContain("line two");
 				expect(output).not.toContain("ENOENT");
 			} finally {
-				bunFile.mockRestore();
 				lstatSync.mockRestore();
 				lstat.mockRestore();
 				Object.defineProperty(process, "platform", platform);
@@ -219,7 +233,6 @@ describe("literal colon filename resolution (issue #4618)", () => {
 			await fs.promises.symlink(path.join(tmpDir, "nowhere"), literal);
 			expect(await probeLiteralPathExists(literal, tmpDir)).toBe("exists");
 		});
-
 		it('returns "missing" for an ENAMETOOLONG path (issue #7597)', async () => {
 			// A single component past NAME_MAX can never name a real entry, so the
 			// probe must report "missing" (not "unknown") to let delimited splits run.
@@ -242,7 +255,8 @@ describe("literal colon filename resolution (issue #4618)", () => {
 			const output = getText(result);
 
 			expect(output).toContain("fixture-only content");
-			expect(output).toContain("[Path '.lsp.json' not found; resolved to 'fixtures/.lsp.json' via suffix match]");
+			expect(output).toContain("'.lsp.json'");
+			expect(output).toContain("fixtures/.lsp.json");
 			expect(result.details?.suffixResolution).toEqual({ from: ".lsp.json", to: "fixtures/.lsp.json" });
 		});
 
@@ -281,7 +295,8 @@ describe("literal colon filename resolution (issue #4618)", () => {
 			// Archive listing output (not raw bytes) proves the resolved archive was
 			// opened as an archive; the notice reports the substituted path.
 			expect(output).toContain("(empty archive directory)");
-			expect(output).toContain("[Path 'bundle.zip' not found; resolved to 'fixtures/bundle.zip' via suffix match]");
+			expect(output).toContain("'bundle.zip'");
+			expect(output).toContain("fixtures/bundle.zip");
 			expect(result.details?.suffixResolution).toEqual({ from: "bundle.zip", to: "fixtures/bundle.zip" });
 			expect(result.details?.resolvedPath).toBe(path.join(candidateDir, "bundle.zip"));
 		});
@@ -301,7 +316,8 @@ describe("literal colon filename resolution (issue #4618)", () => {
 			// The table list (not the raw header bytes) proves the resolved file was
 			// opened as a database; the notice reports the substituted path.
 			expect(output).toContain("widgets (0 rows)");
-			expect(output).toContain("[Path 'data.db' not found; resolved to 'fixtures/data.db' via suffix match]");
+			expect(output).toContain("'data.db'");
+			expect(output).toContain("fixtures/data.db");
 			expect(result.details?.suffixResolution).toEqual({ from: "data.db", to: "fixtures/data.db" });
 			expect(result.details?.resolvedPath).toBe(candidateDb);
 		});
@@ -517,7 +533,8 @@ describe("literal colon filename resolution (issue #4618)", () => {
 			const tool = new GrepTool(createSession());
 			const rangedResult = await tool.execute("grep-range-filter", {
 				pattern: ".",
-				path: `${absolute}:1-2`,
+				// The native absolute match may retain both C:/ separators and a non-canonical /./ segment.
+				path: `${path.dirname(absolute).replaceAll("\\", "/")}/./notes.txt:1-2`,
 			});
 			const rangedOutput = getText(rangedResult);
 

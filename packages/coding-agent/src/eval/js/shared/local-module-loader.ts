@@ -3,18 +3,25 @@ import { isBuiltin } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as vm from "node:vm";
+import type { ImportKind, Loader } from "bun";
 import { KernelModuleResolution } from "./module-resolution";
-import { collectModuleSourceSpecifiers, stripTypeScriptSyntax } from "./rewrite-imports";
+import { analyzeModuleSource, stripTypeScriptSyntax } from "./rewrite-imports";
+import { compilePluginSource, pluginLocation, RuntimePlugins } from "./runtime-plugins";
 
 interface LocalModuleEntry {
 	version: number;
 	identifier: string;
-	module: vm.SourceTextModule;
+	module: vm.Module;
 	/** Memoized link+evaluate of this module as a graph root; set lazily by `#loadLocalModule`. */
 	loaded?: Promise<void>;
 }
 
 export type LocalImportResolution = { mode: "local"; value: unknown } | { mode: "external"; target: string };
+
+interface ResolvedImport {
+	target: string;
+	external: boolean;
+}
 
 const LOCAL_MODULE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".ts", ".tsx", ".mts"]);
 /** `node_modules` path segment in either separator spelling — resolution results mix `/` and `\` on Windows. */
@@ -33,8 +40,14 @@ export class LocalModuleLoader {
 	#externalModules = new Map<string, Promise<vm.Module>>();
 	#requireCache = new Map<string, NodeJS.Require>();
 	#modulePaths = new WeakMap<vm.Module, string>();
+	#staticResolutions = new WeakMap<vm.Module, Map<string, ResolvedImport>>();
 	#packageRoot: string | undefined;
 	#linkChain: Promise<void> = Promise.resolve();
+	#plugins = new RuntimePlugins();
+
+	get bun(): typeof Bun {
+		return this.#plugins.bun;
+	}
 
 	constructor(sessionId: string, options: { patchGlobalResolver?: boolean } = {}) {
 		this.#context = vm.createContext(globalThis);
@@ -50,16 +63,16 @@ export class LocalModuleLoader {
 		this.#requireCache.clear();
 	}
 
-	async resolveForRun(baseDir: string, source: string): Promise<LocalImportResolution> {
+	async resolveForRun(baseDir: string, source: string, filename?: string): Promise<LocalImportResolution> {
 		this.#refreshTrackedLocalModules();
-		return await this.#resolveFromBase(baseDir, source);
+		return await this.#resolveFromBase(baseDir, source, filename);
 	}
 
 	async resolveForModule(moduleUrl: string, source: string, cwd: string): Promise<LocalImportResolution> {
 		this.#refreshTrackedLocalModules();
 		const modulePath = this.filenameForUrl(moduleUrl);
 		const baseDir = modulePath ? path.dirname(modulePath) : cwd;
-		return await this.#resolveFromBase(baseDir, source);
+		return await this.#resolveFromBase(baseDir, source, modulePath ?? undefined);
 	}
 
 	requireForFile(moduleUrlOrPath: string | undefined, cwd: string): NodeJS.Require {
@@ -87,36 +100,53 @@ export class LocalModuleLoader {
 	 */
 	#buildRequire(basePathOrUrl: string | URL, packageRoot: string | undefined): NodeJS.Require {
 		const primary = this.#resolution.createRequire(basePathOrUrl);
-		if (!packageRoot) return primary;
-		const fallback = this.#resolution.createRequire(path.join(packageRoot, "package.json"));
-		const requireWithFallback = ((id: string) => {
-			if (!isBareSpecifier(id)) return primary(id);
-			let primaryResolutionError: unknown;
+		const fallback = packageRoot ? this.#resolution.createRequire(path.join(packageRoot, "package.json")) : undefined;
+		const importer = this.filenameForUrl(String(basePathOrUrl)) ?? path.resolve(String(basePathOrUrl));
+		const resolveRequest = (id: string, kind: ImportKind, options?: { paths?: string[] }): ResolvedImport => {
+			const redirected = this.#plugins.resolveSync({
+				path: id,
+				importer,
+				namespace: "file",
+				resolveDir: path.dirname(importer),
+				kind,
+			});
+			const target =
+				redirected?.namespace && redirected.namespace !== "file"
+					? `${redirected.namespace}:${redirected.path}`
+					: (redirected?.path ?? id);
+			const external = redirected?.external ?? false;
+			if (target === "bun") return { target, external };
 			try {
-				primary.resolve(id);
-			} catch (error) {
-				primaryResolutionError = error;
-			}
-			if (!primaryResolutionError) return primary(id);
-			try {
-				fallback.resolve(id);
-			} catch (fallbackError) {
-				throw packageFallbackError(primaryResolutionError, fallbackError, packageRoot);
-			}
-			return fallback(id);
-		}) as NodeJS.Require;
-		const resolve = ((id: string, options?: { paths?: string[] }) => {
-			try {
-				return primary.resolve(id, options);
+				return { target: primary.resolve(target, options), external };
 			} catch (primaryError) {
-				if (!isBareSpecifier(id)) throw primaryError;
+				if (!external && this.#plugins.hasLoader(target)) return { target, external };
+				if (!fallback || !isBareSpecifier(target)) throw primaryError;
 				try {
-					return fallback.resolve(id, options);
+					return { target: fallback.resolve(target, options), external };
 				} catch (fallbackError) {
-					throw packageFallbackError(primaryError, fallbackError, packageRoot);
+					throw packageFallbackError(primaryError, fallbackError, packageRoot!);
 				}
 			}
-		}) as NodeJS.Require["resolve"] & { paths(request: string): string[] | null };
+		};
+		const requireWithFallback = ((id: string) => {
+			const resolved = resolveRequest(id, "require-call");
+			if (resolved.target === "bun") return this.#plugins.module;
+			if (!resolved.external) {
+				const loaded = this.#plugins.loadSync(resolved.target, defaultLoader(resolved.target));
+				if (loaded && loaded.loader === "object") return loaded.exports;
+				if (loaded) {
+					throw new TypeError(
+						"Plugin source modules require asynchronous VM evaluation; use await import() instead",
+					);
+				}
+			}
+			const value = primary(resolved.target);
+			return resolved.target === "node:module" || resolved.target === "module" ? this.#shimNodeModule(value) : value;
+		}) as NodeJS.Require;
+		const resolve = ((id: string, options?: { paths?: string[] }) =>
+			resolveRequest(id, "require-resolve", options).target) as NodeJS.Require["resolve"] & {
+			paths(request: string): string[] | null;
+		};
 		resolve.paths = request => primary.resolve.paths(request);
 		Object.defineProperties(requireWithFallback, {
 			resolve: { value: resolve },
@@ -129,6 +159,7 @@ export class LocalModuleLoader {
 
 	/** Drop the resolver roots this kernel registered (worker teardown). */
 	dispose(): void {
+		this.#plugins.dispose();
 		this.#resolution.dispose();
 	}
 
@@ -143,15 +174,60 @@ export class LocalModuleLoader {
 		return filename ? path.dirname(filename) : cwd;
 	}
 
-	async #resolveFromBase(baseDir: string, source: string): Promise<LocalImportResolution> {
-		const resolved = this.#resolveImportSpecifier(baseDir, source);
-		if (isLocalPathSpecifier(source) && isManagedLocalModulePath(resolved)) {
-			const module = await this.#loadLocalModule(resolved);
+	async #resolveFromBase(baseDir: string, source: string, filename?: string): Promise<LocalImportResolution> {
+		const resolved = await this.#resolveImportSpecifier(baseDir, source, filename ?? path.join(baseDir, "[eval]"));
+		if (resolved.target === "bun") return { mode: "local", value: this.#plugins.module };
+		if (resolved.target === "node:module" || resolved.target === "module") {
+			return { mode: "local", value: (await this.#ensureExternalModule(resolved.target)).namespace };
+		}
+		if (this.#isManagedImport(resolved)) {
+			const module = await this.#loadLocalModule(resolved.target);
 			return { mode: "local", value: module.namespace };
 		}
-		const target = normalizeImportTarget(resolved);
+		const target = normalizeImportTarget(resolved.target);
 		this.#registerTargetRoots(target);
 		return { mode: "external", target };
+	}
+
+	#isManagedImport(resolved: ResolvedImport): boolean {
+		return (
+			!resolved.external && (isManagedLocalModulePath(resolved.target) || this.#plugins.hasLoader(resolved.target))
+		);
+	}
+
+	async #resolveImportSpecifier(
+		baseDir: string,
+		source: string,
+		importer: string,
+		kind: ImportKind = "dynamic-import",
+	): Promise<ResolvedImport> {
+		const location = pluginLocation(importer);
+		const result = await this.#plugins.resolve({
+			path: source,
+			importer: location.path,
+			namespace: location.namespace,
+			resolveDir: location.namespace === "file" ? baseDir : "",
+			kind,
+		});
+		if (result?.namespace && result.namespace !== "file") {
+			return { target: `${result.namespace}:${result.path}`, external: result.external ?? false };
+		}
+		// Redirects are resolved normally, without invoking onResolve a second
+		// time. In particular, aliases can name a relative path or a package.
+		const redirected = result?.path ?? source;
+		try {
+			const target = this.#resolveNativeImportSpecifier(baseDir, redirected);
+			return {
+				target: path.isAbsolute(target) ? path.normalize(target) : target,
+				external: result?.external ?? false,
+			};
+		} catch (error) {
+			// A runtime onLoad may supply a module that does not exist on disk.
+			if (!result?.external && this.#plugins.hasLoader(redirected)) {
+				return { target: redirected, external: false };
+			}
+			throw error;
+		}
 	}
 
 	/**
@@ -167,18 +243,19 @@ export class LocalModuleLoader {
 	/**
 	 * Resolve an import specifier against `baseDir`.
 	 *
-	 * `Bun.resolveSync` covers the source-checkout case; inside a compiled binary
-	 * it cannot resolve on-disk packages at all (oven-sh/bun#25500), so the
-	 * kernel's own `node_modules` walk gets a second look: for bare specifiers
-	 * after the stock resolver refused (it cannot prove the package belongs to
-	 * the importing project) and for file specifiers after it failed.
+	 * Resolve installed packages from their manifests first: a compiled Bun can
+	 * miss packages or return an entry that ignores their export maps. The stock
+	 * resolver still handles package self-references and file requests; the
+	 * kernel's filesystem walk covers file requests it cannot resolve.
 	 *
 	 * A bare specifier the importing project does not have is retried against the
 	 * selected package environment ({@link setPackageRoot}); when neither has it,
 	 * both failures are reported together so the missing dependency is actionable.
 	 */
-	#resolveImportSpecifier(baseDir: string, source: string): string {
-		if (/^[a-z][a-z0-9+.-]*:/i.test(source) || isBuiltin(source)) return source;
+	#resolveNativeImportSpecifier(baseDir: string, source: string): string {
+		if (source === "bun") return source;
+		if (source.startsWith("file://")) return fileURLToPath(source);
+		if ((!isLocalPathSpecifier(source) && /^[a-z][a-z0-9+.-]*:/i.test(source)) || isBuiltin(source)) return source;
 		this.#resolution.registerFor(baseDir);
 		if (isLocalPathSpecifier(source)) {
 			try {
@@ -190,20 +267,20 @@ export class LocalModuleLoader {
 			}
 		}
 		const packageRoot = this.#packageRoot;
+		const onDisk = this.#resolution.resolveBare(baseDir, source, "import");
+		if (onDisk) return onDisk;
 		let projectError: unknown;
 		try {
 			return resolveBareSpecifierWithinProject(source, baseDir);
 		} catch (error) {
-			const onDisk = this.#resolution.resolveBare(baseDir, source);
-			if (onDisk) return onDisk;
 			projectError = error;
 		}
 		if (packageRoot !== undefined) {
+			const fallbackOnDisk = this.#resolution.resolveBare(packageRoot, source, "import");
+			if (fallbackOnDisk) return fallbackOnDisk;
 			try {
 				return resolveBareSpecifierWithinProject(source, packageRoot);
 			} catch (error) {
-				const onDisk = this.#resolution.resolveBare(packageRoot, source);
-				if (onDisk) return onDisk;
 				throw packageFallbackError(projectError, error, packageRoot);
 			}
 		}
@@ -228,26 +305,42 @@ export class LocalModuleLoader {
 	// mid-instantiation, which segfaults JSC (getImportedModule on a null record) whenever
 	// the local graph contains an import cycle.
 	async #buildLocalModule(modulePath: string): Promise<LocalModuleEntry> {
-		const rawSource = fs.readFileSync(modulePath, "utf8");
-		const stripped = stripTypeScriptSyntax(rawSource, {
-			force: isTypeScriptModulePath(modulePath),
-			loader: stripLoaderForPath(modulePath),
-		});
-		const moduleDir = path.dirname(modulePath);
+		const location = pluginLocation(modulePath);
+		const loaded = await this.#plugins.load(modulePath, defaultLoader(modulePath));
+		const moduleDir = location.namespace === "file" ? path.dirname(modulePath) : "";
 		const localDeps = new Set<string>();
-		for (const specifier of await collectModuleSourceSpecifiers(stripped)) {
-			const resolved = this.#resolveImportSpecifier(moduleDir, specifier);
-			if (isLocalPathSpecifier(specifier) && isManagedLocalModulePath(resolved)) {
-				localDeps.add(resolved);
+		const resolutions = new Map<string, ResolvedImport>();
+		const version = this.#moduleVersions.get(modulePath) ?? 1;
+		this.#moduleVersions.set(modulePath, version);
+		const fileUrl = path.isAbsolute(modulePath) ? pathToFileURL(modulePath).href : modulePath;
+		const identifier = `${fileUrl}?omp-session=${this.#sessionTag}&v=${version}`;
+		if (loaded && loaded.loader === "object") {
+			const module = this.#createSyntheticModule(loaded.exports, identifier);
+			this.#setModuleDependencies(modulePath, localDeps);
+			this.#trackModuleMtime(modulePath);
+			const entry: LocalModuleEntry = { version, identifier, module };
+			this.#modulePaths.set(module, modulePath);
+			this.#moduleEntries.set(modulePath, entry);
+			return entry;
+		}
+		const stripped = loaded
+			? await compilePluginSource(modulePath, loaded, defaultLoader(modulePath))
+			: stripTypeScriptSyntax(fs.readFileSync(modulePath, "utf8"), {
+					force: isTypeScriptModulePath(modulePath),
+					loader: stripLoaderForPath(modulePath),
+				});
+		const analysis = await analyzeModuleSource(stripped);
+		for (const specifier of analysis.sources) {
+			if (resolutions.has(specifier)) continue;
+			const resolved = await this.#resolveImportSpecifier(moduleDir, specifier, modulePath, "import-statement");
+			resolutions.set(specifier, resolved);
+			if (this.#isManagedImport(resolved)) {
+				localDeps.add(resolved.target);
 			}
 		}
 		this.#setModuleDependencies(modulePath, localDeps);
-		this.#moduleMtimes.set(modulePath, fs.statSync(modulePath).mtimeMs);
-		const version = this.#moduleVersions.get(modulePath) ?? 1;
-		this.#moduleVersions.set(modulePath, version);
-		const fileUrl = pathToFileURL(modulePath).href;
-		const identifier = `${fileUrl}?omp-session=${this.#sessionTag}&v=${version}`;
-		const wrappedSource = buildModuleSource(stripped, modulePath);
+		this.#trackModuleMtime(modulePath);
+		const wrappedSource = buildModuleSource(stripped, modulePath, analysis.bindings);
 		const module = new vm.SourceTextModule(wrappedSource, {
 			context: this.#context,
 			identifier,
@@ -261,6 +354,7 @@ export class LocalModuleLoader {
 			},
 		});
 		this.#modulePaths.set(module, modulePath);
+		this.#staticResolutions.set(module, resolutions);
 		const entry: LocalModuleEntry = { version, identifier, module };
 		this.#moduleEntries.set(modulePath, entry);
 		return entry;
@@ -270,7 +364,7 @@ export class LocalModuleLoader {
 	// the evaluated module. Link and evaluate run exactly once over the whole reachable
 	// graph; the static linker only constructs dependencies, letting node:vm instantiate
 	// cyclic graphs in a single pass.
-	async #loadLocalModule(modulePath: string): Promise<vm.SourceTextModule> {
+	async #loadLocalModule(modulePath: string): Promise<vm.Module> {
 		const entry = await this.#ensureLocalModule(modulePath);
 		entry.loaded ??= this.#linkAndEvaluate(entry, modulePath);
 		await entry.loaded;
@@ -323,21 +417,28 @@ export class LocalModuleLoader {
 		if (referrerPath === undefined) {
 			throw new Error(`local module loader: unknown referrer while linking "${specifier}"`);
 		}
-		const resolved = this.#resolveImportSpecifier(path.dirname(referrerPath), specifier);
-		if (isLocalPathSpecifier(specifier) && isManagedLocalModulePath(resolved)) {
-			return (await this.#ensureLocalModule(resolved)).module;
+		const resolved = this.#staticResolutions.get(referencingModule)?.get(specifier);
+		if (!resolved) throw new Error(`local module loader: unresolved static import "${specifier}"`);
+		if (this.#isManagedImport(resolved)) {
+			return (await this.#ensureLocalModule(resolved.target)).module;
 		}
-		return await this.#ensureExternalModule(normalizeImportTarget(resolved));
+		return await this.#ensureExternalModule(normalizeImportTarget(resolved.target));
 	};
 
 	// Resolver for runtime `import()` inside evaluated module code: the result must be a
 	// fully linked+evaluated module, so local targets are loaded as graph roots.
 	async #resolveDynamicImport(referrerPath: string, specifier: string): Promise<vm.Module> {
-		const resolved = this.#resolveImportSpecifier(path.dirname(referrerPath), specifier);
-		if (isLocalPathSpecifier(specifier) && isManagedLocalModulePath(resolved)) {
-			return await this.#loadLocalModule(resolved);
+		const location = pluginLocation(referrerPath);
+		const baseDir = location.namespace === "file" ? path.dirname(referrerPath) : "";
+		const resolved = await this.#resolveImportSpecifier(baseDir, specifier, referrerPath);
+		if (this.#isManagedImport(resolved)) {
+			const deps = this.#moduleDeps.get(referrerPath) ?? new Set<string>();
+			if (!deps.has(resolved.target)) {
+				this.#setModuleDependencies(referrerPath, new Set([...deps, resolved.target]));
+			}
+			return await this.#loadLocalModule(resolved.target);
 		}
-		return await this.#ensureExternalModule(normalizeImportTarget(resolved));
+		return await this.#ensureExternalModule(normalizeImportTarget(resolved.target));
 	}
 
 	// A failed link/evaluate can leave a partial graph cached. Drop every reachable module
@@ -364,19 +465,9 @@ export class LocalModuleLoader {
 		if (existing) return await existing;
 		const loadPromise = (async () => {
 			this.#registerTargetRoots(target);
-			const loaded = await import(target);
-			const namespace =
-				target === "node:module" || target === "module" ? this.#resolution.shimNodeModule(loaded) : loaded;
-			const exportNames = Object.keys(namespace);
-			const module = new vm.SyntheticModule(
-				exportNames,
-				function () {
-					for (const name of exportNames) {
-						this.setExport(name, namespace[name as keyof typeof namespace]);
-					}
-				},
-				{ context: this.#context, identifier: target },
-			);
+			const loaded = target === "bun" ? this.#plugins.module : await import(target);
+			const namespace = target === "node:module" || target === "module" ? this.#shimNodeModule(loaded) : loaded;
+			const module = this.#createSyntheticModule(namespace, target);
 			await module.link(() => {
 				throw new Error("Synthetic external modules have no dependencies");
 			});
@@ -389,6 +480,46 @@ export class LocalModuleLoader {
 		} catch (error) {
 			if (this.#externalModules.get(target) === loadPromise) this.#externalModules.delete(target);
 			throw error;
+		}
+	}
+
+	#createSyntheticModule(namespace: Record<string, unknown>, identifier: string): vm.SyntheticModule {
+		const exportNames = Object.keys(namespace);
+		return new vm.SyntheticModule(
+			exportNames,
+			function () {
+				for (const name of exportNames) this.setExport(name, namespace[name]);
+			},
+			{ context: this.#context, identifier },
+		);
+	}
+
+	#shimNodeModule(namespace: Record<string, unknown>): Record<string, unknown> {
+		const createRequire = (base: string | URL) => this.createRequireFor(base);
+		const defaultExport = namespace.default;
+		const defaultModule =
+			defaultExport && (typeof defaultExport === "object" || typeof defaultExport === "function")
+				? new Proxy(defaultExport, {
+						get: (target, key, receiver) =>
+							key === "createRequire" ? createRequire : Reflect.get(target, key, receiver),
+					})
+				: defaultExport;
+		return new Proxy(namespace, {
+			get: (target, key, receiver) =>
+				key === "createRequire"
+					? createRequire
+					: key === "default"
+						? defaultModule
+						: Reflect.get(target, key, receiver),
+		});
+	}
+
+	#trackModuleMtime(modulePath: string): void {
+		if (!path.isAbsolute(modulePath)) return;
+		try {
+			this.#moduleMtimes.set(modulePath, fs.statSync(modulePath).mtimeMs);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
 	}
 
@@ -440,12 +571,21 @@ export class LocalModuleLoader {
 	}
 }
 
-function buildModuleSource(source: string, modulePath: string): string {
-	const moduleDir = path.dirname(modulePath);
+function buildModuleSource(source: string, modulePath: string, bindings: ReadonlySet<string>): string {
+	const moduleDir = pluginLocation(modulePath).namespace === "file" ? path.dirname(modulePath) : "";
+	const fileUrl = path.isAbsolute(modulePath) ? pathToFileURL(modulePath).href : modulePath;
 	return [
-		`const require = globalThis.__omp_get_require__(${JSON.stringify(pathToFileURL(modulePath).href)});`,
-		`const __filename = ${JSON.stringify(modulePath)};`,
-		`const __dirname = ${JSON.stringify(moduleDir)};`,
+		// Bun can evaluate a linked module without calling initializeImportMeta.
+		// Seed its metadata before top-level initializers use it as well.
+		`import.meta.url = ${JSON.stringify(fileUrl)};`,
+		`import.meta.path = ${JSON.stringify(modulePath)};`,
+		`import.meta.dir = ${JSON.stringify(moduleDir)};`,
+		// Capture this kernel's plugin facade without touching the immutable
+		// native global. Explicit module-local Bun bindings still take precedence.
+		bindings.has("Bun") ? "" : "const Bun = globalThis.__omp_bun__;",
+		bindings.has("require") ? "" : `const require = globalThis.__omp_get_require__(${JSON.stringify(fileUrl)});`,
+		bindings.has("__filename") ? "" : `const __filename = ${JSON.stringify(modulePath)};`,
+		bindings.has("__dirname") ? "" : `const __dirname = ${JSON.stringify(moduleDir)};`,
 		source,
 	].join("\n");
 }
@@ -514,7 +654,25 @@ function stripLoaderForPath(modulePath: string): "ts" | "tsx" {
 	return path.extname(modulePath) === ".tsx" ? "tsx" : "ts";
 }
 
+function defaultLoader(modulePath: string): Loader {
+	const extension = path.extname(modulePath).slice(1);
+	if (extension === "ts" || extension === "mts") return "ts";
+	if (
+		extension === "tsx" ||
+		extension === "jsx" ||
+		extension === "json" ||
+		extension === "toml" ||
+		extension === "yaml"
+	) {
+		return extension;
+	}
+	return "js";
+}
+
 function isManagedLocalModulePath(target: string): boolean {
+	// Bare workspace packages resolve to real paths outside node_modules. Keep
+	// their transitive imports in this graph too: compiled Bun cannot resolve
+	// those packages' bare imports if they escape to its native ESM loader.
 	return (
 		path.isAbsolute(target) &&
 		LOCAL_MODULE_EXTENSIONS.has(path.extname(target)) &&

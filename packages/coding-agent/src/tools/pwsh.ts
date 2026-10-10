@@ -8,7 +8,6 @@ import type {
 } from "@oh-my-pi/pi-agent-core";
 import { Process } from "@oh-my-pi/pi-natives";
 import { getProjectDir, isEnoent } from "@oh-my-pi/pi-utils";
-import { hostHasInheritableConsole } from "../eval/py/spawn-options";
 import { buildNonInteractiveEnv } from "../exec/non-interactive-env";
 import { InternalUrlRouter } from "../internal-urls";
 import { highlightCode } from "@oh-my-pi/pi-tui/theme/tui-adapters";
@@ -42,21 +41,23 @@ import {
 import { ToolAbortError } from "./tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { toolResult } from "./tool-result";
-import { clampTimeout } from "./tool-timeouts";
+import { clampTimeout, TOOL_TIMEOUTS } from "./tool-timeouts";
 
 const PWSH_STREAM_DRAIN_MS = 250;
 const PWSH_TERMINATE_WAIT_MS = 500;
+const PWSH_TIMEOUT_DESCRIPTION = `timeout in seconds; default ${TOOL_TIMEOUTS.pwsh.default}; 0 disables the command deadline; nonzero values are clamped to ${TOOL_TIMEOUTS.pwsh.min}-${TOOL_TIMEOUTS.pwsh.max}`;
 
 const pwshSchema = type({
 	script: type("string").describe("PowerShell script to execute"),
 	"env?": type({ "[string]": "string" }).describe("extra env vars"),
-	"timeout?": type("number").describe("timeout in seconds"),
+	"timeout?": type("number").describe(PWSH_TIMEOUT_DESCRIPTION),
 	"cwd?": type("string").describe("working directory"),
 });
 
 export interface PwshToolInput {
 	script: string;
 	env?: Record<string, string>;
+	/** Seconds before termination; 0 disables the deadline while preserving cancellation. */
 	timeout?: number;
 	cwd?: string;
 }
@@ -84,11 +85,6 @@ interface PwshRunResult extends OutputSummary {
 
 export function resolvePwshExecutable(): string | null {
 	return Bun.which("pwsh") ?? (process.platform === "win32" ? Bun.which("pwsh.exe") : null);
-}
-
-export function shouldHidePwshWindow(opts: { platform: NodeJS.Platform; hostHasInheritableConsole: boolean }): boolean {
-	if (opts.platform !== "win32") return false;
-	return !opts.hostHasInheritableConsole;
 }
 
 function quotePwshString(value: string): string {
@@ -193,7 +189,18 @@ async function terminatePwshTree(pid: number, fallbackKill: () => void): Promise
 function buildPwshArgs(script: string): string[] {
 	const args = ["-NoProfile", "-NonInteractive"];
 	if (process.platform === "win32") args.push("-ExecutionPolicy", "Bypass");
-	args.push("-Command", script);
+	// PowerShell parses -Command before executing any prologue. Keep user source
+	// out of that parse so errors cannot bypass UTF-8 setup or the stderr pipe.
+	const encodedScript = Buffer.from(script, "utf8").toString("base64");
+	const bootstrap = `$OutputEncoding = [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+try {
+	$__ompScriptBlock = [ScriptBlock]::Create([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedScript}')))
+} catch {
+	[Console]::Error.WriteLine($_.Exception.Message)
+	exit 1
+}
+& $__ompScriptBlock`;
+	args.push("-Command", bootstrap);
 	return args;
 }
 
@@ -262,7 +269,7 @@ export class PwshTool implements AgentTool<typeof pwshSchema, PwshToolDetails> {
 
 	async execute(
 		_toolCallId: string,
-		{ script: rawScript, env: rawEnv, timeout: rawTimeout = 300, cwd }: PwshToolInput,
+		{ script: rawScript, env: rawEnv, timeout: rawTimeout = TOOL_TIMEOUTS.pwsh.default, cwd }: PwshToolInput,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<PwshToolDetails>,
 	): Promise<AgentToolResult<PwshToolDetails>> {
@@ -311,7 +318,7 @@ export class PwshTool implements AgentTool<typeof pwshSchema, PwshToolDetails> {
 		if (!cwdStat.isDirectory()) throw new ToolError(`Working directory is not a directory: ${commandCwd}`);
 
 		const requestedTimeoutSec = rawTimeout;
-		const timeoutSec = clampTimeout("pwsh", requestedTimeoutSec);
+		const timeoutSec = requestedTimeoutSec === 0 ? 0 : clampTimeout("pwsh", requestedTimeoutSec);
 		const timeoutMs = timeoutSec * 1000;
 		const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
 		const { path: artifactPath, id: artifactId } = (await this.#session.allocateOutputArtifact?.("pwsh")) ?? {};
@@ -333,7 +340,7 @@ export class PwshTool implements AgentTool<typeof pwshSchema, PwshToolDetails> {
 			else signal.addEventListener("abort", abortListener, { once: true });
 		}
 		const wallTimeStart = performance.now();
-		const deadline = wallTimeStart + timeoutMs;
+		const deadline = timeoutSec === 0 ? Number.POSITIVE_INFINITY : wallTimeStart + timeoutMs;
 		const commandEnv = buildNonInteractiveEnv(resolvedEnv);
 		const commandScript = process.platform === "win32" ? `${buildPwshEnvPrologue(commandEnv)}\n${script}` : script;
 		const proc = Bun.spawn([this.#pwshPath, ...buildPwshArgs(commandScript)], {
@@ -342,26 +349,22 @@ export class PwshTool implements AgentTool<typeof pwshSchema, PwshToolDetails> {
 			stdin: "ignore",
 			stdout: "pipe",
 			stderr: "pipe",
-			windowsHide: shouldHidePwshWindow({
-				platform: process.platform,
-				hostHasInheritableConsole: hostHasInheritableConsole(),
-			}),
+			// Pipe redirection alone cannot stop descendants from writing to CONOUT$.
+			// Give PowerShell a hidden console that is separate from the host TUI.
+			windowsHide: true,
 		});
 		const processRef = Process.fromPid(proc.pid);
 		const rootExited = processRef ? processRef.waitForExit().then(() => proc.exitCode ?? 0) : proc.exited;
 		const pumps = [pumpStream(proc.stdout, sink), pumpStream(proc.stderr, sink)];
-		const timeoutDeferred = Promise.withResolvers<"timeout">();
-		const timeoutTimer = setTimeout(
-			() => timeoutDeferred.resolve("timeout"),
-			Math.max(0, deadline - performance.now()),
-		);
+		const timeoutDeferred = timeoutSec === 0 ? undefined : Promise.withResolvers<"timeout">();
+		const timeoutTimer = timeoutDeferred
+			? setTimeout(() => timeoutDeferred.resolve("timeout"), Math.max(0, deadline - performance.now()))
+			: undefined;
 
 		try {
 			const racers: Array<Promise<{ kind: "exit"; exitCode: number } | { kind: "timeout" } | { kind: "aborted" }>> =
-				[
-					rootExited.then(exitCode => ({ kind: "exit" as const, exitCode })),
-					timeoutDeferred.promise.then(() => ({ kind: "timeout" as const })),
-				];
+				[rootExited.then(exitCode => ({ kind: "exit" as const, exitCode }))];
+			if (timeoutDeferred) racers.push(timeoutDeferred.promise.then(() => ({ kind: "timeout" as const })));
 			if (abortDeferred) racers.push(abortDeferred.promise.then(() => ({ kind: "aborted" as const })));
 			const raced = await Promise.race(racers);
 
@@ -390,7 +393,7 @@ export class PwshTool implements AgentTool<typeof pwshSchema, PwshToolDetails> {
 				wallTimeMs: performance.now() - wallTimeStart,
 			});
 		} finally {
-			clearTimeout(timeoutTimer);
+			if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
 			if (signal && abortListener) signal.removeEventListener("abort", abortListener);
 		}
 	}

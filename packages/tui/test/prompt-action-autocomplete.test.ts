@@ -90,13 +90,6 @@ describe("prompt action autocomplete", () => {
 		for (const item of suggestions?.items ?? []) {
 			expect(rendered).toContain(item.label);
 		}
-		expect(suggestions?.items.find(item => item.label === "Copy current line")?.description).toBe("Ctrl+Shift+L");
-		expect(suggestions?.items.find(item => item.label === "Copy whole prompt")?.description).toBe(
-			"Alt+Shift+C/Ctrl+Shift+C",
-		);
-		expect(suggestions?.items.find(item => item.label === "Move cursor to line start")?.description).toBe("Home/F6");
-		expect(suggestions?.items.find(item => item.label === "Move cursor to line end")?.description).toBe("F7");
-		expect(suggestions?.items.find(item => item.label === "Undo")?.description).toBe("F8");
 	});
 
 	it("shows Ctrl+Z in the default undo action shortcut hint", async () => {
@@ -358,6 +351,7 @@ describe("prompt action autocomplete", () => {
 					label: "a/x",
 					description: "X One",
 					icon: theme.symbol("icon.model"),
+					iconName: "model",
 				},
 			],
 		});

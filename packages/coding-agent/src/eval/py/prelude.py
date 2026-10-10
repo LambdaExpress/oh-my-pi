@@ -24,7 +24,11 @@ if "__omp_prelude_loaded__" not in globals():
     )
 
     def display(value):
-        """Render a value. Falls back to a JSON+text/plain bundle for plain dict/list/tuple."""
+        """Render a value, using JSON+text/plain for plain dict/list/tuple.
+
+        Structured integers outside JS's safe range arrive as exact decimal
+        strings. The original value and its text/plain repr remain unchanged.
+        """
         if any(hasattr(value, attr) for attr in _PRESENTABLE_REPRS):
             _omp_display(value)
             return
@@ -139,10 +143,10 @@ if "__omp_prelude_loaded__" not in globals():
         return data
 
     def write(path: str | Path, content: str) -> Path:
-        """Write file contents (create parents)."""
+        """Write UTF-8 file contents without newline conversion (create parents)."""
         p = _resolve_omp_path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
+        p.write_text(content, encoding="utf-8", newline="")
         _emit_status("write", path=str(p), chars=len(content))
         return p
 

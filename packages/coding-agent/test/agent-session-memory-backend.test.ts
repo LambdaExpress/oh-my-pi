@@ -59,6 +59,7 @@ describe("AgentSession memory backend lifecycle", () => {
 	afterEach(async () => {
 		await session?.dispose();
 		session = undefined;
+		settings.cancelPendingSaves();
 		resetMemoryForTests();
 		authStorage.close();
 		// `Settings.loadIsolated` opens agent.db under tempDir; close it before the directory goes away.
@@ -275,11 +276,10 @@ describe("AgentSession memory backend lifecycle", () => {
 		const transcriptRows = (dbPath: string) => {
 			const db = new Database(dbPath, { readonly: true });
 			try {
-				return db
-					.query(
-						"SELECT json_extract(metadata_json, '$.cwd') AS cwd FROM working_memory WHERE source = 'coding-agent-transcript'",
-					)
-					.all();
+				using statement = db.prepare(
+					"SELECT json_extract(metadata_json, '$.cwd') AS cwd FROM working_memory WHERE source = 'coding-agent-transcript'",
+				);
+				return statement.all();
 			} finally {
 				db.close();
 			}
@@ -373,9 +373,10 @@ describe("AgentSession memory backend lifecycle", () => {
 				});
 				const db = new Database(destinationDbPath, { readonly: true });
 				try {
-					expect(
-						db.query("SELECT content FROM working_memory WHERE source = 'coding-agent-retain'").all(),
-					).toEqual([{ content: "The destination project deploys from its release branch." }]);
+					using statement = db.prepare("SELECT content FROM working_memory WHERE source = 'coding-agent-retain'");
+					expect(statement.all()).toEqual([
+						{ content: "The destination project deploys from its release branch." },
+					]);
 				} finally {
 					db.close();
 				}

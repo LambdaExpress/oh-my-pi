@@ -27,6 +27,20 @@ class "deepseek" {
 	family "v4" {
 		thinking-efforts "low" "high" "max"
 	}
+	// Responses endpoints replace stale cached V4 ladders with the winning
+	// cascade ladder, preserving host restrictions and other explicit fields.
+	// Chat-template and other request adapters keep their authored surfaces.
+	on-api "openai-responses" "openai-codex-responses" "azure-openai-responses" {
+		family "pro" {
+			thinking-efforts-authoritative #true
+		}
+		family "flash" {
+			thinking-efforts-authoritative #true
+		}
+		family "v4" {
+			thinking-efforts-authoritative #true
+		}
+	}
 	family "r1" {
 		thinking-efforts "high" "max"
 	}

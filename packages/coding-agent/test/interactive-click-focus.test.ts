@@ -1,10 +1,11 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
+import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
-import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
+import { Composer, PINNED_HUD_TOGGLE_ID } from "@oh-my-pi/pi-tui/prompt/composer";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -16,7 +17,8 @@ import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
-import { cfgTuiMouse } from "@oh-my-pi/pi-coding-agent/modes/settings";
+import { cfgDisplayPinnedAgents, cfgTuiMouse } from "@oh-my-pi/pi-coding-agent/modes/settings";
+import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
 function plainRows(rows: readonly string[]): string[] {
 	return rows.map(row => Bun.stripANSI(row).trimEnd());
@@ -25,20 +27,23 @@ function plainRows(rows: readonly string[]): string[] {
 describe("inline click-to-focus geometry", () => {
 	let tempDir: TempDir;
 	let authStorage: AuthStorage;
+	let jobs: AsyncJobManager;
 	let session: AgentSession;
 	let mode: InteractiveMode;
 	let term: VirtualTerminal;
 	let eventBus: EventBus;
+	let settingsState: SettingsTestState;
 
 	beforeAll(() => {
 		initTheme();
 	});
 
 	beforeEach(async () => {
-		resetSettingsForTest();
+		settingsState = beginSettingsTest();
 		tempDir = TempDir.createSync("@pi-click-focus-e2e-");
 		await Settings.init({ inMemory: true, cwd: tempDir.path() });
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
+		jobs = new AsyncJobManager({});
 		const modelRegistry = new ModelRegistry(authStorage);
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 to exist in registry");
@@ -47,6 +52,8 @@ describe("inline click-to-focus geometry", () => {
 			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
 			settings: Settings.isolated(),
 			modelRegistry,
+			asyncJobManager: jobs,
+			agentId: "Main",
 		});
 		term = new VirtualTerminal(120, 32);
 		eventBus = new EventBus();
@@ -56,9 +63,38 @@ describe("inline click-to-focus geometry", () => {
 	afterEach(async () => {
 		mode?.stop();
 		await session?.dispose();
+		await jobs?.dispose();
 		authStorage?.close();
 		tempDir?.removeSync();
-		resetSettingsForTest();
+		restoreSettingsTestState(settingsState);
+	});
+
+	it("Alt+J exposes retained jobs beyond the compact sheet and restores the draft on close", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		for (let index = 0; index < 6; index++) {
+			const id = jobs.register("bash", `retained job ${index}`, async () => `result ${index}`, {
+				ownerId: "Main",
+				scopeId: session.getAgentScopeId(),
+			});
+			jobs.watchJobs([id]);
+			await jobs.getJob(id)?.promise;
+		}
+		const oldest = session.getAsyncJobSnapshot({ recentLimit: 100, visibility: "session" })?.recent[5];
+		if (!oldest) throw new Error("Expected a retained job outside the compact sheet limit");
+		mode.editor.setText("draft to preserve");
+		await term.waitForRender();
+
+		term.sendInput("\x1bj");
+		await term.waitForRender(() => plainRows(term.getViewport()).join("\n").includes(oldest.label));
+		expect(mode.ui.hasOverlay()).toBe(true);
+		expect(plainRows(term.getViewport()).join("\n")).toContain(oldest.label);
+
+		term.sendInput("\x1b");
+		await term.waitForRender(() => !mode.ui.hasOverlay());
+		expect(mode.ui.hasOverlay()).toBe(false);
+		expect(mode.ui.getFocused()).toBe(mode.editor);
+		expect(mode.editor.getText()).toBe("draft to preserve");
 	});
 
 	it("maps a painted live task row back to its agent id", async () => {
@@ -117,7 +153,7 @@ describe("inline click-to-focus geometry", () => {
 	});
 
 	it("bands the hovered live card and clears it off-target", async () => {
-		cfgTuiMouse.set(settings, true);
+		cfgTuiMouse.set(mode.settings, true);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
@@ -206,12 +242,12 @@ describe("inline click-to-focus geometry", () => {
 		// Disabling capture mid-hover clears the controller cache too: after
 		// re-enabling, motion over the same card must restore the band instead
 		// of looking unchanged and skipping the repaint.
-		cfgTuiMouse.set(settings, false);
+		cfgTuiMouse.set(mode.settings, false);
 		mode.ui.requestRender();
 		await term.waitForRender(() => !changed(before));
 		expect(workerBg()).toEqual(before);
 
-		cfgTuiMouse.set(settings, true);
+		cfgTuiMouse.set(mode.settings, true);
 		mode.ui.requestRender();
 		await term.waitForRender();
 		const cardRow = plainRows(term.getViewport()).findIndex(line => line.includes("HoverWorker"));
@@ -228,7 +264,9 @@ describe("inline click-to-focus geometry", () => {
 	});
 
 	it("expands and collapses the pinned jump list through SGR clicks", async () => {
-		cfgTuiMouse.set(settings, true);
+		cfgTuiMouse.override(mode.settings, true);
+		cfgDisplayPinnedAgents.override(settings, "collapsed");
+		cfgDisplayPinnedAgents.override(mode.settings, "collapsed");
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
@@ -236,6 +274,7 @@ describe("inline click-to-focus geometry", () => {
 		for (let index = 0; index < 5; index++) {
 			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
 				id: `ToggleAgent${index}`,
+				scopeId: session.getAgentScopeId(),
 				index,
 				agent: "task",
 				agentSource: "bundled",
@@ -245,25 +284,35 @@ describe("inline click-to-focus geometry", () => {
 				detached: true,
 			});
 		}
-		const clickRow = async (marker: string): Promise<void> => {
-			await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes(marker)));
-			const viewport = plainRows(term.getViewport());
-			const screenRow = viewport.findIndex(row => row.includes(marker));
+		const toggleScreenRow = (): number => {
+			const top = mode.ui.getMutableViewport().top;
+			return term
+				.getViewport()
+				.findIndex((_row, index) =>
+					mode.resolveViewportClickCandidates(index - top).includes(PINNED_HUD_TOGGLE_ID),
+				);
+		};
+		const clickToggle = async (): Promise<void> => {
+			await term.waitForRender(() => toggleScreenRow() >= 0);
+			const screenRow = toggleScreenRow();
 			expect(screenRow).toBeGreaterThanOrEqual(0);
 			term.sendInput(`\x1b[<0;5;${screenRow + 1}M`);
 		};
 
-		// Collapsed by default: three rows plus the expander.
-		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("more — expand")));
+		// Explicit collapsed mode hides later agents and exposes a clickable expander.
+		await term.waitForRender(() => toggleScreenRow() >= 0);
+		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent0"))).toBe(true);
 		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent3"))).toBe(false);
 
 		// Clicking the expander paints the slotted window with a collapse row.
-		await clickRow("more — expand");
-		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("show less")));
+		await clickToggle();
+		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("ToggleAgent4")));
 		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent4"))).toBe(true);
 		// Clicking it again collapses back to a few rows.
-		await clickRow("show less");
-		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("more — expand")));
+		await clickToggle();
+		await term.waitForRender(() => !plainRows(term.getViewport()).some(row => row.includes("ToggleAgent3")));
+		expect(toggleScreenRow()).toBeGreaterThanOrEqual(0);
+		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent0"))).toBe(true);
 		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent3"))).toBe(false);
 	});
 });

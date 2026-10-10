@@ -1,5 +1,5 @@
 import { scheduler } from "node:timers/promises";
-import { $flag, logger, structuredCloneJSON } from "@oh-my-pi/pi-utils";
+import { $flag, logger, type ServerSentEvent, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import { getEnvApiKey } from "../stream";
 import type {
@@ -9,7 +9,6 @@ import type {
 	Model,
 	OpenAICompat,
 	ProviderSessionState,
-	RawSseEvent,
 	ServiceTier,
 	StreamFunction,
 	StreamOptions,
@@ -477,7 +476,7 @@ const streamOpenAIResponsesOnce = (
 		const { requestAbortController, requestSignal } = abortTracker;
 		const onSseEvent = options?.onSseEvent;
 		const rawSseObserver = onSseEvent
-			? (event: RawSseEvent) => {
+			? (event: ServerSentEvent) => {
 					if (!event.event && event.data && event.data !== "[DONE]") {
 						try {
 							const parsed = JSON.parse(event.data);
@@ -493,7 +492,7 @@ const streamOpenAIResponsesOnce = (
 							}
 						} catch {}
 					}
-					onSseEvent(event, model);
+					onSseEvent({ event: event.event, data: event.data, raw: [...event.raw] }, model);
 				}
 			: undefined;
 

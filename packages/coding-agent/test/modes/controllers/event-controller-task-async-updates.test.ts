@@ -289,12 +289,14 @@ describe("EventController async update finalization", () => {
 
 		expect(component.isTranscriptBlockFinalized()).toBe(false);
 		const offered = chatContainer.peekFinalizedBatch(80, 0);
-		expect(offered).toBeDefined();
-		expect(Bun.stripANSI(offered?.rows.join("\n") ?? "")).toContain("job-stale");
+		if (!offered) throw new Error("expected a snapshot of the stale foreground card");
+		expect(Bun.stripANSI(offered.rows.join("\n"))).not.toContain("echo done");
+		chatContainer.acknowledgeFinalizedBatch(offered.id);
 		await controller.handleEvent({ type: "agent_start" });
 
 		expect(component.isTranscriptBlockFinalized()).toBe(true);
-		expect(chatContainer.peekFinalizedBatch(80, 0)?.rows).toBeDefined();
+		const retired = chatContainer.peekFinalizedBatch(80, 0);
+		expect(Bun.stripANSI(retired?.rows.join("\n") ?? "")).toContain("echo done");
 	});
 
 	it("keeps a parked task card available across the next agent turn", async () => {

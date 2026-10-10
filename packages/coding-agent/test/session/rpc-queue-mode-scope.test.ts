@@ -14,7 +14,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 
 import { cfgFollowUpMode } from "@oh-my-pi/pi-coding-agent/modes/settings";
 import { cfgSteeringMode } from "@oh-my-pi/pi-coding-agent/modes/settings";
-import { cfgSteeringSkipPendingOperations } from "@oh-my-pi/pi-coding-agent/modes/settings";
+import { cfgInterruptMode } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
 /**
  * Regression guard for #11555: the RPC queue-mode path (`persist: false`)
@@ -72,7 +72,7 @@ describe("AgentSession queue-mode controls are session-scoped by default", () =>
 		expect(session.interruptMode).toBe("wait");
 		expect(cfgSteeringMode.get(settings)).toBe("one-at-a-time");
 		expect(cfgFollowUpMode.get(settings)).toBe("one-at-a-time");
-		expect(cfgSteeringSkipPendingOperations.get(settings)).toBe(true);
+		expect(cfgInterruptMode.get(settings)).toBe("immediate");
 		expect(settings.getGlobalSettings()).toEqual({});
 		expect(await Bun.file(configPath).exists()).toBe(false);
 	});
@@ -89,7 +89,7 @@ describe("AgentSession queue-mode controls are session-scoped by default", () =>
 				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
 				steeringMode: cfgSteeringMode.get(settings) ?? "one-at-a-time",
 				followUpMode: cfgFollowUpMode.get(settings) ?? "one-at-a-time",
-				interruptMode: cfgSteeringSkipPendingOperations.get(settings) ? "immediate" : "wait",
+				interruptMode: cfgInterruptMode.get(settings),
 			}),
 			sessionManager: SessionManager.create(agentDir, agentDir),
 			settings,
@@ -114,11 +114,11 @@ describe("AgentSession queue-mode controls are session-scoped by default", () =>
 		expect(settings.getGlobalSettings()).toMatchObject({
 			steeringMode: "all",
 			followUpMode: "all",
-			steeringSkipPendingOperations: false,
+			interruptMode: "wait",
 		});
 		const onDisk = await Bun.file(configPath).text();
 		expect(onDisk).toContain("steeringMode: all");
 		expect(onDisk).toContain("followUpMode: all");
-		expect(onDisk).toContain("steeringSkipPendingOperations: false");
+		expect(onDisk).toContain("interruptMode: wait");
 	});
 });

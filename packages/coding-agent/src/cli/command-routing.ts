@@ -34,6 +34,7 @@ export const COMMAND_NAMES = [
 	"login",
 	"models",
 	"plugin",
+	"predict",
 	"ps",
 	"say",
 	"clip",

@@ -739,19 +739,21 @@ pub fn build_compact_diff_preview(diff: &str, options: &CompactDiffOptions) -> C
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DiffHunk {
 	/// Optional textual or symbolic hunk anchor.
-	pub change_context:    Option<String>,
+	pub change_context:       Option<String>,
 	/// Optional 1-indexed old-file line hint.
-	pub old_start_line:    Option<u32>,
+	pub old_start_line:       Option<u32>,
 	/// Optional 1-indexed new-file line hint.
-	pub new_start_line:    Option<u32>,
+	pub new_start_line:       Option<u32>,
 	/// Whether the hunk contains unchanged context.
-	pub has_context_lines: bool,
+	pub has_context_lines:    bool,
 	/// Expected old-file lines.
-	pub old_lines:         Vec<String>,
+	pub old_lines:            Vec<String>,
 	/// Replacement new-file lines.
-	pub new_lines:         Vec<String>,
+	pub new_lines:            Vec<String>,
+	/// Zero-based old/new line indices for unchanged context, in source order.
+	pub context_line_indices: Vec<(usize, usize)>,
 	/// Whether the hunk carries an end-of-file marker.
-	pub is_end_of_file:    bool,
+	pub is_end_of_file:       bool,
 }
 
 fn is_diff_content_line(line: &str) -> bool {
@@ -1054,11 +1056,17 @@ fn parse_one_hunk(
 		match line.as_bytes().first().copied() {
 			None => {
 				hunk.has_context_lines = true;
+				hunk
+					.context_line_indices
+					.push((hunk.old_lines.len(), hunk.new_lines.len()));
 				hunk.old_lines.push(String::new());
 				hunk.new_lines.push(String::new());
 			},
 			Some(b' ') => {
 				hunk.has_context_lines = true;
+				hunk
+					.context_line_indices
+					.push((hunk.old_lines.len(), hunk.new_lines.len()));
 				hunk.old_lines.push(line[1..].to_owned());
 				hunk.new_lines.push(line[1..].to_owned());
 			},
@@ -1066,6 +1074,9 @@ fn parse_one_hunk(
 			Some(b'-') => hunk.old_lines.push(line[1..].to_owned()),
 			_ if !line.starts_with("@@") => {
 				hunk.has_context_lines = true;
+				hunk
+					.context_line_indices
+					.push((hunk.old_lines.len(), hunk.new_lines.len()));
 				hunk.old_lines.push(line.to_owned());
 				hunk.new_lines.push(line.to_owned());
 			},
@@ -1094,8 +1105,9 @@ fn parse_one_hunk(
 
 fn extract_marker_path(line: &str) -> Option<String> {
 	if let Some(rest) = line.strip_prefix("diff --git ") {
-		let parts = rest.split_whitespace().collect::<Vec<_>>();
-		let candidate = parts.get(1).or_else(|| parts.first())?;
+		let mut parts = rest.split_whitespace();
+		let first = parts.next()?;
+		let candidate = parts.next().unwrap_or(first);
 		return Some(
 			candidate
 				.strip_prefix("a/")
@@ -1115,13 +1127,32 @@ fn extract_marker_path(line: &str) -> Option<String> {
 fn count_multi_file_markers(diff: &str) -> usize {
 	let mut counts = std::collections::BTreeMap::<&str, usize>::new();
 	let mut paths = BTreeSet::new();
+	let mut in_hunk = false;
 	for line in diff.split('\n') {
 		if is_diff_content_line(line) {
 			continue;
 		}
 		let trimmed = line.trim();
+		if trimmed.starts_with("@@") {
+			in_hunk = true;
+			continue;
+		}
+		if trimmed == EOF_MARKER || matches_trimmed_prefix(trimmed, &PATCH_WRAPPER_PREFIXES) {
+			in_hunk = false;
+			continue;
+		}
+		// A Git file header has two path operands. Inside a hunk, an
+		// unprefixed row such as `diff --git content` is ordinary context.
+		if in_hunk
+			&& trimmed
+				.strip_prefix("diff --git ")
+				.is_some_and(|rest| rest.split_whitespace().nth(1).is_none())
+		{
+			continue;
+		}
 		for marker in MULTI_FILE_MARKERS {
 			if trimmed.starts_with(marker) {
+				in_hunk = false;
 				if let Some(path) = extract_marker_path(trimmed)
 					&& !path.is_empty()
 				{
@@ -1483,14 +1514,22 @@ mod tests {
 	}
 
 	#[test]
+	fn preserves_metadata_shaped_hunk_rows_without_file_headers() {
+		let hunks =
+			parse_diff_hunks("@@\n--- old\n+++ new\ndiff --git content\ndiff --git another").unwrap();
+		assert_eq!(hunks[0].old_lines, ["-- old", "diff --git content", "diff --git another"]);
+		assert_eq!(hunks[0].new_lines, ["++ new", "diff --git content", "diff --git another"]);
+	}
+
+	#[test]
 	fn rejects_multi_file_diff() {
-		let error =
-			parse_diff_hunks("diff --git a/a b/a\n@@\n-a\n+b\ndiff --git a/b b/b\n@@\n-c\n+d")
-				.unwrap_err();
-		assert_eq!(
-			error.to_string(),
-			"Diff contains 2 file markers. Single-file patches cannot contain multi-file markers."
-		);
+		for diff in [
+			"diff --git a/a b/a\n@@\n-a\n+b\ndiff --git a/b b/b\n@@\n-c\n+d",
+			"diff --git a\ndiff --git b\n@@\n-old\n+new",
+			"*** Update File: a\n@@\n-old\n+new\n*** Update File: b\n@@\n-old\n+new",
+		] {
+			assert!(matches!(parse_diff_hunks(diff), Err(EditError::Apply(_))));
+		}
 	}
 
 	#[test]
