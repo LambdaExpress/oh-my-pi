@@ -209,6 +209,7 @@ export const zhCN: Record<string, string> = {
 	" autoresearch: {name} ": " 自动研究：{name} ",
 	" baseline {value}": " 基准 {value}",
 	" bytes": " 字节",
+	" credits": " 点",
 	" default": "默认",
 	" fail": " 失败",
 	" for default": " 恢复默认",
@@ -2446,6 +2447,7 @@ export const zhCN: Record<string, string> = {
 		"Codex Code Mode 的额外直接工具。标准直接工具为 eval、ask、todo、yield、think、checkpoint 和 rewind。",
 	'Extra headers for Foundry or any custom ANTHROPIC_BASE_URL gateway (e.g., "user-id: USERNAME")':
 		'Foundry 或任何自定义 ANTHROPIC_BASE_URL 网关的附加请求头（例如 "user-id: USERNAME"）',
+	"Extra usage credits": "额外额度",
 	"Extra workspace directories added to every session as additional roots (multi-root workspace). Managed live via /add-dir and /remove-dir. Paths resolve relative to cwd; absolute paths recommended. The agent is told these roots exist and can read/grep/glob them.":
 		"作为附加根目录添加到每个会话的额外工作区目录（多根工作区）。可通过 /add-dir 和 /remove-dir 实时管理。路径相对于 cwd 解析；建议使用绝对路径。代理会被告知这些根目录存在，并可以对它们执行 read/grep/glob。",
 	"Extremely early maintenance": "极早期维护",

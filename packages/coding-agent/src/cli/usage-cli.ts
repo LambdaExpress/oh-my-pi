@@ -28,7 +28,12 @@ import { Settings } from "../config/settings";
 import { t } from "../i18n";
 import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
 import { resolveAuthBrokerConfig } from "../session/auth-broker-config";
-import { collapseSharedUsageReports, summarizeUsageResetCredits } from "@oh-my-pi/pi-tui/overlays/usage-display";
+import {
+	collapseSharedUsageReports,
+	formatLimitTitle,
+	isRedundantLimitWindowLabel,
+	summarizeUsageResetCredits,
+} from "@oh-my-pi/pi-tui/overlays/usage-display";
 import { formatCodexUsageReportLabel } from "../slash-commands/helpers/active-oauth-account";
 import {
 	accountIdentityLabel,
@@ -280,13 +285,10 @@ function renderBar(limit: UsageLimit): string {
 
 /** Append the window label when the limit label doesn't already carry it. */
 function limitTitle(limit: UsageLimit): string {
-	let label = limit.label;
-	const tier = limit.scope.tier;
-	if (tier && !label.toLowerCase().includes(tier.toLowerCase())) label = `${label} (${tier})`;
+	const label = formatLimitTitle(limit);
 	const windowLabel = limit.window?.label ?? limit.scope.windowId;
 	if (!windowLabel) return label;
-	if (windowLabel.toLowerCase() === "quota window") return label;
-	if (label.toLowerCase().includes(windowLabel.toLowerCase())) return label;
+	if (isRedundantLimitWindowLabel(limit, label, windowLabel)) return label;
 	return `${label} (${windowLabel})`;
 }
 

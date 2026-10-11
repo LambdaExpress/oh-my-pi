@@ -22,6 +22,7 @@ import { formatProviderName } from "../chrome/format";
 import {
 	collapseSharedUsageReports,
 	formatLimitTitle,
+	isRedundantLimitWindowLabel,
 	summarizeUsageResetCredits,
 	type UsageResetSummary,
 } from "./usage-display";
@@ -464,8 +465,7 @@ function reportAccountLabel(report: UsageReport, limit: UsageLimit | undefined, 
 function detailWindowLabel(label: string, limit: UsageLimit): string | undefined {
 	const windowLabel = limit.window?.label ?? limit.window?.id ?? limit.scope.windowId;
 	if (!windowLabel) return undefined;
-	const normalized = windowLabel.toLowerCase();
-	if (normalized === "quota window" || label.toLowerCase().includes(normalized)) return undefined;
+	if (isRedundantLimitWindowLabel(limit, label, windowLabel)) return undefined;
 	return sanitizeDisplayLine(windowLabel);
 }
 
@@ -528,6 +528,11 @@ const CARD_GUTTER = 3;
 const CARD_MAX_WINDOWS = 4;
 const CARD_MIN_BAR_WIDTH = 12;
 const CARD_MAX_LABEL_LINES = 2;
+
+/** Keep balance/spend rows visible without displacing the bounded quota windows. */
+function visibleCardWindows(windows: readonly CardWindowRow[]): CardWindowRow[] {
+	return windows.filter((window, index) => index < CARD_MAX_WINDOWS || window.usedText !== undefined);
+}
 
 interface CardRowLayout {
 	labelWidth: number;
@@ -636,7 +641,13 @@ export class UsageDashboardComponent implements Component {
 		return `${theme.fg(this.#statusColor(status), bar)}${theme.fg("dim", empty)}`;
 	}
 
-	#renderCardLines(card: ProviderCard, width: number, labels: string[][], layout: CardRowLayout): string[] {
+	#renderCardLines(
+		card: ProviderCard,
+		width: number,
+		windows: readonly CardWindowRow[],
+		labels: string[][],
+		layout: CardRowLayout,
+	): string[] {
 		const lines: string[] = [];
 		const cardStatus =
 			card.unavailableAccounts.length > 0
@@ -691,11 +702,11 @@ export class UsageDashboardComponent implements Component {
 			return lines;
 		}
 
-		const hidden = card.windows.length - CARD_MAX_WINDOWS;
+		const hidden = card.windows.length - windows.length;
 		const { labelWidth, resetWidth, barWidth, stacked, labelHeights } = layout;
 		const contentWidth = Math.max(1, width - 2);
-		for (let index = 0; index < Math.min(card.windows.length, CARD_MAX_WINDOWS); index++) {
-			const window = card.windows[index]!;
+		for (let index = 0; index < windows.length; index++) {
+			const window = windows[index]!;
 			const labelLines = labels[index]!;
 			const label = labelLines[0] ?? "";
 			const prefix = stacked ? "" : `${label}${" ".repeat(labelWidth - visibleWidth(label))} `;
@@ -733,7 +744,7 @@ export class UsageDashboardComponent implements Component {
 		const lines: string[] = [];
 		for (let start = 0; start < active.length; start += columns) {
 			const cards = active.slice(start, start + columns);
-			const windows = cards.map(card => card.windows.slice(0, CARD_MAX_WINDOWS));
+			const windows = cards.map(card => visibleCardWindows(card.windows));
 			const labels = windows.map(rows =>
 				rows.map(window => {
 					const label = theme.fg("muted", sanitizeDisplayLine(window.label));
@@ -775,7 +786,7 @@ export class UsageDashboardComponent implements Component {
 					return [first.text, truncateMiddleToWidth(rest.text, contentWidth)];
 				}),
 			);
-			const labelHeights = Array.from({ length: CARD_MAX_WINDOWS }, (_, index) =>
+			const labelHeights = Array.from({ length: Math.max(...windows.map(rows => rows.length)) }, (_, index) =>
 				Math.max(0, ...labelLines.map(rows => rows[index]?.length ?? 0)),
 			);
 			const layout: CardRowLayout = {
@@ -786,7 +797,7 @@ export class UsageDashboardComponent implements Component {
 				labelHeights,
 			};
 			const rowCards = cards.map((card, index) =>
-				this.#renderCardLines(card, cardWidth, labelLines[index]!, layout),
+				this.#renderCardLines(card, cardWidth, windows[index]!, labelLines[index]!, layout),
 			);
 			const height = Math.max(...rowCards.map(card => card.length));
 			for (let lineIdx = 0; lineIdx < height; lineIdx++) {
@@ -1136,7 +1147,8 @@ export class UsageDashboardComponent implements Component {
 		if (entry.unlimited) {
 			children.push(mutedText(t("no limits")));
 		} else {
-			for (const [index, window] of entry.windows.slice(0, CARD_MAX_WINDOWS).entries()) {
+			const windows = visibleCardWindows(entry.windows);
+			for (const [index, window] of windows.entries()) {
 				const label: TspSpan[] = [span(sanitizeDisplayLine(window.label))];
 				if (window.windowTag) label.push(span(` ${sanitizeDisplayLine(window.windowTag)}`, "dim"));
 				const cells: NativeChild[] = [
@@ -1158,7 +1170,7 @@ export class UsageDashboardComponent implements Component {
 				}
 				children.push(node("row", { role: "omp.usage.window", gap: "sm", align: "center" }, cells, `w${index}`));
 			}
-			const hidden = entry.windows.length - CARD_MAX_WINDOWS;
+			const hidden = entry.windows.length - windows.length;
 			if (hidden > 0) children.push(mutedText(t("+{count} more", { count: hidden })));
 		}
 		return node(

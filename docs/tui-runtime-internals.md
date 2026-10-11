@@ -39,6 +39,8 @@ Input path:
 
 Optimistic user submissions call `renderNow()` before agent dispatch so synchronous startup/model work cannot delay the visible user row.
 
+Transcript rebuilds preserve pending plain-text and custom user requests, including `/skill:` submissions, while delivery is in flight. Journaled custom requests are matched by type and timestamp, so replay owns their rows even before the live confirmation event is handled. This prevents disappearing skill input and duplicate rows without confusing a new submission with an older request containing the same text.
+
 ## Explicit transcript lifecycle
 
 `TranscriptContainer` keeps blocks in semantic order:

@@ -5,6 +5,10 @@ import * as path from "node:path";
 import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as evalIndex from "@oh-my-pi/pi-coding-agent/eval";
+import type { ExecutorBackendResult } from "@oh-my-pi/pi-coding-agent/eval/backend";
+import { isEvalTimeoutControlEvent } from "@oh-my-pi/pi-coding-agent/eval/bridge-timeout";
+import { callSessionTool } from "@oh-my-pi/pi-coding-agent/eval/js/tool-bridge";
+import { EVAL_BROWSER_ACTIVITY_OP, type EvalPreludeDefinition } from "@oh-my-pi/pi-coding-agent/eval/preludes";
 import type { EvalToolDetails } from "@oh-my-pi/pi-tui/tools/eval";
 import { getThemeByName } from "@oh-my-pi/pi-tui/theme";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -57,6 +61,83 @@ function baseResult(overrides: Record<string, unknown> = {}) {
 describe("EvalTool live stdout streaming", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+	});
+
+	it("classifies a browser attempt before it settles and preserves the classification on abort and failure", async () => {
+		const session = makeSession();
+		const entered = Promise.withResolvers<void>();
+		const gate = Promise.withResolvers<void>();
+		const firstUpdate = Promise.withResolvers<EvalToolDetails>();
+		const prelude: EvalPreludeDefinition = {
+			name: "browser",
+			documentation: "",
+			javascript: "",
+			python: "",
+			exports: ["browser"],
+			async invoke() {
+				entered.resolve();
+				await gate.promise;
+				throw new Error("Browser connection failed");
+			},
+		};
+		session.getEvalPreludes = () => [prelude];
+		vi.spyOn(evalIndex.jsBackend, "execute").mockImplementation(async (_code, options) => {
+			const displayOutputs: ExecutorBackendResult["displayOutputs"] = [];
+			let output = "";
+			let exitCode = 0;
+			try {
+				await callSessionTool(
+					"__prelude__",
+					{ name: "browser", parameters: { action: "open" } },
+					{
+						session,
+						signal: options.signal,
+						emitStatus: event => {
+							options.onStatus?.(event);
+							if (!isEvalTimeoutControlEvent(event)) displayOutputs.push({ type: "status", event });
+						},
+					},
+				);
+			} catch (error) {
+				output = error instanceof Error ? error.message : String(error);
+				exitCode = 1;
+			}
+			return { ...baseResult(), output, exitCode, displayOutputs };
+		});
+
+		const tool = new EvalTool(session);
+		const args = { language: "js" as const, code: "await browser.open(); print(1 + 2)", title: "Inspect page" };
+		const controller = new AbortController();
+		const execution = tool.execute("browser-entry", args, controller.signal, update => {
+			if (update.details) firstUpdate.resolve(update.details);
+		});
+		try {
+			await Promise.race([
+				entered.promise,
+				execution.then(result => {
+					throw new Error(`Browser call settled before handler entry: ${JSON.stringify(result.content)}`);
+				}),
+			]);
+			const liveDetails = await firstUpdate.promise;
+			expect(liveDetails.hasBrowserActivity).toBe(true);
+			expect(liveDetails.cells?.[0]?.status).toBe("running");
+			expect(liveDetails.cells?.[0]?.statusEvents).toBeUndefined();
+
+			controller.abort();
+			const aborted = tool.createAbortedResult("browser-entry", args, controller.signal);
+			expect(aborted.isError).toBe(true);
+			expect(aborted.details?.hasBrowserActivity).toBe(true);
+			expect(aborted.details?.cells?.[0]?.status).toBe("error");
+		} finally {
+			gate.resolve();
+		}
+		const result = await execution;
+		expect(result.isError).toBe(true);
+		expect(result.details?.hasBrowserActivity).toBe(true);
+		expect(result.details?.statusEvents).toEqual([{ op: "browser", error: "Browser connection failed" }]);
+		expect(result.details?.cells?.[0]?.statusEvents?.some(event => event.op === EVAL_BROWSER_ACTIVITY_OP)).toBe(
+			false,
+		);
 	});
 
 	it("populates the running cell's output with streamed chunks before the cell returns", async () => {

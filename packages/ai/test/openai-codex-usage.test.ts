@@ -103,6 +103,65 @@ describe("openai-codex usage parser", () => {
 		expect(main?.[0].amount.usedFraction).toBeCloseTo(0.04, 5);
 	});
 
+	it.each([125.5, "489.25", 0])(
+		"reports extra usage credits with balance %s without inventing a quota",
+		async balance => {
+			const report = await openaiCodexUsageProvider.fetchUsage(
+				{
+					provider: "openai-codex",
+					credential: { type: "oauth", accessToken: accessTokenFixture, accountId: "acct-1" },
+				},
+				{ fetch: fakeFetch({ ...makePayload(), credits: { has_credits: Number(balance) > 0, balance } }) },
+			);
+			const credits = report?.limits.find(limit => limit.id === "openai-codex:credits");
+
+			expect(credits?.amount).toEqual({ remaining: Number(balance), unit: "credits" });
+			expect(credits?.window).toBeUndefined();
+			expect(codexRankingStrategy.scopeLimits?.(report!, { modelId: "gpt-5.4" }).map(limit => limit.id)).toEqual([
+				"openai-codex:primary",
+				"openai-codex:secondary",
+			]);
+		},
+	);
+
+	it.each([undefined, "", "unavailable"])("omits an unreported or invalid credit balance (%s)", async balance => {
+		const report = await openaiCodexUsageProvider.fetchUsage(
+			{
+				provider: "openai-codex",
+				credential: { type: "oauth", accessToken: accessTokenFixture },
+			},
+			{ fetch: fakeFetch({ ...makePayload(), credits: { has_credits: true, balance } }) },
+		);
+
+		expect(report?.limits.some(limit => limit.amount.unit === "credits")).toBe(false);
+		expect(report?.limits.find(limit => limit.id === "openai-codex:primary")?.amount.usedFraction).toBe(0.04);
+	});
+
+	it("reports credit-only payloads with message estimates supplied by the server", async () => {
+		const report = await openaiCodexUsageProvider.fetchUsage(
+			{
+				provider: "openai-codex",
+				credential: { type: "oauth", accessToken: accessTokenFixture },
+			},
+			{
+				fetch: fakeFetch({
+					plan_type: "pro",
+					credits: {
+						balance: "62500.0000000000",
+						approx_local_messages: [15625, 81250],
+						approx_cloud_messages: [2500, 15625],
+					},
+				}),
+			},
+		);
+
+		expect(report?.limits[0]?.amount).toEqual({ remaining: 62500, unit: "credits" });
+		expect(report?.limits[0]?.notes).toEqual([
+			"Estimated local messages remaining: 15625–81250",
+			"Estimated cloud messages remaining: 2500–15625",
+		]);
+	});
+
 	it("keeps an explicitly allowed Team window usable at 100% reported usage", async () => {
 		const payload = makePayload();
 		payload.plan_type = "team";

@@ -4055,8 +4055,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		// genuinely in-flight (dangling, replay-stripped) calls still need
 		// preserving.
 		let detectedMessage = false;
+		let optimisticCustomRequestReplayed = false;
 		for (const message of context.messages) {
 			if (options.detectMessage && isSameTranscriptMessage(message, options.detectMessage)) detectedMessage = true;
+			if (
+				message.role === "custom" &&
+				this.optimisticCustomMessageSignature !== undefined &&
+				this.optimisticCustomMessageSignature === customSubmissionSignature(message)
+			) {
+				optimisticCustomRequestReplayed = true;
+			}
 			if (message.role !== "toolResult") continue;
 			const resolved = livePendingTools.get(message.toolCallId);
 			if (!resolved) continue;
@@ -4123,23 +4131,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		for (const [id, component] of livePendingTools) {
 			this.pendingTools.set(id, component);
 		}
-		// During the pre-streaming window — after `startPendingSubmission` has
-		// optimistically rendered the user's message but before the user
-		// `message_start` event lands it in `session` entries — any rebuild
-		// (e.g. Ctrl+T toggleThinkingBlockVisibility, theme selector) would
-		// otherwise erase the user's just-submitted message until the first
-		// assistant token arrived (#2372). Once `message_start` fires the
-		// signature is cleared by `EventController`, so this replay is a no-op
-		// post-streaming and cannot duplicate. Message persistence can outpace
-		// that event handler while it awaits a prior completed-run collapse, so
-		// skip the optimistic row when this rebuild already replayed its canonical
-		// request from the journal.
-		const optimisticRequestReplayed =
+		// Preserve pending user and custom requests that have not reached the journal.
+		// A preflight or completed-run rebuild can erase their optimistic rows before
+		// message_start confirms them (#2372). If persistence wins that race, the
+		// canonical journal row already owns the display.
+		const optimisticUserRequestReplayed =
 			detectedMessage &&
 			options.detectMessage?.role === "user" &&
 			this.optimisticUserMessageSignature !== undefined &&
 			this.optimisticUserMessageSignature === userMessageSubmissionSignature(options.detectMessage);
-		if (!optimisticRequestReplayed) this.#replayOptimisticUserMessage();
+		if (!optimisticCustomRequestReplayed && !optimisticUserRequestReplayed) this.#replayOptimisticSubmission();
 		this.eventController.restoreAsyncJobHud();
 		if (preserveRetirement && !this.chatContainer.finishRetirementPreservingRebuild()) {
 			this.ui.resetDisplay();
@@ -4147,21 +4148,24 @@ export class InteractiveMode implements InteractiveModeContext {
 		return options.detectMessage ? detectedMessage : undefined;
 	}
 
-	#replayOptimisticUserMessage(): void {
-		if (!this.optimisticUserMessageSignature) return;
+	#replayOptimisticSubmission(): void {
 		const submission = this.#pendingSubmittedInput;
-		if (!submission || submission.cancelled || submission.customType) return;
+		if (!submission || submission.cancelled) return;
+		let message: AgentMessage;
+		if (submission.customMessage) {
+			if (this.optimisticCustomMessageSignature !== customSubmissionSignature(submission.customMessage)) return;
+			message = { role: "custom", ...submission.customMessage };
+		} else {
+			if (!this.optimisticUserMessageSignature || submission.customType) return;
+			message = {
+				role: "user",
+				content: [{ type: "text", text: submission.displayText ?? submission.text }, ...(submission.images ?? [])],
+				attribution: "user",
+				timestamp: Date.now(),
+			};
+		}
 		this.#optimisticSubmissionComponents = this.#captureAddedChatComponents(() => {
-			const displayText = submission.displayText ?? submission.text;
-			this.addMessageToChat(
-				{
-					role: "user",
-					content: [{ type: "text", text: displayText }, ...(submission.images ?? [])],
-					attribution: "user",
-					timestamp: Date.now(),
-				},
-				{ imageLinks: submission.imageLinks },
-			);
+			this.addMessageToChat(message, { imageLinks: submission.imageLinks });
 		});
 	}
 

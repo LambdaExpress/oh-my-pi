@@ -15,7 +15,12 @@ import { jsBackend, pythonBackend } from "../eval";
 import type { ExecutorBackend, ExecutorBackendResult } from "../eval/backend";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../eval/bridge-timeout";
 import { IdleTimeout } from "../eval/idle-timeout";
-import { type EvalPreludeDefinition, evalPreludeSummary, getEnabledEvalPreludes } from "../eval/preludes";
+import {
+	EVAL_BROWSER_ACTIVITY_OP,
+	type EvalPreludeDefinition,
+	evalPreludeSummary,
+	getEnabledEvalPreludes,
+} from "../eval/preludes";
 import { prepareEvalSource } from "../eval/input";
 import type { BackendProbeOptions } from "../eval/probe";
 import { defaultEvalSessionId } from "../eval/session-id";
@@ -466,12 +471,13 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	};
 
 	createAbortedResult(
-		_toolCallId: string,
+		toolCallId: string,
 		params: typeof evalSchema.infer,
 		_signal: AbortSignal,
 	): AgentToolResult<EvalToolDetails | undefined> {
 		const language = evalLanguageFromToken(params.language);
 		const details: EvalToolDetails = {
+			hasBrowserActivity: this.#browserCalls.has(toolCallId) || undefined,
 			language,
 			languages: [language],
 			cells: [
@@ -523,6 +529,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	#paramsKey?: string;
 	#cachedParams?: typeof evalSchema;
 	readonly #shadowCells = new Map<string, EvalShadowCellSession>();
+	readonly #browserCalls = new Set<string>();
 	readonly #environmentModes: Partial<Record<EvalLanguage, "managed" | "project">> = {};
 
 	/**
@@ -618,6 +625,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 			}
 			const execution = runWithEvalShadowCell(activeShadowCell, () =>
 				this.#runCells({
+					toolCallId: _toolCallId,
 					session,
 					cells,
 					languages,
@@ -666,7 +674,10 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					const result = await run(runSignal, (text, details) => {
 						latestText = text;
 						latestDetails = details;
-						void reportProgress(text, { async: { state: "running", jobId, type: "eval" } });
+						void reportProgress(text, {
+							hasBrowserActivity: details.hasBrowserActivity,
+							async: { state: "running", jobId, type: "eval" },
+						});
 						if (forwardUpdates) emitToolUpdate?.(text, details);
 					});
 					const finalText =
@@ -791,6 +802,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	 * inside a managed background job (which passes the job's own signal).
 	 */
 	async #runCells(options: {
+		toolCallId: string;
 		session: ToolSession;
 		cells: ResolvedEvalCell[];
 		languages: EvalLanguage[];
@@ -800,11 +812,13 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		sessionAbortController: AbortController;
 		emitUpdate?: (text: string, details: EvalToolDetails) => void;
 	}): Promise<AgentToolResult<EvalToolDetails | undefined>> {
-		const { session, cells, languages, notice, excludeWebP, signal, sessionAbortController, emitUpdate } = options;
+		const { toolCallId, session, cells, languages, notice, excludeWebP, signal, sessionAbortController, emitUpdate } =
+			options;
 		let outputSink: OutputSink | undefined;
 		let outputSummary: OutputSummary | undefined;
 		let outputDumped = false;
 		let updateTimer: NodeJS.Timeout | undefined;
+		let hasBrowserActivity = false;
 		const finalizeOutput = async (): Promise<OutputSummary | undefined> => {
 			if (outputDumped || !outputSink) return outputSummary;
 			outputSummary = await outputSink.dump();
@@ -864,6 +878,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 
 			const buildUpdateDetails = (): EvalToolDetails => {
 				const details: EvalToolDetails = {
+					hasBrowserActivity: hasBrowserActivity || undefined,
 					language: languages[0],
 					languages,
 					cells: cellResults.map(cell => ({
@@ -973,6 +988,15 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 							outputSink!.push(chunk);
 						},
 						onStatus: event => {
+							if (event.op === EVAL_BROWSER_ACTIVITY_OP) {
+								if (!hasBrowserActivity) {
+									hasBrowserActivity = true;
+									this.#browserCalls.add(toolCallId);
+									pushUpdate();
+									flushUpdate();
+								}
+								return;
+							}
 							if (event.op === EVAL_TIMEOUT_PAUSE_OP) {
 								idle?.pause();
 								return;
@@ -1038,6 +1062,10 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 						}
 					}
 					if (output.type === "status") {
+						if (output.event.op === EVAL_BROWSER_ACTIVITY_OP) {
+							hasBrowserActivity = true;
+							continue;
+						}
 						const event: EvalStatusEvent = {
 							...output.event,
 							resolvedThinkingLevel: parseConfiguredThinkingLevel(
@@ -1092,6 +1120,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					const summaryForMeta = await summarizeFinal(combinedOutput, finalizeOutput);
 					commitDisplaySpills(summaryForMeta);
 					const details: EvalToolDetails = {
+						hasBrowserActivity: hasBrowserActivity || undefined,
 						language: languages[0],
 						languages,
 						cells: cellResults,
@@ -1126,6 +1155,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 			commitDisplaySpills(summaryForMeta);
 
 			const details: EvalToolDetails = {
+				hasBrowserActivity: hasBrowserActivity || undefined,
 				language: languages[0],
 				languages,
 				cells: cellResults,
@@ -1139,6 +1169,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				.truncationFromSummary(summaryForMeta, { direction: "tail" })
 				.done();
 		} finally {
+			this.#browserCalls.delete(toolCallId);
 			clearTimeout(updateTimer);
 			if (!outputDumped) {
 				try {

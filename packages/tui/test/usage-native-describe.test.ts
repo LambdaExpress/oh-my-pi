@@ -90,6 +90,35 @@ describe("UsageDashboardComponent.describe", () => {
 		]);
 	});
 
+	it("keeps credit balances visible without displacing capped quota meters", () => {
+		const component = dashboard([
+			report("openai-codex", "a@test", [
+				...Array.from({ length: 5 }, (_, index) =>
+					limit("openai-codex", `window-${index}`, `Quota ${index}`, 0.5 - index * 0.1, "ok"),
+				),
+				{
+					id: "openai-codex:credits",
+					label: "Extra usage credits",
+					scope: { provider: "openai-codex", windowId: "credits" },
+					amount: { remaining: 125.5, unit: "credits" },
+				},
+			]),
+		]);
+		try {
+			const tree = component.describe(cx);
+			const texts = findAll(tree, n => n.k === "text").flatMap(n =>
+				n.k === "text" ? (n.p?.spans ?? []).map(span => span.t) : [],
+			);
+			expect(texts).toContain("Extra usage credits");
+			expect(texts).toContain("125.5 credits left");
+			expect(texts).toContain("+1 more");
+			expect(texts).not.toContain("Quota 4");
+			expect(findAll(tree, n => n.k === "meter")).toHaveLength(4);
+		} finally {
+			component.dispose();
+		}
+	});
+
 	it("switches to the per-account detail table when the Details tab is selected", () => {
 		const component = dashboard([
 			report("anthropic", "a@test", [limit("anthropic", "5h", "Claude 5h", 0.25, "ok")]),

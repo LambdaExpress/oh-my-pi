@@ -82,6 +82,7 @@ import { setSessionTerminalTitle } from "../../utils/title-generator";
 import {
 	collapseSharedUsageReports,
 	formatLimitTitle,
+	isRedundantLimitWindowLabel,
 	summarizeUsageResetCredits,
 } from "@oh-my-pi/pi-tui/overlays/usage-display";
 import { formatRemainingOnlyTotal, isUsedOnlyAbsoluteAmount } from "@oh-my-pi/pi-tui/prompt/usage-amounts";
@@ -1961,11 +1962,8 @@ function resolveProviderUsageTotal(reports: UsageReport[]): number {
 		.reduce((sum, value) => sum + value, 0);
 }
 
-function formatWindowSuffix(label: string, windowLabel: string, uiTheme: Theme): string {
-	const normalizedLabel = label.toLowerCase();
-	const normalizedWindow = windowLabel.toLowerCase();
-	if (normalizedWindow === "quota window") return "";
-	if (normalizedLabel.includes(normalizedWindow)) return "";
+function formatWindowSuffix(limit: UsageLimit, label: string, windowLabel: string, uiTheme: Theme): string {
+	if (isRedundantLimitWindowLabel(limit, label, windowLabel)) return "";
 	return uiTheme.fg("dim", `(${windowLabel})`);
 }
 
@@ -2444,7 +2442,7 @@ export function renderUsageReports(
 			const status = resolveAggregateStatus(sortedLimits);
 			const statusIcon = resolveStatusIcon(status, uiTheme);
 
-			const windowSuffix = formatWindowSuffix(group.label, group.windowLabel, uiTheme);
+			const windowSuffix = formatWindowSuffix(sortedLimits[0]!, group.label, group.windowLabel, uiTheme);
 			lines.push(`${statusIcon} ${uiTheme.bold(group.label)} ${windowSuffix}`.trim());
 			const accountLabels = formatAccountHeaderRow(
 				sortedLimits,
