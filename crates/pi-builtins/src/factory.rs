@@ -266,6 +266,8 @@ pub fn utility_builtins<SE: brush_core::ShellExtensions>()
 	m.push(("realpath", realpath::realpath_builtin::<SE>()));
 	#[cfg(feature = "util.rm")]
 	m.push(("rm", rm::rm_builtin::<SE>()));
+	#[cfg(feature = "util.rmdir")]
+	m.push(("rmdir", rmdir::rmdir_builtin::<SE>()));
 	#[cfg(feature = "util.sed")]
 	m.push(("sed", sed::sed_builtin::<SE>()));
 	#[cfg(feature = "util.seq")]

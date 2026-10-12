@@ -14,6 +14,8 @@
 
 ### Fixed
 
+- Fixed `rmdir` falling through to an external command for internal URLs; empty-directory removal now uses the shell filesystem and preserves URL mount boundaries.
+- Fixed incomplete PowerShell grammar results triggering native edit warnings or automatic boundary repairs of valid scripts.
 - Fixed move-only patch rejection and unintended rewriting of original bytes, including BOMs, mixed line endings, and notebook formatting.
 - Fixed complete unique patch matches being confused with weaker similar-code matches while retaining existing contextual and transactional behavior.
 - Fixed fuzzy patch application rewriting unchanged context, including punctuation, indentation, and original line endings.

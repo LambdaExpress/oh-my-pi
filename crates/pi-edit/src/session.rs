@@ -4,7 +4,7 @@
 //! Threading and callbacks live in the napi layer; this type is single
 //! threaded and pure apart from file reads and the writer trait.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
@@ -104,7 +104,8 @@ pub struct FileOutcome {
 	pub warnings:           Vec<String>,
 	/// Rendered model-facing text for this file.
 	pub text:               String,
-	/// `before` parsed and `after` does not (`pi_ast` summary).
+	/// Definite parsed-to-unparsed transition; uncertain grammars do not
+	/// regress.
 	pub parse_regressed:    bool,
 }
 
@@ -411,7 +412,7 @@ impl Session {
 				&& file.op != FileOp::Noop
 				&& file.existed
 				&& source_parses(&file.before, &file.display)
-				&& !source_parses(&file.after, &file.display);
+				&& source_parse_status(&file.after, &file.display) == SourceParseStatus::Unparsed;
 
 			let old_text = if file.op == FileOp::Create {
 				None
@@ -541,20 +542,36 @@ fn prune_snapshots(
 	}
 }
 
-/// True when tree-sitter parses `code` (language from `path`) without
-/// errors. Unknown languages never "parse", so they never regress.
-pub fn source_parses(code: &str, path: &str) -> bool {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceParseStatus {
+	Parsed,
+	Unparsed,
+	Unknown,
+}
+
+fn source_parse_status(code: &str, path: &str) -> SourceParseStatus {
+	let Some(language) = pi_ast::SupportLang::from_path(Path::new(path)) else {
+		return SourceParseStatus::Unknown;
+	};
+	// The lightweight PowerShell grammar rejects valid PS7 constructs. Neither
+	// its success nor its errors establish syntax validity for edit repair.
+	if language == pi_ast::SupportLang::Powershell {
+		return SourceParseStatus::Unknown;
+	}
 	let code = if code.is_empty() { "\n" } else { code };
-	pi_ast::summary::summarize_code(pi_ast::summary::SummaryOptions {
-		code:               code.to_owned(),
-		lang:               None,
-		path:               Some(path.to_owned()),
-		min_body_lines:     None,
-		min_comment_lines:  None,
-		unfold_until_lines: None,
-		unfold_limit_lines: None,
-	})
-	.is_ok_and(|summary| summary.parsed)
+	match pi_ast::parse_cache::parse_cached(code, language) {
+		Ok(Some(tree)) if tree.root_node().has_error() => SourceParseStatus::Unparsed,
+		Ok(Some(_)) => SourceParseStatus::Parsed,
+		Ok(None) | Err(_) => SourceParseStatus::Unknown,
+	}
+}
+
+/// True only for a clean parse from a grammar trusted by the edit guard.
+///
+/// Unknown languages and incomplete PowerShell grammar results are uncertain,
+/// not proof of invalid syntax, and cannot establish a regression baseline.
+pub fn source_parses(code: &str, path: &str) -> bool {
+	source_parse_status(code, path) == SourceParseStatus::Parsed
 }
 
 /// The persisted bytes differ from what was sent (an editor reformatted on

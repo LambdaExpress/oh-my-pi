@@ -3,8 +3,10 @@ Transfers one file between the local filesystem and an SSH host or local WSL dis
 - You MUST use this for local ↔ remote file content.
 - You NEVER embed file bytes or base64 in `ssh` commands.
 - One call handles one regular file; directories and batches are unsupported.
+- `local_path` accepts file-backed internal URLs such as `local://file`; download targets MUST be mutable. `remote_path` never accepts internal URLs.
 - `remote_path` MUST be absolute for the detected remote platform.
 - Existing destinations are rejected unless `overwrite: true`.
+- Lost commit acknowledgement means uncertain completion; inspect preservation evidence before retrying.
 - POSIX overwrite MAY use platform move commands when exact replacement is unavailable; a narrow concurrent-target race remains.
 - Set `async: true` for background transfer and live progress.
 - Background completion arrives automatically; use `job` only to inspect or cancel.

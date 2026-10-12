@@ -47,6 +47,7 @@ The tool returns a single text block in `content[0].text` plus structured `detai
   - `displayContent` — TUI-only rendering text with `│` gutters instead of model anchors.
   - `missingPaths` — multi-path entries skipped because their base path did not exist.
 - No-match result text is `No matches found` (or `No more results (...)` when `skip` points past the last file page), optionally followed by skipped missing-path, unreadable-archive, or oversized-file notes.
+- Per-file, total-match, native-collection, and final-byte limits are disclosed in the returned text as well as metadata. Notices remain visible when the output itself is clipped; an exhausted collected page can still represent a partial search.
 
 ## Flow
 1. `GrepTool.execute()` validates and normalizes input in `packages/coding-agent/src/tools/grep.ts`:
@@ -139,6 +140,7 @@ The tool returns a single text block in `content[0].text` plus structured `detai
 - Final text truncation: `truncateHead()` default byte cap `50 * 1024` bytes (`DEFAULT_MAX_BYTES` in `packages/tui/src/tools/streaming-output.ts`). `grep.ts` overrides `maxLines` to `Number.MAX_SAFE_INTEGER`, so normal grep output is byte-capped, not line-capped.
 - Context defaults: `grep.contextBefore = 1`, `grep.contextAfter = 3` in `packages/coding-agent/src/tools/settings.ts`.
 - Pagination: `skip` is a file-page offset for multi-file scopes. The result text says `Use skip=<N> for the next page` when more files remain.
+- Per-file overflow requires a narrower pattern or a single-file line range, such as `src/file.ts:201-`; `skip` does not paginate matches inside a file. Per-file notices provide an addressed continuation example.
 - Native directory-scan cache: disabled natively for this tool — `GrepOptions` has no `cache` field; `build_grep_walk_request` hard-codes `.cache(false)` in `crates/pi-natives/src/grep.rs`.
 - Native grep wall-clock budget: `30_000ms` per invocation (`SEARCH_GREP_TIMEOUT_MS` in `packages/coding-agent/src/tools/grep.ts`); hitting it raises `Grep timed out after 30s; ...`.
 - Native per-file search window: `4 * 1024 * 1024` bytes (`MAX_FILE_BYTES` in `crates/pi-natives/src/grep.rs`, mirrored as `NATIVE_GREP_MAX_FILE_BYTES` in `grep.ts`). Oversized host and internal-URL files are searched only over their leading window; directory scans defer them until normal-sized files have been searched and may omit that pass once the match budget is satisfied. Explicit oversized file scopes receive a partial-coverage note; oversized files whose prefix cannot be read contribute a skipped-file count.

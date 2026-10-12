@@ -7,7 +7,7 @@ import { InternalUrlFilesystem } from "@oh-my-pi/pi-coding-agent/internal-urls/u
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { resolveExplicitSearchPaths } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
-import { GrepTool } from "../../src/tools/grep";
+import { GrepTool, MULTI_FILE_PER_FILE_MATCHES, SINGLE_FILE_MATCHES } from "../../src/tools/grep";
 
 const testSettings = Settings.isolated();
 const isWindows = process.platform === "win32";
@@ -30,6 +30,130 @@ function getText(result: { content: Array<{ type: string; text?: string }> }): s
 		.map(entry => entry.text ?? "")
 		.join("\n");
 }
+
+describe("search match-limit disclosure", () => {
+	let cwd: string;
+
+	beforeEach(async () => {
+		cwd = await fs.mkdtemp(path.join(os.tmpdir(), "pi-search-limits-"));
+	});
+
+	afterEach(async () => {
+		await removeWithRetries(cwd);
+	});
+
+	function createTool(totalMatchLimit?: number): GrepTool {
+		return new GrepTool(
+			createTestSession(cwd, {
+				settings: Settings.isolated({ "grep.contextBefore": 0, "grep.contextAfter": 0 }),
+			}),
+			{ totalMatchLimit },
+		);
+	}
+
+	it("discloses omitted per-file matches and retrieves them with narrower queries", async () => {
+		for (const name of ["alpha", "beta"]) {
+			await Bun.write(
+				path.join(cwd, `${name}.txt`),
+				`${Array.from({ length: MULTI_FILE_PER_FILE_MATCHES + 5 }, (_, i) => `needle ${name} ${i + 1}`).join("\n")}\nlate-callsite ${name}\n`,
+			);
+		}
+		const tool = createTool();
+		const broad = await tool.execute("broad", {
+			pattern: "needle|late-callsite",
+			path: "alpha.txt;beta.txt",
+		});
+		const broadText = getText(broad);
+		expect(broad.details?.matchCount).toBe(MULTI_FILE_PER_FILE_MATCHES * 2);
+		expect(broad.details?.truncated).toBe(true);
+		expect(broadText).not.toContain("late-callsite alpha");
+		expect(broadText).not.toContain("late-callsite beta");
+		expect(broadText).toMatch(/per-file.*limit/i);
+		expect(broadText).toMatch(/alpha\.txt:\d+-/);
+		expect(broad.details?.displayContent).toMatch(/per-file.*limit/i);
+
+		const narrow = await tool.execute("narrow", { pattern: "late-callsite", path: "alpha.txt" });
+		expect(getText(narrow)).toContain("late-callsite alpha");
+		expect(narrow.details?.truncated).toBe(false);
+		const ranged = await tool.execute("range", {
+			pattern: "needle|late-callsite",
+			path: `alpha.txt:${MULTI_FILE_PER_FILE_MATCHES + 1}-;beta.txt:${MULTI_FILE_PER_FILE_MATCHES + 1}-`,
+		});
+		expect(getText(ranged)).toContain("late-callsite alpha");
+		expect(getText(ranged)).toContain("late-callsite beta");
+		expect(ranged.details?.truncated).toBe(false);
+	});
+
+	it("does not report overflow at the exact per-file boundary or for absent matches", async () => {
+		for (const name of ["alpha", "beta"]) {
+			await Bun.write(
+				path.join(cwd, `${name}.txt`),
+				Array.from({ length: MULTI_FILE_PER_FILE_MATCHES }, (_, i) => `needle ${name} ${i}`).join("\n"),
+			);
+		}
+		const tool = createTool();
+		const boundary = await tool.execute("boundary", { pattern: "needle", path: "alpha.txt;beta.txt" });
+		expect(boundary.details?.matchCount).toBe(MULTI_FILE_PER_FILE_MATCHES * 2);
+		expect(boundary.details?.truncated).toBe(false);
+		const absent = await tool.execute("absent", { pattern: "absent", path: "alpha.txt;beta.txt" });
+		expect(absent.details?.matchCount).toBe(0);
+		expect(absent.details?.truncated).toBe(false);
+		expect(getText(absent)).not.toMatch(/limit|omitted|truncated/i);
+	});
+
+	it("discloses a caller's total match cap without treating it as a per-file cap", async () => {
+		for (const name of ["alpha", "beta"]) {
+			await Bun.write(path.join(cwd, `${name}.txt`), `needle ${name} first\nneedle ${name} second\n`);
+		}
+		const tool = createTool(2);
+		const result = await tool.execute("total-cap", { pattern: "needle", path: "alpha.txt;beta.txt" });
+		expect(result.details?.matchCount).toBe(2);
+		expect(result.details?.truncated).toBe(true);
+		expect(getText(result)).toMatch(/total.*match.*limit/i);
+		expect(getText(result)).not.toMatch(/per-file.*limit/i);
+		expect(result.details?.displayContent).toMatch(/total.*match.*limit/i);
+	});
+
+	it("retains retrieval instructions when the byte cap clips matches", async () => {
+		await Bun.write(
+			path.join(cwd, "large.txt"),
+			Array.from({ length: SINGLE_FILE_MATCHES + 1 }, (_, i) => `needle ${i} ${"x".repeat(450)}`).join("\n"),
+		);
+		const result = await createTool().execute("byte-cap", { pattern: "needle", path: "large.txt" });
+		const text = getText(result);
+		expect(result.details?.truncation?.truncated).toBe(true);
+		expect(Buffer.byteLength(text, "utf-8")).toBeLessThanOrEqual(50 * 1024);
+		expect(text).toMatch(/per-file.*limit/i);
+		expect(text).toMatch(/large\.txt:\d+-/);
+		expect(text).toMatch(/byte.*limit/i);
+	});
+
+	it("discloses native total clipping and keeps exhausted collected pages partial", async () => {
+		await Promise.all(
+			Array.from({ length: 101 }, (_, fileIndex) =>
+				Bun.write(
+					path.join(cwd, `${String(fileIndex).padStart(3, "0")}.txt`),
+					Array.from(
+						{ length: MULTI_FILE_PER_FILE_MATCHES + 1 },
+						(_, lineIndex) => `needle ${fileIndex} ${lineIndex}`,
+					).join("\n"),
+				),
+			),
+		);
+		const tool = createTool();
+		const first = await tool.execute("native-total", { pattern: "needle", path: "." });
+		expect(first.details?.truncated).toBe(true);
+		expect(getText(first)).toMatch(/native total.*limit/i);
+		const pastCollected = await tool.execute("past-collected", { pattern: "needle", path: ".", skip: 101 });
+		expect(pastCollected.details?.matchCount).toBe(0);
+		expect(pastCollected.details?.truncated).toBe(true);
+		expect(getText(pastCollected)).toMatch(/collected results/i);
+		expect(getText(pastCollected)).toMatch(/may be omitted/i);
+		const narrow = await tool.execute("native-total-narrow", { pattern: "needle", path: "100.txt" });
+		expect(narrow.details?.matchCount).toBe(MULTI_FILE_PER_FILE_MATCHES + 1);
+		expect(narrow.details?.truncated).toBe(false);
+	});
+});
 
 describe.skipIf(isWindows)("resolveExplicitSearchPaths cross-tree degeneracy", () => {
 	it("returns per-path targets when commonBasePath collapses to filesystem root", async () => {

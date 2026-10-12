@@ -29,6 +29,7 @@ const SSH_TRANSFER_RECOVERY_MS = 20_000;
 const SSH_TRANSFER_STAGE_TERMINATE_MS = 2_000;
 const SSH_TRANSFER_PROGRESS_INTERVAL_MS = 250;
 const SSH_TRANSFER_COMMIT_MARKER = "OMP_TRANSFER_COMMITTED";
+const SSH_TRANSFER_STATE_MARKER = "OMP_TRANSFER_STATE ";
 const SSH_TRANSFER_PROGRESS_MARKER = "OMP_TRANSFER_PROGRESS ";
 
 type RemoteTransferMode =
@@ -153,6 +154,7 @@ ${body}
 	[Console]::Error.WriteLine($_.Exception.Message)
 	exit 1
 }
+exit 0
 `;
 }
 
@@ -1229,12 +1231,24 @@ function buildPosixExchangeCommand(strategy: "remote-linux-exchange" | "remote-m
 	return `python3 -c ${quotePosixPath(code)} "$stage" "$destination"`;
 }
 
+function buildPosixUploadAcknowledgementScript(): string {
+	return `printf '%s\\n' '${SSH_TRANSFER_COMMIT_MARKER}'
+if IFS= read -r acknowledgement && [ "$acknowledgement" = ACK ]; then
+	if [ -L "$destination" ] || [ ! "$destination" -ef "$proof" ]; then
+		printf '%s\\n' 'destination identity changed after commit; transfer proof and displaced entry are preserved' >&2
+		exit 1
+	fi
+	rm -f -- "$stage" "$backup" || exit 1
+	rm -f -- "$proof" || exit 1
+fi
+exit 0`;
+}
+
 function buildPosixUploadCommitScript(plan: SshFileTransferPlan, artifacts: RemoteTransferArtifacts): string {
 	const stage = quotePosixPath(artifacts.stagePath);
 	const proof = quotePosixPath(artifacts.proofPath);
 	const backup = quotePosixPath(artifacts.backupPath);
 	const destination = quotePosixPath(plan.remotePath);
-	const nestedStage = quotePosixPath(path.posix.join(plan.remotePath, path.posix.basename(artifacts.stagePath)));
 	let commit: string;
 	switch (plan.commitStrategy) {
 		case "no-replace":
@@ -1259,13 +1273,9 @@ else
 		exit 1
 	fi
 	if [ -L "$stage" ] || [ -f "$stage" ]; then
-		rm -f -- "$stage" || exit 1
+		:
 	else
-		if ! ${exchange}; then
-			printf '%s\\n' 'destination became special and exchange rollback failed' >&2
-			exit 1
-		fi
-		printf '%s\\n' 'destination is a directory or special file; commit rolled back' >&2
+		printf '%s\\n' 'destination became a directory or special file; displaced entry is preserved at stage' >&2
 		exit 1
 	fi
 fi`;
@@ -1298,7 +1308,6 @@ stage=${stage}
 proof=${proof}
 backup=${backup}
 destination=${destination}
-nested_stage=${nestedStage}
 if [ ! -f "$stage" ] || [ -L "$stage" ]; then
 	printf '%s\\n' 'staged transfer is missing or is not a regular file' >&2
 	exit 1
@@ -1320,20 +1329,11 @@ if ! ln "$stage" "$proof"; then
 	fi
 fi
 ${commit}
-if [ ! "$destination" -ef "$proof" ]; then
-	if [ -e "$nested_stage" ] && [ "$nested_stage" -ef "$proof" ]; then
-		rm -f -- "$nested_stage"
-	fi
-	if [ -e "$stage" ] && [ "$stage" -ef "$proof" ]; then
-		rm -f -- "$stage"
-	fi
+if [ -L "$destination" ] || [ ! "$destination" -ef "$proof" ]; then
 	printf '%s\\n' 'destination identity does not match transfer proof' >&2
 	exit 1
 fi
-printf '%s\\n' '${SSH_TRANSFER_COMMIT_MARKER}'
-if IFS= read -r acknowledgement && [ "$acknowledgement" = ACK ]; then
-	rm -f -- "$stage" "$proof" "$backup" || exit 1
-fi
+${buildPosixUploadAcknowledgementScript()}
 `;
 }
 
@@ -1375,7 +1375,7 @@ public static class OmpSshTransferNative {
 
 	private static ByHandleFileInformation Identity(string path) {
 		using (SafeFileHandle handle = CreateFileW(
-			path, 0x80, 0x7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+			path, 0x80, 0x7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
 			if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
 			ByHandleFileInformation information;
 			if (!GetFileInformationByHandle(handle, out information)) {
@@ -1408,6 +1408,25 @@ public static class OmpSshTransferNative {
 }
 `;
 
+function buildPowerShellUploadAcknowledgementScript(): string {
+	return `
+[Console]::Out.WriteLine('${SSH_TRANSFER_COMMIT_MARKER}')
+[Console]::Out.Flush()
+$acknowledgement = [Console]::In.ReadLine()
+if ($acknowledgement -eq 'ACK') {
+	if (-not [OmpSshTransferNative]::SameFile($destination, $proof)) {
+		throw 'destination identity changed after commit; transfer proof and backup are preserved'
+	}
+	foreach ($artifact in @($stage, $backup)) {
+		if ($null -ne (Get-Item -LiteralPath $artifact -Force -ErrorAction SilentlyContinue)) {
+			Remove-Item -LiteralPath $artifact -Force -ErrorAction Stop
+		}
+	}
+	Remove-Item -LiteralPath $proof -Force -ErrorAction Stop
+}
+`;
+}
+
 function buildPowerShellUploadCommitScript(plan: SshFileTransferPlan, artifacts: RemoteTransferArtifacts): string {
 	const overwriteCommit =
 		plan.commitStrategy === "no-replace"
@@ -1427,14 +1446,8 @@ if ($null -eq $item) {
 	[OmpSshTransferNative]::Replace($destination, $stage, $backup)
 	$old = Get-Item -LiteralPath $backup -Force -ErrorAction Stop
 	if ($old.PSIsContainer -and (($old.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)) {
-		try {
-			[OmpSshTransferNative]::Replace($destination, $backup, $stage)
-		} catch {
-			throw "destination became special and rollback failed: $($_.Exception.Message)"
-		}
-		throw 'destination is a directory or special file; commit rolled back'
+		throw 'destination became a directory or special file; displaced entry is preserved at backup'
 	}
-	Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
 }
 `;
 	return wrapPowerShellTransferScript(`
@@ -1460,68 +1473,37 @@ ${overwriteCommit}
 if (-not [OmpSshTransferNative]::SameFile($destination, $proof)) {
 	throw 'destination identity does not match transfer proof'
 }
-[Console]::Out.WriteLine('${SSH_TRANSFER_COMMIT_MARKER}')
-$acknowledgement = [Console]::In.ReadLine()
-if ($acknowledgement -eq 'ACK') {
-	Remove-Item -LiteralPath $stage, $proof, $backup -Force -ErrorAction SilentlyContinue
-}
+${buildPowerShellUploadAcknowledgementScript()}
 `);
 }
 
 function buildPosixUploadRecoveryScript(plan: SshFileTransferPlan, artifacts: RemoteTransferArtifacts): string {
-	const exchange =
-		plan.commitStrategy === "remote-linux-exchange" || plan.commitStrategy === "remote-macos-swap"
-			? buildPosixExchangeCommand(plan.commitStrategy)
-			: undefined;
-	const nestedStage = quotePosixPath(path.posix.join(plan.remotePath, path.posix.basename(artifacts.stagePath)));
-	const specialRollback = exchange
-		? `if ! ${exchange}; then
-	printf '%s\\n' 'destination matched proof but special-file rollback failed; residual paths remain' >&2
-	exit 1
-fi
-rm -f -- "$stage" "$proof"
-printf '%s\\n' 'destination became a directory or special file; commit rolled back' >&2
-exit 1`
-		: `printf '%s\\n' 'destination matched proof but a special displaced stage remains' >&2
-exit 1`;
 	return `set -u
 stage=${quotePosixPath(artifacts.stagePath)}
 proof=${quotePosixPath(artifacts.proofPath)}
 backup=${quotePosixPath(artifacts.backupPath)}
 destination=${quotePosixPath(plan.remotePath)}
-nested_stage=${nestedStage}
-if [ -e "$proof" ] && [ "$destination" -ef "$proof" ]; then
-	if [ -e "$stage" ] || [ -L "$stage" ]; then
-		if [ "$stage" -ef "$proof" ] || [ -L "$stage" ] || [ -f "$stage" ]; then
-			rm -f -- "$stage" || exit 1
-		else
-			${specialRollback}
-		fi
+proof_state=missing
+backup_state=missing
+stage_state=missing
+destination_state=missing
+if [ -e "$proof" ] || [ -L "$proof" ]; then proof_state=present; fi
+if [ -e "$backup" ] || [ -L "$backup" ]; then backup_state=present; fi
+if [ -e "$stage" ] || [ -L "$stage" ]; then stage_state=present; fi
+if [ -e "$destination" ] || [ -L "$destination" ]; then destination_state=different; fi
+if [ -f "$proof" ] && [ ! -L "$proof" ]; then
+	if [ ! -L "$stage" ] && [ "$stage" -ef "$proof" ]; then stage_state=uploaded; fi
+	if [ ! -L "$destination" ] && [ "$destination" -ef "$proof" ]; then destination_state=uploaded; fi
+fi
+printf '${SSH_TRANSFER_STATE_MARKER}%s|%s|%s|%s\\n' "$destination_state" "$stage_state" "$proof_state" "$backup_state"
+if [ "$destination_state" = uploaded ]; then
+	if [ "$stage_state" = present ] && [ ! -f "$stage" ] && [ ! -L "$stage" ]; then
+		printf '%s\\n' 'displaced directory or special file is preserved at stage; recovery left the destination unchanged' >&2
+		exit 1
 	fi
-	rm -f -- "$backup" "$proof" || exit 1
-	printf '%s\\n' '${SSH_TRANSFER_COMMIT_MARKER}'
-	exit 0
+	${buildPosixUploadAcknowledgementScript()}
 fi
-if [ -e "$nested_stage" ] && [ -e "$proof" ] && [ "$nested_stage" -ef "$proof" ]; then
-	rm -f -- "$nested_stage"
-fi
-if [ -e "$stage" ] && [ -e "$proof" ] && [ "$stage" -ef "$proof" ]; then
-	rm -f -- "$stage" "$proof"
-	printf '%s\\n' 'commit did not reach the destination; staged transfer was cleaned' >&2
-	exit 1
-fi
-if [ ! -e "$stage" ] && [ ! -L "$stage" ] && [ ! -e "$proof" ] && [ ! -L "$proof" ] && [ -f "$destination" ] && [ ! -L "$destination" ]; then
-	actual_size=$(LC_ALL=C wc -c < "$destination") || exit 1
-	actual_size=$(printf '%s' "$actual_size" | tr -d '[:space:]') || exit 1
-	if [ "$actual_size" = ${plan.totalBytes} ]; then
-		rm -f -- "$backup"
-		printf '%s\\n' '${SSH_TRANSFER_COMMIT_MARKER}'
-		exit 0
-	fi
-fi
-printf '%s\\n' 'cannot determine SSH transfer commit state; residual paths:' >&2
-printf '  %s\\n' "$stage" "$proof" "$backup" >&2
-exit 1
+exit 0
 `;
 }
 
@@ -1532,26 +1514,37 @@ $stage = ${quotePowerShellString(artifacts.stagePath)}
 $proof = ${quotePowerShellString(artifacts.proofPath)}
 $backup = ${quotePowerShellString(artifacts.backupPath)}
 $destination = ${quotePowerShellString(normalizePowerShellSshPath(plan.remotePath))}
-$proofExists = Test-Path -LiteralPath $proof
-$destinationExists = Test-Path -LiteralPath $destination
-if ($proofExists -and $destinationExists -and [OmpSshTransferNative]::SameFile($destination, $proof)) {
-	Remove-Item -LiteralPath $stage, $proof, $backup -Force -ErrorAction SilentlyContinue
-	[Console]::Out.WriteLine('${SSH_TRANSFER_COMMIT_MARKER}')
-	exit 0
-}
-if ($proofExists -and (Test-Path -LiteralPath $stage) -and [OmpSshTransferNative]::SameFile($stage, $proof)) {
-	Remove-Item -LiteralPath $stage, $proof -Force -ErrorAction SilentlyContinue
-	throw 'commit did not reach the destination; staged transfer was cleaned'
-}
-if (-not $proofExists -and -not (Test-Path -LiteralPath $stage)) {
-	$item = Get-Item -LiteralPath $destination -Force -ErrorAction SilentlyContinue
-	if ($null -ne $item -and -not $item.PSIsContainer -and (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) -and $item.Length -eq ${plan.totalBytes}) {
-		Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
-		[Console]::Out.WriteLine('${SSH_TRANSFER_COMMIT_MARKER}')
-		exit 0
+function Get-TransferEntry([string]$entryPath) {
+	try {
+		return Get-Item -LiteralPath $entryPath -Force -ErrorAction Stop
+	} catch [System.Management.Automation.ItemNotFoundException] {
+		return $null
 	}
 }
-throw "cannot determine SSH transfer commit state; residual paths: $stage, $proof, $backup"
+$proofItem = Get-TransferEntry $proof
+$stageItem = Get-TransferEntry $stage
+$backupItem = Get-TransferEntry $backup
+$destinationItem = Get-TransferEntry $destination
+$proofState = if ($null -eq $proofItem) { 'missing' } else { 'present' }
+$backupState = if ($null -eq $backupItem) { 'missing' } else { 'present' }
+$stageState = if ($null -eq $stageItem) { 'missing' } else { 'present' }
+$destinationState = if ($null -eq $destinationItem) { 'missing' } else { 'different' }
+if ($null -ne $proofItem -and -not $proofItem.PSIsContainer -and (($proofItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)) {
+	if ($null -ne $stageItem -and [OmpSshTransferNative]::SameFile($stage, $proof)) {
+		$stageState = 'uploaded'
+	}
+	if ($null -ne $destinationItem -and [OmpSshTransferNative]::SameFile($destination, $proof)) {
+		$destinationState = 'uploaded'
+	}
+}
+[Console]::Out.WriteLine("${SSH_TRANSFER_STATE_MARKER}$destinationState|$stageState|$proofState|$backupState")
+[Console]::Out.Flush()
+if ($destinationState -eq 'uploaded') {
+	if ($null -ne $backupItem -and $backupItem.PSIsContainer -and (($backupItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)) {
+		throw 'displaced directory or special file is preserved at backup; recovery left the destination unchanged'
+	}
+	${buildPowerShellUploadAcknowledgementScript()}
+}
 `);
 }
 
@@ -1576,7 +1569,28 @@ Remove-Item -LiteralPath ${quotePowerShellString(artifacts.stagePath)}, ${quoteP
 
 interface SshCommitAttemptResult {
 	markerSeen: boolean;
+	preservation?: SshTransferPreservationState;
 	error?: Error;
+}
+
+interface SshTransferPreservationState {
+	destination: "uploaded" | "different" | "missing";
+	stage: "uploaded" | "present" | "missing";
+	proof: "present" | "missing";
+	backup: "present" | "missing";
+}
+
+function parseTransferPreservationState(output: string): SshTransferPreservationState | undefined {
+	const match = output.match(
+		/(?:^|\n)OMP_TRANSFER_STATE (uploaded|different|missing)\|(uploaded|present|missing)\|(present|missing)\|(present|missing)\r?(?:\n|$)/,
+	);
+	if (!match) return undefined;
+	return {
+		destination: match[1] as SshTransferPreservationState["destination"],
+		stage: match[2] as SshTransferPreservationState["stage"],
+		proof: match[3] as SshTransferPreservationState["proof"],
+		backup: match[4] as SshTransferPreservationState["backup"],
+	};
 }
 
 async function runUploadCommitAttempt(
@@ -1584,16 +1598,28 @@ async function runUploadCommitAttempt(
 	mode: RemoteTransferMode,
 	artifacts: RemoteTransferArtifacts,
 	timeoutMs?: number,
+	recovery = false,
 ): Promise<SshCommitAttemptResult> {
 	const script =
 		mode.kind === "posix"
-			? wrapInPosixShell(mode.shell, buildPosixUploadCommitScript(plan, artifacts))
-			: buildPowerShellCommand(mode.executable, buildPowerShellUploadCommitScript(plan, artifacts));
+			? wrapInPosixShell(
+					mode.shell,
+					recovery
+						? buildPosixUploadRecoveryScript(plan, artifacts)
+						: buildPosixUploadCommitScript(plan, artifacts),
+				)
+			: buildPowerShellCommand(
+					mode.executable,
+					recovery
+						? buildPowerShellUploadRecoveryScript(plan, artifacts)
+						: buildPowerShellUploadCommitScript(plan, artifacts),
+				);
 	const invocation = await buildRemoteCommandInvocation(plan.target, script, { allowStdin: true });
 	const commitTimeoutMs =
 		timeoutMs ??
 		(mode.kind === "powershell" ? SSH_TRANSFER_COMMIT_POWERSHELL_TIMEOUT_MS : SSH_TRANSFER_COMMIT_POSIX_TIMEOUT_MS);
 	let markerSeen = false;
+	let preservation: SshTransferPreservationState | undefined;
 	try {
 		using child = ptree.spawn([invocation.executable ?? "ssh", ...invocation.args], {
 			stdin: "pipe",
@@ -1609,7 +1635,8 @@ async function runUploadCommitAttempt(
 				const { done, value } = await reader.read();
 				if (done) break;
 				output = `${output}${decoder.decode(value, { stream: true })}`.slice(-8192);
-				if (!acknowledgementSent && output.includes(SSH_TRANSFER_COMMIT_MARKER)) {
+				preservation = parseTransferPreservationState(output) ?? preservation;
+				if (!acknowledgementSent && /(?:^|\n)OMP_TRANSFER_COMMITTED\r?\n/.test(output)) {
 					markerSeen = true;
 					const acknowledgement = new TextEncoder().encode("ACK\n");
 					let offset = 0;
@@ -1625,14 +1652,19 @@ async function runUploadCommitAttempt(
 				}
 			}
 			output = `${output}${decoder.decode()}`.slice(-8192);
+			preservation = parseTransferPreservationState(output) ?? preservation;
 			if (!acknowledgementSent) await child.stdin.end();
 			await child.exitedCleanly;
-			if (!markerSeen && output.includes(SSH_TRANSFER_COMMIT_MARKER)) markerSeen = true;
+			if (!markerSeen && /(?:^|\n)OMP_TRANSFER_COMMITTED\r?(?:\n|$)/.test(output)) markerSeen = true;
 			return markerSeen
-				? { markerSeen: true }
-				: { markerSeen: false, error: new Error("SSH transfer commit exited without an identity marker") };
+				? { markerSeen: true, preservation }
+				: {
+						markerSeen: false,
+						preservation,
+						error: new Error("SSH transfer completion was not confirmed by an identity marker"),
+					};
 		} catch (error) {
-			child.kill();
+			await terminateTransferStageChild(child);
 			let message = error instanceof Error ? error.message : String(error);
 			if (!message.includes("stderr")) {
 				const tail = typeof child.peekStderr === "function" ? child.peekStderr().slice(0, 512) : "";
@@ -1642,6 +1674,7 @@ async function runUploadCommitAttempt(
 				error instanceof Error && message === error.message ? error : new Error(message, { cause: error });
 			return {
 				markerSeen,
+				preservation,
 				error: commitError,
 			};
 		} finally {
@@ -1649,28 +1682,6 @@ async function runUploadCommitAttempt(
 		}
 	} finally {
 		await invocation.cleanup?.();
-	}
-}
-
-async function recoverUploadCommit(
-	plan: SshFileTransferPlan,
-	mode: RemoteTransferMode,
-	artifacts: RemoteTransferArtifacts,
-	timeoutMs: number,
-): Promise<void> {
-	const text =
-		mode.kind === "posix"
-			? await runRemotePosixText(plan.target, mode.shell, buildPosixUploadRecoveryScript(plan, artifacts), {
-					timeoutMs,
-				})
-			: await runRemotePowerShellText(
-					plan.target,
-					mode.executable,
-					buildPowerShellUploadRecoveryScript(plan, artifacts),
-					{ timeoutMs },
-				);
-	if (!text.includes(SSH_TRANSFER_COMMIT_MARKER)) {
-		throw new Error("SSH transfer recovery completed without an identity marker");
 	}
 }
 
@@ -1733,12 +1744,15 @@ async function executeUploadTransfer(
 						artifacts.backupPath
 					}. ${describeTransferError(cleanupError)}`;
 		if (signal?.aborted) {
-			throw new SshFileTransferCancelledError(`SSH upload cancelled.${residual}`, { cause: error });
+			throw new SshFileTransferCancelledError(
+				`SSH upload cancelled before commit; this transfer did not modify the destination.${residual}`,
+				{ cause: error },
+			);
 		}
-		if (cleanupError !== undefined) {
-			throw new Error(`${describeTransferError(error)}.${residual}`, { cause: error });
-		}
-		throw error;
+		throw new Error(
+			`SSH upload staging failed (${describeTransferError(error)}); commit was not attempted and this transfer did not modify the destination.${residual}`,
+			{ cause: error },
+		);
 	}
 
 	if (signal?.aborted) {
@@ -1760,29 +1774,58 @@ async function executeUploadTransfer(
 				: ` Cleanup failed; possible residual paths: ${artifacts.stagePath}, ${artifacts.proofPath}, ${
 						artifacts.backupPath
 					}. ${describeTransferError(cleanupError)}`;
-		throw new SshFileTransferCancelledError(`SSH upload cancelled before commit.${suffix}`);
-	}
-
-	let attempt = await runUploadCommitAttempt(plan, mode, artifacts);
-	if (attempt.error === undefined && attempt.markerSeen) return;
-	// Retry once when the commit died before the identity marker was acknowledged: the
-	// commit script is idempotent (it tolerates an existing proof hardlink), so a timed-out
-	// attempt that actually committed on the remote is confirmed on the retry.
-	if (attempt.error !== undefined && !attempt.markerSeen && !signal?.aborted) {
-		attempt = await runUploadCommitAttempt(plan, mode, artifacts);
-		if (attempt.error === undefined && attempt.markerSeen) return;
-	}
-	try {
-		await recoverUploadCommit(plan, mode, artifacts, SSH_TRANSFER_RECOVERY_MS);
-	} catch (recoveryError) {
-		const attemptMessage = attempt.error ? describeTransferError(attempt.error) : "commit acknowledgement was lost";
-		throw new Error(
-			`SSH upload commit failed (${attemptMessage}); recovery failed (${describeTransferError(
-				recoveryError,
-			)}). Possible residual paths: ${artifacts.stagePath}, ${artifacts.proofPath}, ${artifacts.backupPath}`,
-			{ cause: recoveryError },
+		throw new SshFileTransferCancelledError(
+			`SSH upload cancelled before commit; this transfer did not modify the destination.${suffix}`,
 		);
 	}
+
+	const attempt = await runUploadCommitAttempt(plan, mode, artifacts);
+	if (attempt.error === undefined && attempt.markerSeen) return;
+	// A commit may already have exchanged the stage with the old destination.
+	// Replaying it could install that old file over an unrelated destination;
+	// recovery inspects identity and never retries a replacement or rollback.
+	let recovery: SshCommitAttemptResult;
+	try {
+		recovery = await runUploadCommitAttempt(plan, mode, artifacts, SSH_TRANSFER_RECOVERY_MS, true);
+	} catch (recoveryError) {
+		recovery = {
+			markerSeen: false,
+			error:
+				recoveryError instanceof Error
+					? recoveryError
+					: new Error(describeTransferError(recoveryError), { cause: recoveryError }),
+		};
+	}
+	if (recovery.error === undefined && recovery.markerSeen) return;
+	const state = recovery.preservation;
+	let preservation =
+		"The current destination version and previous-destination preservation are unknown because recovery could not inspect them.";
+	if (state) {
+		let previous = "previous-destination preservation could not be established.";
+		if (state.backup === "present") {
+			previous = recovery.markerSeen
+				? `a displaced destination backup was observed at ${artifacts.backupPath}; its preservation after acknowledgement is unknown.`
+				: `recovery left the displaced destination backup untouched at ${artifacts.backupPath}.`;
+		} else if (state.stage === "present") {
+			previous = recovery.markerSeen
+				? `a displaced or unrecognized stage was observed at ${artifacts.stagePath}; its preservation after acknowledgement is unknown.`
+				: `recovery left a displaced or unrecognized stage untouched at ${artifacts.stagePath}; previous-destination identity is unknown.`;
+		}
+		preservation =
+			`Recovery observed destination=${state.destination}, stage=${state.stage}, proof=${state.proof}, backup=${state.backup}; ` +
+			previous;
+	}
+	const acknowledged = attempt.markerSeen || recovery.markerSeen;
+	throw new Error(
+		`SSH upload completion is uncertain (${attempt.error ? describeTransferError(attempt.error) : "final acknowledgement was lost"}); ` +
+			`recovery did not settle (${recovery.error ? describeTransferError(recovery.error) : "identity was not confirmed"}). ` +
+			(acknowledged
+				? "The destination matched the uploaded file when the commit marker was emitted; final cleanup is unconfirmed. "
+				: "") +
+			`${preservation} Recovery never overwrites the destination. Local source is unchanged: ${plan.localPath}. ` +
+			`Transfer artifact paths: ${artifacts.stagePath}, ${artifacts.proofPath}, ${artifacts.backupPath}`,
+		{ cause: recovery.error ?? attempt.error },
+	);
 }
 
 async function ensureDownloadParentDirectory(parent: string): Promise<void> {

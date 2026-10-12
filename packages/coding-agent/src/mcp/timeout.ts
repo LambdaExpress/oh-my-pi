@@ -20,11 +20,22 @@ export function resolveMCPTimeoutMs(configTimeout?: number): number {
 	return configTimeout ?? DEFAULT_MCP_TIMEOUT_MS;
 }
 
-/** Tool execution may legitimately stream or download for much longer than discovery requests. */
+/** Resource reads and catalogs must not inherit a long, side-effecting tool execution budget. */
 export function resolveMCPRequestTimeoutMs(method: string, configTimeout?: number): number {
 	const raw = Bun.env[MCP_TIMEOUT_ENV]?.trim();
-	if (raw || configTimeout !== undefined || method !== "tools/call") return resolveMCPTimeoutMs(configTimeout);
-	return DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS;
+	const timeoutMs =
+		raw || configTimeout !== undefined || method !== "tools/call"
+			? resolveMCPTimeoutMs(configTimeout)
+			: DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS;
+	const explicitEnvTimeout = raw && Number.isFinite(Number(raw)) && Number(raw) >= 0;
+	if (
+		!explicitEnvTimeout &&
+		isMCPTimeoutEnabled(timeoutMs) &&
+		(method === "resources/read" || method === "resources/list" || method === "resources/templates/list")
+	) {
+		return Math.min(timeoutMs, DEFAULT_MCP_TIMEOUT_MS);
+	}
+	return timeoutMs;
 }
 
 /** Resolve the non-blocking discovery window; zero waits for initial connections to settle. */

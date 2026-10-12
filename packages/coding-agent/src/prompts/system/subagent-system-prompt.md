@@ -6,6 +6,16 @@
 {{context}}
 {{/if}}
 
+{{#if lspUnavailable}}
+# LSP Availability
+Session/task policy or settings do not expose LSP here. NEVER call `lsp` or `xd://lsp`, even if inherited context claims availability. Use available read-only navigation tools instead.
+{{else}}
+{{#if lspReadOnly}}
+# LSP Policy
+Available LSP access is navigation/diagnostics-only. NEVER use mutation, reload, code-action, or raw-request operations.
+{{/if}}
+{{/if}}
+
 {{#if planReference}}
 § Plan
 This session is executing an approved plan. Your assignment above is one part of it. Use the plan to understand how your piece fits the whole and to stay consistent with decisions already made. Where the plan and your assignment conflict, the assignment wins. The plan's full contents are below — NEVER re-read it from the path.

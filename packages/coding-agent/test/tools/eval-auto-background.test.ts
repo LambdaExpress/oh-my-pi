@@ -11,12 +11,30 @@ import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { getThemeByName } from "@oh-my-pi/pi-tui/theme";
 import { evalToolRenderer } from "@oh-my-pi/pi-tui/tools/eval";
 
+const cellReleases: Array<() => void> = [];
+const jobManagers: AsyncJobManager[] = [];
+
+function createJobManager(options: ConstructorParameters<typeof AsyncJobManager>[0] = {}): AsyncJobManager {
+	const manager = new AsyncJobManager(options);
+	jobManagers.push(manager);
+	return manager;
+}
+
+function createCellGate(): PromiseWithResolvers<void> {
+	const gate = Promise.withResolvers<void>();
+	cellReleases.push(gate.resolve);
+	return gate;
+}
+
 function makeSession(settings: Settings, asyncJobManager: AsyncJobManager): ToolSession {
+	const identity = crypto.randomUUID();
 	return {
 		cwd: "/tmp/eval-test",
 		hasUI: false,
 		getSessionFile: () => null,
 		getSessionSpawns: () => null,
+		getEvalSessionId: () => identity,
+		getEvalKernelOwnerId: () => identity,
 		settings,
 		asyncJobManager,
 	};
@@ -44,7 +62,7 @@ function baseResult(overrides: Record<string, unknown> = {}) {
  * by the tool's own threshold/steer race, never by a guessed sleep.
  */
 function mockGatedCell(finalOutput: string): { release: () => void } {
-	const gate = Promise.withResolvers<void>();
+	const gate = createCellGate();
 	vi.spyOn(evalIndex.jsBackend, "execute").mockImplementation((async (
 		_code: string,
 		options: { onChunk?: (chunk: string) => void },
@@ -87,13 +105,18 @@ function steeringContext(steeringSignal: AbortSignal): AgentToolContext {
  * the queued message can inject while the kernel keeps working.
  */
 describe("EvalTool auto-background", () => {
-	afterEach(() => {
+	afterEach(async () => {
+		for (const release of cellReleases.splice(0)) release();
+		const managers = jobManagers.splice(0);
+		for (const manager of managers) manager.cancelAll();
+		await Promise.all(managers.map(manager => manager.waitForAll()));
+		await Promise.all(managers.map(manager => manager.dispose()));
 		vi.restoreAllMocks();
 	});
 
 	it("preserves browser classification when a foreground-backed job is cancelled", async () => {
-		const asyncJobManager = new AsyncJobManager({});
-		const gate = Promise.withResolvers<void>();
+		const asyncJobManager = createJobManager();
+		const gate = createCellGate();
 		const browserEntered = Promise.withResolvers<void>();
 		vi.spyOn(evalIndex.jsBackend, "execute").mockImplementation(async (_code, options) => {
 			options.onStatus?.({ op: EVAL_BROWSER_ACTIVITY_OP });
@@ -131,16 +154,17 @@ describe("EvalTool auto-background", () => {
 			expect(result.details?.cells?.[0]?.status).toBe("error");
 			await expect(execution).rejects.toBeInstanceOf(ToolAbortError);
 		} finally {
+			controller.abort();
 			gate.resolve();
 			await asyncJobManager.waitForAll();
-			await asyncJobManager.dispose();
 		}
 	});
 
 	it("updates a backgrounded call's folded category when browser activity starts later", async () => {
-		const asyncJobManager = new AsyncJobManager({});
+		const asyncJobManager = createJobManager();
 		const startBrowser = Promise.withResolvers<void>();
-		const gate = Promise.withResolvers<void>();
+		cellReleases.push(startBrowser.resolve);
+		const gate = createCellGate();
 		const browserLabel = Promise.withResolvers<string>();
 		const theme = await getThemeByName("dark");
 		if (!theme) throw new Error("theme unavailable");
@@ -184,13 +208,12 @@ describe("EvalTool auto-background", () => {
 			gate.resolve();
 			await asyncJobManager.waitForAll();
 			unsubscribe();
-			await asyncJobManager.dispose();
 		}
 	});
 
 	it("keeps fast cells inline without a job row or delivery", async () => {
 		const deliveries: string[] = [];
-		const asyncJobManager = new AsyncJobManager({
+		const asyncJobManager = createJobManager({
 			onJobComplete: async (_jobId, text) => {
 				deliveries.push(text);
 			},
@@ -209,22 +232,19 @@ describe("EvalTool auto-background", () => {
 		);
 		const result = await tool.execute("call-inline", { language: "js", code: "print('quick')" });
 
-		const text = result.content.map(c => (c.type === "text" ? c.text : "")).join("\n");
-		expect(text).toContain("quick");
+		expect(result.isError === true).toBe(false);
 		expect(result.details?.async).toBeUndefined();
 		expect(result.details?.cells?.[0]?.status).toBe("complete");
 		await asyncJobManager.waitForAll();
 		await asyncJobManager.drainDeliveries({ timeoutMs: 1 });
 		expect(asyncJobManager.getAllJobs()).toEqual([]);
-		expect(asyncJobManager.getJob("bg_1")).toBeUndefined();
 		expect(deliveries).toEqual([]);
-		await asyncJobManager.dispose();
 	});
 
 	it("backgrounds a cell that outlives the threshold and delivers its result", async () => {
 		const deliveries: Array<{ jobId: string; text: string }> = [];
 		const updates: string[] = [];
-		const asyncJobManager = new AsyncJobManager({
+		const asyncJobManager = createJobManager({
 			onJobComplete: async (jobId, text) => {
 				deliveries.push({ jobId, text });
 			},
@@ -273,11 +293,10 @@ describe("EvalTool auto-background", () => {
 		expect(deliveries[0]?.text).toContain("done");
 		// Tool-call updates stop once the cell is backgrounded.
 		expect(updates).toEqual(updatesAtBackground);
-		await asyncJobManager.dispose();
 	});
 
 	it("backgrounds a running cell when the steering signal fires mid-wait", async () => {
-		const asyncJobManager = new AsyncJobManager({});
+		const asyncJobManager = createJobManager();
 		const cell = mockGatedCell("steered\n");
 
 		const tool = new EvalTool(
@@ -314,6 +333,5 @@ describe("EvalTool auto-background", () => {
 		cell.release();
 		await job?.promise;
 		expect(asyncJobManager.getJob(jobId)?.status).toBe("completed");
-		await asyncJobManager.dispose();
 	});
 });

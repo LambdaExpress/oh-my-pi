@@ -253,7 +253,7 @@ Literal filesystem paths take precedence over selector interpretation, so an exi
    - `security://` is reserved for the OMP-owned, producer-neutral, read-only security-analysis store.
    - `agent://<id>` reads a subagent's output; `agent://all` is write-only. Bare `history://` lists registered agents and persisted subagents; `history://<id>` reads a transcript.
    - `proc://` lists caller-visible background jobs (including running agents without job rows) and project services; `proc://<id>` returns status and available output/logs without consuming async-result delivery. Service log files are searchable with `grep proc://<id>`.
-   - `xd://` lists mounted tool devices; `xd://<name>` returns that device's input documentation. Writing JSON to the same URI dispatches the device through `write`.
+   - `xd://` lists mounted tool devices; `xd://<name>` returns that device's input documentation. Device documentation and topics support shared line/raw selectors, such as `xd://eval/helpers:raw:1-140`. Writing JSON to the device URI dispatches it through `write`.
    - `ssh://host/<path>` reads a remote UTF-8 file or directory; bare `ssh://` lists configured hosts. Remote paths are limited to 1 MiB and require a POSIX remote shell. Percent-encode literal `:`, `?`, or `#` in the path.
    - `history://current/full` exposes the caller's complete current branch when `compaction.experimentalContextManagement` is enabled. It includes original text, tool outputs, entry IDs, and compaction boundaries. Use shared line/raw selectors such as `history://current/full:raw:1-200`; queries, fragments, extra paths, and trailing slashes are rejected. It requires a matching live session owner and never falls back to registry or disk lookup. Bare `history://current` still names an ordinary agent called `current`. See [experimental context windows](../compaction.md#experimental-notes-backed-context-windows).
 - `#handleInternalUrl()` behavior:
@@ -281,7 +281,7 @@ Literal filesystem paths take precedence over selector interpretation, so an exi
    3. fetch with `loadPage()`
    4. if content is image/PDF/DOCX/etc., try binary fetch + markit/image handling
    5. handle JSON directly, feeds via feed parser, plain text directly
-   6. for HTML and non-raw mode, try markdown alternates, `URL.md`, content negotiation, feed alternates, HTML-to-text renderers, extracted linked documents, then `llms.txt`
+   6. for HTML and non-raw mode, try markdown alternates, `URL.md`, content negotiation, HTML-to-text renderers, extracted linked documents, then `llms.txt`; advertised site/comment feeds do not replace the requested HTML article
    7. fall back to raw body text/html
 - URL output is wrapped with a small header:
 

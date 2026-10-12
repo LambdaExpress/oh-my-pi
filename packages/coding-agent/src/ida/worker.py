@@ -7,6 +7,7 @@ Response: {"id", "ok": true, "result"} | {"id", "ok": false, "error": {"type", "
 import ast
 import io
 import json
+import mmap
 import os
 import re
 import signal
@@ -57,6 +58,7 @@ import ida_xref  # noqa: E402
 import idautils  # noqa: E402
 from ida_domain import Database  # noqa: E402
 from ida_domain.database import IdaCommandOptions  # noqa: E402
+from ida_domain.strings import StringListConfig, StringType  # noqa: E402
 from ida_domain.xrefs import XrefType  # noqa: E402
 
 DB = None
@@ -64,6 +66,15 @@ NS = {}
 
 _EXEC_FILE = "<ida-exec>"
 _OVERVIEW_ENTRY_LIMIT = 50
+_STRING_MIN_LENGTH = 5
+# Each alternative is one valid UTF-8 codepoint, so the minimum is characters, not bytes.
+_RAW_UTF8_STRINGS = re.compile(
+    b"(?:[\x20-\x7e]|[\xc2-\xdf][\x80-\xbf]"
+    b"|\xe0[\xa0-\xbf][\x80-\xbf]|[\xe1-\xec\xee-\xef][\x80-\xbf]{2}"
+    b"|\xed[\x80-\x9f][\x80-\xbf]|\xf0[\x90-\xbf][\x80-\xbf]{2}"
+    b"|[\xf1-\xf3][\x80-\xbf]{3}|\xf4[\x80-\x8f][\x80-\xbf]{2})"
+    + b"{" + str(_STRING_MIN_LENGTH).encode("ascii") + b",}"
+)
 _NS_MODULES = (
     ida_bytes,
     ida_funcs,
@@ -285,16 +296,63 @@ def functions(pattern=None):
     return out
 
 
-def strings(pattern=None):
-    """[(ea, text)] of all strings, optionally filtered by case-insensitive regex."""
-    rx = _regex(pattern)
-    out = []
+def _listed_strings():
     for item in _db().strings.get_all():
-        raw = ida_bytes.get_strlit_contents(item.address, item.length, item.internal_type) or b""
-        s = raw.decode("utf-8", "replace")
-        if rx is None or rx.search(s):
-            out.append((item.address, s))
-    return out
+        # IDA converts the string's own encoding (including UTF-16/32) to UTF-8 here.
+        raw = ida_bytes.get_strlit_contents(item.address, item.length, item.internal_type)
+        if raw:
+            yield item.address, raw.decode("utf-8", "replace")
+
+
+def _raw_strings():
+    path = ida_nalt.get_input_file_path()
+    if not path:
+        raise RuntimeError("string analysis is incomplete and the database has no input file for a byte scan")
+    with open(path, "rb") as source:
+        if os.fstat(source.fileno()).st_size == 0:
+            return
+        with mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            for match in _RAW_UTF8_STRINGS.finditer(data):
+                text = match.group().decode("utf-8")
+                if text.isprintable():
+                    runs = ((0, text),)
+                else:
+                    boundaries = [-1, *(i for i, char in enumerate(text) if not char.isprintable()), len(text)]
+                    runs = (
+                        (start + 1, text[start + 1:end])
+                        for start, end in zip(boundaries, boundaries[1:])
+                        if end - start - 1 >= _STRING_MIN_LENGTH
+                    )
+                for start, run in runs:
+                    offset = match.start() + len(text[:start].encode("utf-8"))
+                    ea = ida_loader.get_fileregion_ea(offset)
+                    # Metadata can be absent from mapped segments. Never mislabel a file offset as an EA.
+                    location = f"file+0x{offset:x}" if ea == ida_idaapi.BADADDR else ea
+                    yield location, run
+
+
+def strings(pattern=None):
+    """[(ea or 'file+0x<offset>', text)], regex-filtered; missing/CLI analysis also scans UTF-8 bytes (min 5 characters)."""
+    db = _db()
+    out = dict.fromkeys(_listed_strings())
+    managed = (db.architecture or "").lower() == "cli"
+    if managed or not out:
+        # get_all() only enumerates the saved string-window list; it does not extract
+        # CLR names or strings hidden inside already-defined data/instructions.
+        db.strings.rebuild(
+            StringListConfig(
+                string_types=[StringType.C, StringType.C_16, StringType.C_32],
+                min_len=_STRING_MIN_LENGTH,
+                only_ascii_7bit=False,
+                only_existing=False,
+                ignore_instructions=True,
+            )
+        )
+        out.update(dict.fromkeys(_listed_strings()))
+        if managed or not out:
+            out.update(dict.fromkeys(_raw_strings()))
+    rx = _regex(pattern)
+    return [item for item in out if rx is None or rx.search(item[1])]
 
 
 def imports(pattern=None):
@@ -437,7 +495,7 @@ def _view_overview():
     entries = list(db.entries.get_all())
     funcs = list(_funcs())
     n_imports = sum(1 for _ in db.imports.get_all_imports())
-    n_strings = sum(1 for _ in db.strings.get_all())
+    n_strings = len(strings())
     lines = [
         f"{db.module} — {db.format}, {_ARCH_NAMES.get(db.architecture, db.architecture)} {db.bitness}-bit",
         f"base 0x{db.base_address:x} entry 0x{db.start_ip:x} range 0x{db.minimum_ea:x}-0x{db.maximum_ea:x}",
@@ -475,7 +533,19 @@ def _view_exports():
 
 
 def _view_strings():
-    return _text(f"0x{ea:x}  {json.dumps(s, ensure_ascii=False)}" for ea, s in strings())
+    items = strings()
+    if not items:
+        return (
+            f"No readable strings found by IDA and the raw UTF-8 byte scan (minimum {_STRING_MIN_LENGTH} characters); "
+            "this does not mean the binary contains no string data."
+        )
+    lines = []
+    if any(isinstance(location, str) for location, _ in items):
+        lines.append("file+0x offsets identify readable UTF-8 bytes not mapped to an analysis address.")
+    for location, text in items:
+        address = location if isinstance(location, str) else _hex(location)
+        lines.append(f"{address}  {json.dumps(text, ensure_ascii=False)}")
+    return _text(lines)
 
 
 def _view_xrefs(target):

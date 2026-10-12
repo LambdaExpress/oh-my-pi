@@ -16,7 +16,11 @@ import { attachSessionOwner, EvalKernelNotRunningError, type SessionOwners } fro
 import { shouldDetachKernel } from "../py/spawn-options";
 import { updateEvalState } from "../state";
 import type { EvalShadowCellSession } from "../speculation/cell-session";
-import { getActiveEvalShadowCell } from "../speculation/runtime-context";
+import {
+	captureEvalKernelContext,
+	type EvalKernelContextRunner,
+	getActiveEvalShadowCell,
+} from "../speculation/runtime-context";
 import type { ShadowPlan } from "../speculation/types";
 import type { EvalToolDescriptor, EvalToolInvokeResult } from "../types";
 import { type ShadowSnapshot, shadowSnapshotDigest } from "./shared/runtime";
@@ -64,6 +68,7 @@ interface PendingRun {
 	runState: VmRunState;
 	toolSession: ToolSession;
 	shadowCell?: EvalShadowCellSession;
+	runInEvalContext: EvalKernelContextRunner;
 	resolve(value: { value: unknown }): void;
 	reject(error: Error): void;
 	toolCalls: Map<string, AbortController>;
@@ -240,6 +245,7 @@ export async function invokeJsTool(
 			},
 		},
 		toolSession: options.session,
+		runInEvalContext: captureEvalKernelContext(),
 		resolve,
 		reject,
 		toolCalls: new Map(),
@@ -513,6 +519,7 @@ async function runOnce(
 		runState: options.runState,
 		toolSession: options.session,
 		shadowCell: getActiveEvalShadowCell(),
+		runInEvalContext: captureEvalKernelContext(),
 		resolve,
 		reject,
 		toolCalls: new Map(),
@@ -821,6 +828,7 @@ async function handleToolCall(session: JsSession, msg: Extract<WorkerOutbound, {
 			signal: ctrl.signal,
 			identity: msg.identity,
 			shadowCell: pending.shadowCell,
+			runInEvalContext: pending.runInEvalContext,
 			emitStatus: (event: JsStatusEvent) => {
 				trackDeferPhase(pending, event);
 				pending.runState.onDisplay?.({ type: "status", event });

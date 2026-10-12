@@ -217,6 +217,38 @@ describe("buildRemoteCommand", () => {
 		expect(args.filter(arg => arg === proxyJump)).toHaveLength(1);
 	});
 
+	it("keeps the configured command route for binary transfer invocations", async () => {
+		await withLooseKey(async keyPath => {
+			const host: connectionManager.SSHConnectionTarget = {
+				name: `route-${crypto.randomUUID()}`,
+				host: "192.0.2.10",
+				username: "tester",
+				port: 2201,
+				proxyJump: "relay@bastion.example:2222",
+				keyPath,
+			};
+			const command = await connectionManager.buildRemoteCommandInvocation(host, "Write-Output '中文'", {
+				platform: "win32",
+			});
+			const transfer = await connectionManager.buildRemoteCommandInvocation(
+				host,
+				connectionManager.buildPowerShellCommand("pwsh", "$stream.CopyTo([Console]::OpenStandardOutput())"),
+				{ platform: "win32", allowStdin: true },
+			);
+			try {
+				expect(transfer.executable).toBe(command.executable);
+				expect(transfer.args.slice(0, -1)).toEqual(command.args.slice(0, -1).filter(arg => arg !== "-n"));
+				expect(transfer.args.at(-2)).toBe("tester@192.0.2.10");
+				expect(transfer.args).toContain(keyPath);
+				expect(transfer.args).toContain("relay@bastion.example:2222");
+				expect(transfer.args).toContain("2201");
+			} finally {
+				await command.cleanup?.();
+				await transfer.cleanup?.();
+			}
+		});
+	});
+
 	it("skips Unix mode-bit key validation for Windows args", async () => {
 		await withLooseKey(async keyPath => {
 			const args = await connectionManager.buildRemoteCommand(

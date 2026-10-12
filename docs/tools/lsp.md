@@ -49,6 +49,7 @@
 
 ## Flow
 1. `packages/coding-agent/src/tools/index.ts` registers `lsp: LspTool.createIf`. The tool is present only when both `session.enableLsp !== false` and `lsp.enabled` (default `true`) allow it. A session with `lspReadOnly` rejects every action outside `LSP_READONLY_ACTIONS`; restricted sessions default both to LSP disabled and read-only if it is explicitly re-enabled.
+   - Enabled, unrestricted navigation-only sessions requesting `read` also receive LSP through the shared initial/live tool-selection plan. Subagents still require the task LSP policy to allow it; cold revival preserves navigation-only restrictions and requires a persisted LSP tool/device grant.
 2. `LspTool.execute()` in `packages/coding-agent/src/lsp/tool.ts` clamps `timeout` with `clampTimeout("lsp", ...)`, including the optional global `tools.maxTimeout` ceiling, builds an `AbortSignal.timeout(...)`, and combines it with the caller signal.
 3. `getConfig()` loads and caches `LspConfig` per cwd and reuses the cached config on later calls. Workspace `reload` is the explicit exception: it clears and rebuilds that cwd's config cache before reloading the newly selected servers.
 4. Config loading in `packages/coding-agent/src/lsp/config.ts` merges `defaults.json` with JSON/YAML overrides from project, project config dirs, user config dirs, plugin roots/marketplace metadata, and home. In every case, it filters disabled servers and requires matching root markers plus a resolvable local/PATH executable, then selects one TypeScript server. See [LSP configuration](../lsp-config.md) for filenames, precedence, and server fields.
@@ -147,7 +148,7 @@ Uses the same location normalization and output shape as `definition`, but sends
 - Optional: `timeout`.
 
 **Execution**
-- Workspace mode sends `workspace/symbol` to every non-custom LSP server, post-filters matches with `filterWorkspaceSymbols()`, deduplicates with `dedupeWorkspaceSymbols()`, then truncates to `WORKSPACE_SYMBOL_LIMIT`.
+- Workspace mode reuses matching live clients at their existing project roots and sends `workspace/symbol` only when static or dynamic capabilities support it. Project-aware TypeScript clients must have an opened semantic project. Unopened, unsupported, and unavailable scopes are identified as skipped rather than starting a synthetic cwd-root client. Results are filtered, deduplicated, and truncated to `WORKSPACE_SYMBOL_LIMIT`.
 - Document mode sends `textDocument/documentSymbol` to the primary server. If the first item has `selectionRange`, it formats hierarchical `DocumentSymbol`s; otherwise it formats flat `SymbolInformation`s.
 
 **Output text**

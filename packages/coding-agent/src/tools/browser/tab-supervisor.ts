@@ -7,7 +7,7 @@ import {
 	withTimeout,
 	workerHostEntry,
 } from "@oh-my-pi/pi-utils";
-import type { CDPSession, Page, Target } from "puppeteer-core";
+import type { CDPSession, Page, Target, Viewport } from "puppeteer-core";
 import { callSessionTool } from "../../eval/js/tool-bridge";
 import { webpExclusionForModel } from "@oh-my-pi/pi-tui/chat/image-loading";
 import type { ToolSession } from "../index";
@@ -137,7 +137,7 @@ export type TabSession = WorkerTabSession | CmuxTabSession | TernTabSession;
 export interface AcquireTabOptions {
 	url?: string;
 	waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
-	viewport?: { width: number; height: number; deviceScaleFactor?: number };
+	viewport?: Viewport;
 	target?: string;
 	signal?: AbortSignal;
 	timeoutMs: number;
@@ -382,9 +382,8 @@ async function acquireTabImpl(
 				}
 				const reuseSteps: string[] = [];
 				if (opts.viewport && browser.kind.kind !== "cmux" && browser.kind.kind !== "tern") {
-					const dsf = opts.viewport.deviceScaleFactor ?? DEFAULT_VIEWPORT.deviceScaleFactor;
 					reuseSteps.push(
-						`await page.setViewport({ width: ${opts.viewport.width}, height: ${opts.viewport.height}, deviceScaleFactor: ${dsf} });`,
+						`await page.setViewport(${JSON.stringify({ ...opts.viewport, deviceScaleFactor: opts.viewport.deviceScaleFactor ?? DEFAULT_VIEWPORT.deviceScaleFactor })});`,
 					);
 				}
 				if (opts.viewport && existing.backend === "tern") {

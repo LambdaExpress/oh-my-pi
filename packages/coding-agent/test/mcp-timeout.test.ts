@@ -33,6 +33,35 @@ describe("MCP timeout configuration", () => {
 		expect(resolveMCPRequestTimeoutMs("tools/call", 120_000)).toBe(120_000);
 	});
 
+	test.each(["resources/read", "resources/list", "resources/templates/list"])(
+		"bounds %s without inheriting a long tool deadline",
+		method => {
+			delete process.env.OMP_MCP_TIMEOUT_MS;
+
+			expect(resolveMCPRequestTimeoutMs(method, 360_000)).toBe(30_000);
+			expect(resolveMCPRequestTimeoutMs(method, 250)).toBe(250);
+			expect(resolveMCPRequestTimeoutMs(method, 0)).toBe(0);
+			expect(resolveMCPRequestTimeoutMs("tools/call", 360_000)).toBe(360_000);
+		},
+	);
+
+	test("preserves explicit environment resource deadlines, including disabled timeouts", () => {
+		process.env.OMP_MCP_TIMEOUT_MS = "60000";
+		expect(resolveMCPRequestTimeoutMs("resources/read", 250)).toBe(60_000);
+		process.env.OMP_MCP_TIMEOUT_MS = "0";
+		expect(resolveMCPRequestTimeoutMs("resources/read", 360_000)).toBe(0);
+	});
+
+	test("does not let an invalid override remove the resource deadline bound", () => {
+		process.env.OMP_MCP_TIMEOUT_MS = "not-a-number";
+		const warn = spyOn(logger, "warn").mockImplementation(() => {});
+		try {
+			expect(resolveMCPRequestTimeoutMs("resources/read", 360_000)).toBe(30_000);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
 	test("allows the env override to disable MCP client-side timeouts", () => {
 		process.env.OMP_MCP_TIMEOUT_MS = "0";
 

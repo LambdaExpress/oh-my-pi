@@ -7,7 +7,7 @@
 import * as path from "node:path";
 import * as url from "node:url";
 import type { TSchema } from "@oh-my-pi/pi-ai";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, untilAborted, withTimeout } from "@oh-my-pi/pi-utils";
 import type { EffectiveExtensionRoots, SourceMeta } from "../capability/types";
 import { resolveConfigValue } from "../config/resolve-config-value";
 import type { CustomTool } from "../extensibility/custom-tools/types";
@@ -34,6 +34,7 @@ import {
 	loadAllMCPConfigs,
 	validateServerConfig,
 } from "./config";
+import { MCPTransportError } from "./errors";
 import {
 	lookupMcpOAuthCredential,
 	type MCPOAuthCredentialLookup,
@@ -41,7 +42,12 @@ import {
 } from "./oauth-credentials";
 import type { MCPStoredOAuthCredential } from "./oauth-flow";
 import type { McpConnectionStatusEvent } from "./startup-events";
-import { resolveMCPStartupTimeoutMs } from "./timeout";
+import {
+	describeMCPTimeout,
+	isMCPTimeoutEnabled,
+	resolveMCPRequestTimeoutMs,
+	resolveMCPStartupTimeoutMs,
+} from "./timeout";
 
 import type { MCPToolDetails } from "@oh-my-pi/pi-tui/tools/mcp";
 import { DeferredMCPTool, MCPTool } from "./tool-bridge";
@@ -1162,21 +1168,76 @@ export class MCPManager {
 	 * {@link #pendingToolLoads} and therefore invisible to
 	 * {@link getConnectedServers}. Awaiting the pending work lets those callers
 	 * observe the final attached/failed state instead of racing mid-handshake.
-	 * Rejections are swallowed — the caller re-reads state afterwards.
+	 * Read-only wait budgets apply independently of a server's tool timeout.
+	 * A failed wait does not cancel shared startup work; callers can still inspect
+	 * catalogs from servers that did connect.
 	 */
-	async waitForPendingConnections(): Promise<void> {
+	async waitForPendingConnections(options?: MCPRequestOptions): Promise<void> {
+		const startedAt = Date.now();
 		// A settling tool load can arm a reconnect (startup-timeout retry), so
 		// drain in passes until no work remains. Bounded so a reconnect storm
 		// cannot spin this forever.
 		for (let pass = 0; pass < 8; pass++) {
-			const pending: Promise<unknown>[] = [
-				...this.#pendingConnections.values(),
-				...this.#pendingToolLoads.values(),
-				...this.#pendingReconnections.values(),
-			];
-			if (pending.length === 0) return;
-			await Promise.allSettled(pending);
+			options?.signal?.throwIfAborted();
+			const pending = new Map<string, Promise<unknown>[]>();
+			for (const queue of [this.#pendingConnections, this.#pendingToolLoads, this.#pendingReconnections]) {
+				for (const [name, promise] of queue) {
+					const work = pending.get(name) ?? [];
+					work.push(promise);
+					pending.set(name, work);
+				}
+			}
+			if (pending.size === 0) {
+				const unavailable = [...this.#serverConfigs.keys()]
+					.filter(name => !this.#connections.has(name))
+					.map(
+						name =>
+							new Error(
+								`MCP server "${name}" is unavailable: ${this.#startupFailures.get(name) ?? "not connected"}. ` +
+									"Inspect the MCP server and backing application logs before retrying a resource read.",
+							),
+					);
+				if (unavailable.length > 0) {
+					throw new AggregateError(unavailable, unavailable.map(error => error.message).join("\n"));
+				}
+				return;
+			}
+			const results = await Promise.allSettled(
+				[...pending].map(([name, work]) =>
+					this.#waitForResourceReadiness(name, "connection", Promise.all(work), options, startedAt),
+				),
+			);
+			options?.signal?.throwIfAborted();
+			const errors = results.flatMap(result => (result.status === "rejected" ? [result.reason] : []));
+			if (errors.length === 1) throw errors[0];
+			if (errors.length > 1) {
+				throw new AggregateError(errors, errors.map(error => String(error)).join("\n"));
+			}
 		}
+		throw new Error("MCP connections are still changing; inspect the MCP server logs before reading resources.");
+	}
+
+	/** Bound a caller's wait without aborting a shared connection or catalog refresh. */
+	#waitForResourceReadiness<T>(
+		name: string,
+		stage: "connection" | "resource catalog",
+		promise: Promise<T>,
+		options?: MCPRequestOptions,
+		startedAt = Date.now(),
+	): Promise<T> {
+		const timeoutMs = resolveMCPRequestTimeoutMs("resources/read", this.getServerConfig(name)?.timeout);
+		if (!isMCPTimeoutEnabled(timeoutMs)) return untilAborted(options?.signal, promise);
+		const error = new MCPTransportError({
+			transport: "unknown",
+			stage: stage === "connection" ? "connect" : "receive",
+			failure: "timeout",
+			retryable: false,
+			message:
+				`MCP server "${name}" ${stage} readiness timed out after ${describeMCPTimeout(timeoutMs)}. ` +
+				"Check that the MCP server and its backing application are running and ready; inspect their logs " +
+				"before retrying the resource read. No resource data was returned.",
+		});
+		return withTimeout(promise, Math.max(0, timeoutMs - (Date.now() - startedAt)), error, options?.signal);
 	}
 
 	/**
@@ -1733,11 +1794,11 @@ export class MCPManager {
 	 * Wait until a connected server's resource catalog has been loaded.
 	 * Coalesces with initial loading and notification-driven refreshes.
 	 */
-	async ensureServerResources(name: string): Promise<void> {
+	async ensureServerResources(name: string, options?: MCPRequestOptions): Promise<void> {
 		const connection = this.#connections.get(name);
 		if (!connection || !serverSupportsResources(connection.capabilities)) return;
 		if (connection.resources !== undefined && connection.resourceTemplates !== undefined) return;
-		await this.refreshServerResources(name);
+		await this.#waitForResourceReadiness(name, "resource catalog", this.refreshServerResources(name), options);
 	}
 
 	/**
@@ -1775,7 +1836,17 @@ export class MCPManager {
 		options?: MCPRequestOptions,
 	): Promise<MCPResourceReadResult | undefined> {
 		const connection = this.#connections.get(name);
-		if (!connection) return undefined;
+		if (!connection) {
+			throw new MCPTransportError({
+				transport: "unknown",
+				stage: "connect",
+				failure: "closed",
+				retryable: false,
+				message:
+					`MCP server "${name}" is not connected; resource "${uri}" is unavailable. ` +
+					`Reconnect it with /mcp reconnect ${name} and check that its backing application is ready.`,
+			});
+		}
 		return readResource(connection, uri, options);
 	}
 

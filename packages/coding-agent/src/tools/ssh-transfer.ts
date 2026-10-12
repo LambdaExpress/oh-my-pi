@@ -8,6 +8,7 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { t } from "../i18n";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import type { ToolActivityContext, ToolActivitySummary } from "@oh-my-pi/pi-tui/tools/renderer";
+import { InternalUrlRouter, sessionResolveContext } from "../internal-urls";
 import sshTransferDescriptionBase from "../prompts/tools/ssh-transfer.md" with { type: "text" };
 import { ensureHostInfo, type SSHConnectionTarget } from "../ssh/connection-manager";
 import {
@@ -21,7 +22,7 @@ import { CachedOutputBlock, markFramedBlockComponent } from "@oh-my-pi/pi-tui/re
 import { renderStatusLine } from "@oh-my-pi/pi-tui/render/status-line";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
-import { isInternalUrlPath, resolveToCwd } from "./path-utils";
+import { expandPath, isInternalUrlPath, resolveToCwd } from "./path-utils";
 import { enforcePlanModeWrite } from "./plan-mode-guard";
 import { replaceTabs } from "@oh-my-pi/pi-tui/render/render-utils";
 import {
@@ -37,7 +38,7 @@ import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 const sshTransferSchema = type({
 	op: type("'upload' | 'download'").describe("transfer operation"),
 	host: type("string").describe("available SSH or local WSL target name"),
-	local_path: type("string").describe("local file path"),
+	local_path: type("string").describe("local file path or file-backed internal URL; download URLs must be mutable"),
 	remote_path: type("string").describe("absolute remote file path"),
 	"overwrite?": type("boolean").describe("replace an existing file; defaults to false"),
 	"async?": type("boolean").describe("run in background; defaults to false"),
@@ -198,8 +199,10 @@ export class SshTransferTool implements AgentTool<typeof sshTransferSchema, SshT
 
 	createAbortedResult(toolCallId: string, params: SshTransferParams): AgentToolResult<SshTransferToolDetails> {
 		const previous = this.#lastSnapshots.get(toolCallId);
+		const localInput = params.local_path.trim() || "(unknown local path)";
 		const localPath =
-			previous?.localPath ?? resolveToCwd(params.local_path.trim() || "(unknown local path)", this.session.cwd);
+			previous?.localPath ??
+			(isInternalUrlPath(localInput) ? localInput : resolveToCwd(localInput, this.session.cwd));
 		const details: SshTransferToolDetails = {
 			...(previous ??
 				detailsFromProgress(
@@ -237,10 +240,26 @@ export class SshTransferTool implements AgentTool<typeof sshTransferSchema, SshT
 		if (localInput.length === 0 || remotePath.length === 0) {
 			throw new ToolError("SSH transfer paths must not be empty.");
 		}
-		if (isInternalUrlPath(localInput) || isInternalUrlPath(remotePath)) {
-			throw new ToolError("SSH transfer accepts filesystem paths, not internal URLs.");
+		if (isInternalUrlPath(remotePath)) {
+			throw new ToolError("SSH transfer remote_path accepts filesystem paths, not internal URLs.");
 		}
-		const localPath = resolveToCwd(localInput, this.session.cwd);
+		let localPath: string;
+		if (isInternalUrlPath(localInput)) {
+			const router = InternalUrlRouter.instance();
+			const localUrl = router.peelWriteSelector(expandPath(localInput), "ssh_transfer");
+			const target = router.writeTarget(localUrl);
+			if (target?.spec.backing !== "file") {
+				throw new ToolError("SSH transfer local_path must name a local file-backed URL or filesystem path.");
+			}
+			if (params.op === "download" && !router.fileWritable(localUrl)) {
+				throw new ToolError("SSH transfer download local_path must name a mutable file-backed URL.");
+			}
+			localPath = await router.requireLocal(localUrl, "transfer", sessionResolveContext(this.session, { signal }), {
+				create: params.op === "download",
+			});
+		} else {
+			localPath = resolveToCwd(localInput, this.session.cwd);
+		}
 		await enforcePlanModeWrite(this.session, params.op === "upload" ? remotePath : localPath, { op: "create" });
 
 		const hostInfo = await ensureHostInfo(hostConfig);

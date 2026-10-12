@@ -1,4 +1,5 @@
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import type { Viewport } from "puppeteer-core";
 
 export type Transferable = Bun.Transferable;
 
@@ -49,7 +50,7 @@ export type WorkerInitPayload =
 			safeDir: string;
 			/** Keep the page tied to an OMP-owned worker without pinning a visible window's layout viewport. */
 			emulateViewport?: boolean;
-			viewport?: { width: number; height: number; deviceScaleFactor?: number };
+			viewport?: Viewport;
 			dialogs?: "accept" | "dismiss";
 			/** Hostname patterns allowed for every page request. */
 			allowedDomains?: string[];
@@ -73,7 +74,7 @@ export type WorkerInitPayload =
 			activatePageBeforeRun?: boolean;
 			targetId: string;
 			/** Apply an explicitly requested viewport without changing unconfigured user tabs. */
-			viewport?: { width: number; height: number; deviceScaleFactor?: number };
+			viewport?: Viewport;
 			dialogs?: "accept" | "dismiss";
 			/** Hostname patterns allowed for every page request. */
 			allowedDomains?: string[];

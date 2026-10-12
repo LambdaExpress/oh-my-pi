@@ -111,6 +111,7 @@ rust_library(
         "util.realpath",
         "util.rg",
         "util.rm",
+        "util.rmdir",
         "util.sed",
         "util.seq",
         "util.sha1sum",

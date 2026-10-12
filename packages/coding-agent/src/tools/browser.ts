@@ -115,6 +115,10 @@ const browserSchema = type({
 		width: "number",
 		height: "number",
 		"scale?": "number",
+		"deviceScaleFactor?": "number",
+		"isMobile?": "boolean",
+		"hasTouch?": "boolean",
+		"isLandscape?": "boolean",
 	},
 	"wait_until?": type("'load' | 'domcontentloaded' | 'networkidle0' | 'networkidle2'").describe(
 		"navigation wait condition",
@@ -387,6 +391,27 @@ async function openOnKind(
 ): Promise<AgentToolResult<unknown>> {
 	const downloadsPath = params.downloads === undefined ? undefined : resolveToCwd(params.downloads, session.cwd);
 	details.browser = kind.kind;
+	if (
+		(kind.kind === "cmux" || kind.kind === "tern") &&
+		params.viewport &&
+		(params.viewport.isMobile !== undefined ||
+			params.viewport.hasTouch !== undefined ||
+			params.viewport.isLandscape !== undefined)
+	) {
+		throw new ToolError(
+			`browser.open() mobile/touch/orientation viewport options are not supported on the ${kind.kind} backend`,
+		);
+	}
+	const viewport = params.viewport
+		? {
+				width: params.viewport.width,
+				height: params.viewport.height,
+				deviceScaleFactor: params.viewport.deviceScaleFactor ?? params.viewport.scale,
+				isMobile: params.viewport.isMobile,
+				hasTouch: params.viewport.hasTouch,
+				isLandscape: params.viewport.isLandscape,
+			}
+		: undefined;
 
 	// If a tab with this name already exists on a different browser kind, fail fast — caller must close first.
 	const existing = getTab(name);
@@ -419,13 +444,7 @@ async function openOnKind(
 		const browser = await untilAborted(openSignal, () =>
 			acquireBrowser(kind, {
 				cwd: session.cwd,
-				viewport: params.viewport
-					? {
-							width: params.viewport.width,
-							height: params.viewport.height,
-							deviceScaleFactor: params.viewport.scale,
-						}
-					: undefined,
+				viewport,
 				signal: openSignal,
 			}),
 		);
@@ -459,13 +478,7 @@ async function openOnKind(
 				acquireTab(name, browser, {
 					url: params.url,
 					waitUntil: params.wait_until,
-					viewport: params.viewport
-						? {
-								width: params.viewport.width,
-								height: params.viewport.height,
-								deviceScaleFactor: params.viewport.scale,
-							}
-						: undefined,
+					viewport,
 					target: params.app?.target,
 					timeoutMs,
 					deadlineStartMs: deadlineStart,

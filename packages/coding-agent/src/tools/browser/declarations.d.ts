@@ -25,6 +25,14 @@ interface BrowserViewportOptions {
 	height: number;
 	/** Device scale factor. */
 	scale?: number;
+	/** Native Chromium device scale factor; takes precedence over scale. */
+	deviceScaleFactor?: number;
+	/** Enable Chromium mobile layout emulation. */
+	isMobile?: boolean;
+	/** Enable Chromium touch emulation. */
+	hasTouch?: boolean;
+	/** Use Chromium landscape orientation. */
+	isLandscape?: boolean;
 }
 
 /** Runtime geolocation coordinates. */
@@ -542,6 +550,14 @@ interface BrowserClickAtOptions extends BrowserMouseButtonOptions {
 interface BrowserScrollOptions {
 	/** Scroll one matching element instead of the page. */
 	selector?: string;
+}
+
+/** Wheel delta options; at least one delta is required and an omitted axis is zero. */
+interface BrowserScrollDeltaOptions extends BrowserScrollOptions {
+	/** Finite horizontal delta in CSS pixels. */
+	deltaX?: number;
+	/** Finite vertical delta in CSS pixels. */
+	deltaY?: number;
 }
 
 /** Options for temporary element highlighting. */
@@ -1289,7 +1305,7 @@ interface BrowserTabHelpers {
 	dblclick(selector: string): Promise<void>;
 	/** Hover the element matching `selector`. */
 	hover(selector: string): Promise<void>;
-	/** Focus the element matching `selector`. */
+	/** Focus a matching element with native focus(), including focusable SVG elements. */
 	focus(selector: string): Promise<void>;
 	/** Set a checkbox, radio, or ARIA switch. */
 	check(selector: string): Promise<void>;
@@ -1317,8 +1333,10 @@ interface BrowserTabHelpers {
 	fill(selector: string, value: string): Promise<void>;
 	/** Press a keyboard key, optionally on a matching element. */
 	press(key: string, options?: BrowserPressOptions): Promise<void>;
-	/** Scroll by page-relative or matching-element deltas. */
+	/** Scroll by finite page-relative or matching-element deltas. */
 	scroll(deltaX: number, deltaY: number, options?: BrowserScrollOptions): Promise<void>;
+	/** Scroll with wheel deltas; absolute x/y positions are not supported. */
+	scroll(options: BrowserScrollDeltaOptions): Promise<void>;
 	/** Drag from one selector or point to another. */
 	drag(from: BrowserDragTarget, to: BrowserDragTarget): Promise<void>;
 	/** Evaluate a function or source string in the page's main world (the app's own `window` globals are visible). */

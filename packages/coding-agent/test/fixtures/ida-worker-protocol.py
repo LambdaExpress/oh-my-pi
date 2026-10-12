@@ -5,12 +5,13 @@ import io
 import json
 import signal
 import sys
+import tempfile
 import types
 
 # Only the SDK import surface is replaced; dispatch, exec, framing and signals
 # use the production worker and the subprocess's real file descriptors.
 for name in (
-    "idapro", "ida_domain", "ida_domain.database", "ida_domain.xrefs",
+    "idapro", "ida_domain", "ida_domain.database", "ida_domain.strings", "ida_domain.xrefs",
     "ida_auto", "ida_bytes", "ida_funcs", "ida_hexrays", "ida_idaapi",
     "ida_idp", "ida_lines", "ida_loader", "ida_nalt", "ida_name",
     "ida_segment", "ida_typeinf", "ida_ua", "ida_xref", "idautils",
@@ -18,6 +19,8 @@ for name in (
     sys.modules[name] = types.ModuleType(name)
 sys.modules["ida_domain"].Database = object
 sys.modules["ida_domain.database"].IdaCommandOptions = object
+sys.modules["ida_domain.strings"].StringListConfig = types.SimpleNamespace
+sys.modules["ida_domain.strings"].StringType = types.SimpleNamespace(C=0, C_16=1, C_32=2)
 sys.modules["ida_domain.xrefs"].XrefType = object
 sys.modules["ida_idp"].IDB_Hooks = type("IDB_Hooks", (), {})
 sys.modules["ida_hexrays"].Hexrays_Hooks = type("Hexrays_Hooks", (), {})
@@ -56,6 +59,79 @@ class InterruptedOutput:
 if mode == "requests":
     worker._proto = InterruptedOutput(protocol)
     worker.main()
+elif mode.startswith("strings-"):
+    # File bytes are real; the SDK model exposes only the analyzer's saved list,
+    # which omits CLR metadata even after a rebuild.
+    data = bytearray(195072)
+    data[:2] = b"MZ"
+    data[0x3C:0x40] = (0x80).to_bytes(4, "little")
+    data[0x80:0x84] = b"PE\0\0"
+    definitions = []
+
+    def put(offset, text, encoding="utf-8", internal_type=0, defined=False):
+        raw = text.encode(encoding) + "\0".encode(encoding)
+        data[offset:offset + len(raw)] = raw
+        if defined:
+            definitions.append(types.SimpleNamespace(
+                address=0x400000 + offset, length=len(raw), internal_type=internal_type,
+            ))
+
+    put(0x100, "Native message", defined=True)
+    put(0x140, "约束来源名称", "utf-16-le", 1, defined=True)
+    put(0x180, "Source 😀 value", "utf-32-le", 2, defined=True)
+    put(0x1C0, "ID", defined=True)
+    put(0x240, "éééé")
+    put(0x260, "ééééé")
+    put(0x280, "日本語の名前😀")
+    data[0x300:0x302] = b"\xff\xfe"
+    put(0x302, "ReadableName")
+    put(0x340, "\u0085VisibleAfterControl")
+    put(142655, "VRCConstraintSource")
+    put(163386, "RegisterConstraint")
+    put(163405, "UnregisterConstraint")
+    managed = mode.startswith("strings-managed-")
+    listed = (
+        definitions.copy() if mode == "strings-native"
+        else definitions[:1] if mode == "strings-managed-partial"
+        else []
+    )
+
+    class Strings:
+        def get_all(self):
+            return iter(listed)
+
+        def rebuild(self, config):
+            # Already-defined native strings honor the requested widths/minimum.
+            # CLR metadata is not present in this analyzer's extracted list.
+            if not managed:
+                listed[:] = [
+                    item for item in definitions
+                    if item.internal_type in config.string_types
+                    and len(string_contents(item.address, item.length, item.internal_type).decode("utf-8")) >= config.min_len
+                ]
+
+    def string_contents(ea, length, internal_type):
+        encoding = ("utf-8", "utf-16-le", "utf-32-le")[internal_type]
+        offset = ea - 0x400000
+        return bytes(data[offset:offset + length]).decode(encoding).rstrip("\0").encode("utf-8")
+
+    worker.DB = types.SimpleNamespace(architecture="cli" if managed else "metapc", strings=Strings())
+    worker.ida_bytes.get_strlit_contents = string_contents
+    worker.ida_idaapi.BADADDR = 0xFFFFFFFFFFFFFFFF
+    # One name is outside all mapped regions; the other file offsets have real EAs.
+    worker.ida_loader.get_fileregion_ea = (
+        lambda offset: worker.ida_idaapi.BADADDR if offset == 163405 else 0x400000 + offset
+    )
+    with tempfile.TemporaryDirectory(prefix="ida-worker-strings-") as directory:
+        source_path = directory + "/managed.dll"
+        with open(source_path, "wb") as source:
+            source.write(data)
+        worker.ida_nalt.get_input_file_path = lambda: source_path
+        result = {
+            **worker._rpc_view({"kind": "strings"}),
+            "items": worker.strings(),
+            "constraints": worker.strings("constraint"),
+        }
 elif mode.startswith("pseudocode-"):
     class Function:
         start_ea = 0x1000

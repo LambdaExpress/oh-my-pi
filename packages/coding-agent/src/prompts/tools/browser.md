@@ -5,6 +5,7 @@ Drive real Chromium tabs from JavaScript or Python Eval with the global `browser
 - JavaScript: `await browser.open(options)` returns a `BrowserTab`; `browser.tab(name)` returns an existing handle; `await browser.tabs()` lists managed tabs; `await browser.close(options)` releases tabs.
 - Python: `await browser.open(name=…, url=…)`, synchronous `browser.tab(name)`, `await browser.tabs()`, and `await browser.close(name=…)`. Python methods accept keyword arguments.
 - `open` options: `name`, `url`, `app`, `viewport`, `wait_until`, `dialogs`, `allowed_domains`, `init_scripts`, `downloads`, `user_agent`, `ignore_https_errors`, `allow_file_access`, `headed`, `timeout`, `persist`.
+- `viewport`: `{width, height, scale?, deviceScaleFactor?, isMobile?, hasTouch?, isLandscape?}`; native scale overrides `scale`. Mobile/touch/orientation flags require Chromium.
 - `close` options: `name`, `all`, `kill`, `timeout`.
 - Direct tab helpers:
   - Navigation: `url`, `title`, `goto`, `back`, `forward`, `reload`, `pushState`.
@@ -13,6 +14,7 @@ Drive real Chromium tabs from JavaScript or Python Eval with the global `browser
   - Screenshot options: `screenshot({selector?, fullPage?, silent?, annotate?, format?, quality?, ifChanged?, threshold?})`; `diffScreenshot(baselinePath, {threshold?, output?})`; `pdf({path?, format?, landscape?, scale?, printBackground?, margin?, pageRanges?})`.
   - Extraction options: `extract(format?, {selector?, outline?, filter?})`.
   - Interaction: `click`, `dblclick`, `hover`, `focus`, `check`, `uncheck`, `type`, `fill`, `press`, `keyDown`, `keyUp`, `mouseMove`, `mouseDown`, `mouseUp`, `clickAt`, `wheel`, `scroll`, `drag`, `highlight`, `scrollIntoView`, `select`, `uploadFile`.
+  - Relative scrolling: `scroll(deltaX, deltaY, {selector?})` or `scroll({deltaX?, deltaY?, selector?})`; at least one finite delta, omitted axis = 0. Absolute `x`/`y` is unsupported.
   - Waiting: `waitFor`, `waitForSelector`, `waitForUrl`, `waitForText`.
   - Frames: `frames()` lists the frame tree; `frame(selectorOrNameOrUrl)` returns a scoped handle with `click`, `fill`, `type`, `press`, `text`, `html`, `value`, `attr`, `count`, `isVisible`, `ariaSnapshot`, `evaluate`, `waitFor`, `waitForSelector`, and `screenshot`.
   - Dialogs: `dialog`, `handleDialog`, `setDialogs`. Without a policy, alerts and beforeunload prompts are accepted automatically; confirms and prompts remain pending for `handleDialog`.

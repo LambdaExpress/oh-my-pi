@@ -101,7 +101,7 @@ The renderer merges call and result inline, syntax-highlights from the declared 
 
 ## Execution flow
 
-1. `EvalTool` builds a session-specific schema from enabled languages. It is essential, strict, `approval="exec"`, and `concurrency="exclusive"` within one agent session.
+1. `EvalTool` builds a session-specific schema from enabled languages. It is essential, strict, `approval="exec"`, and schedules as shared so independent tools can proceed. A FIFO lease serializes cells and resets using the same canonical language/session kernel until actual execution settles, including background tails. Same-kernel recursive bridge calls fail promptly instead of waiting behind their own outer cell.
 2. `execute()` maps `py/js` to `python/js`, resolves availability, reads file-backed source once, and wraps the input in the renderer-compatible cell list. Runtime probing is bounded by the requested timeout and abort signal. The JS backend installs requested packages inside the cancellation/background lifecycle.
 3. It obtains the retained executor id from `session.getEvalSessionId?.()` or `defaultEvalSessionId(session)`, allocates the output sink/artifact, and registers the run through `trackEvalExecution?.(...)`.
 4. The timeout defaults to 30 seconds. `0` creates no watchdog. Otherwise `IdleTimeout` is combined with tool and session abort signals.

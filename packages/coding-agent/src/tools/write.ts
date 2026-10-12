@@ -11,6 +11,7 @@ import type {
 	AgentToolUpdateCallback,
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
+import { toolWireSchema, validateToolArguments } from "@oh-my-pi/pi-ai";
 
 import { isEnoent, isRecord, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import {
@@ -53,6 +54,7 @@ import {
 } from "./plan-mode-guard";
 import { decodeUtf8Text } from "./read-format";
 import { routeReadThroughBridge } from "./read-summary";
+import { schemaDeclaresIntentField } from "../utils/tool-schema";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 
 import { REPORT_ISSUE_DEVICE_NAME } from "@oh-my-pi/pi-tui/tools/report-tool-issue";
@@ -71,6 +73,7 @@ import {
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { toolResult } from "./tool-result";
 import { maybeWriteSnapshotHeader, stripWriteContent } from "./write-content";
+import { resolveXdevTool } from "./xdev";
 
 import { cfgLspDiagnosticsDeduplicate, cfgLspDiagnosticsOnWrite, cfgLspFormatOnWrite } from "../lsp/settings";
 
@@ -466,7 +469,35 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 	}
 	readonly parameters = writeSchema;
 	readonly strict = true;
-	readonly concurrency = "exclusive";
+	readonly concurrency = (args: Partial<WriteParams>): "shared" | "exclusive" => {
+		try {
+			if (typeof args.path !== "string" || typeof args.content !== "string" || !this.session.xdev) {
+				return "exclusive";
+			}
+			const target = parseXdUrl(
+				InternalUrlRouter.instance().peelWriteSelector(unwrapHashlineHeaderPath(args.path), "write"),
+			);
+			if (!target?.name || target.name === this.name) return "exclusive";
+			const device = resolveXdevTool(this.session.xdev, target.name);
+			if (!device || device === this || device.name === this.name) return "exclusive";
+			const parsed: unknown = JSON.parse(stripWriteContent(this.session, args.content).text);
+			if (!isRecord(parsed)) return "exclusive";
+			if ("i" in parsed && !schemaDeclaresIntentField(toolWireSchema(device))) delete parsed.i;
+			const validated = validateToolArguments(device, {
+				type: "toolCall",
+				id: "",
+				name: device.name,
+				arguments: parsed,
+			});
+			// A device write is only a transport; retain the mounted tool's own
+			// per-call policy. Files, unknown targets, and malformed args stay
+			// behind the ordinary mutation barrier.
+			const mode = typeof device.concurrency === "function" ? device.concurrency(validated) : device.concurrency;
+			return mode === undefined || mode === "shared" ? "shared" : "exclusive";
+		} catch {
+			return "exclusive";
+		}
+	};
 	readonly loadMode = "essential";
 
 	/** Stream matchers should see the real file content, not its JSON-escaped argument encoding. */

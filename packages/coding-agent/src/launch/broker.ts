@@ -41,6 +41,8 @@ const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_LOG_BYTES = 25 * 1024 * 1024;
 const LOG_READ_BYTES = 2 * 1024 * 1024;
 const READINESS_BUFFER_CHARS = 64 * 1024;
+/** Descendants can retain inherited pipes after the owned root has exited. */
+const PIPE_OUTPUT_DRAIN_MS = 250;
 const RESTART_MAX_DELAY_MS = 30_000;
 const RESTART_BACKOFF_BASE_MS = 1_000;
 /**
@@ -77,7 +79,13 @@ const SIGNAL_NUMBER: Record<DaemonSignal, number> = {
 interface ManagedProcess {
 	pid: number;
 	exited: Promise<number>;
+	readonly exitCode: number | null;
 	unref(): void;
+}
+
+interface PipeOutput {
+	done: Promise<void>;
+	cancel(): void;
 }
 
 interface ManagedDaemon {
@@ -90,6 +98,8 @@ interface ManagedDaemon {
 	process?: ManagedProcess;
 	input?: Bun.FileSink;
 	pty?: PtySession;
+	/** One exit/drain/settlement task per pipe launch, also used by native stop reconciliation. */
+	finishPipe?: (exitCode?: number, error?: string) => Promise<void>;
 	generation: number;
 	stopRequested: boolean;
 	logReady: boolean;
@@ -711,7 +721,9 @@ class DaemonBroker {
 				throw new Error(`Daemon ${spec.name} has unacknowledged completion notifications`);
 			}
 			// The replaced generation's log writer must finish before its files are discarded.
+			await existing?.finishPipe?.();
 			await existing?.log?.close();
+			await existing?.persistQueue;
 			if (spec.ready?.log) {
 				try {
 					new RegExp(spec.ready.log, "u");
@@ -801,9 +813,11 @@ class DaemonBroker {
 			if (record.fileOutput) await this.#launchDetached(record, generation);
 			else if (record.spec.pty) await this.#launchPty(record, generation);
 			else this.#launchPipe(record, generation);
+			if (generation !== record.generation || record.stopRequested) return;
 			if (record.spec.ready?.port !== undefined) void this.#pollPort(record, generation, record.spec.ready);
 			this.#markReady(record);
 		} catch (error) {
+			if (generation !== record.generation) return;
 			const message = error instanceof Error ? error.message : String(error);
 			record.log?.append(`Daemon launch failed: ${message}\n`);
 			await this.#settle(record, generation, undefined, message);
@@ -893,20 +907,108 @@ class DaemonBroker {
 		record.process = process;
 		record.input = process.stdin;
 		record.snapshot.pid = process.pid;
+		const rootProcess = Process.fromPid(process.pid);
 		this.#persist(record);
 		const stdout = this.#drain(record, generation, process.stdout);
 		const stderr = this.#drain(record, generation, process.stderr);
-		void Promise.all([stdout, stderr, process.exited])
-			.then(([, , exitCode]) => this.#settle(record, generation, exitCode))
-			.catch(error =>
-				this.#settle(record, generation, undefined, error instanceof Error ? error.message : String(error)),
-			);
+		let completion: Promise<void> | undefined;
+		let code: number | undefined;
+		let failure: string | undefined;
+		const exited = process.exited.then(
+			exitCode => {
+				code = exitCode;
+			},
+			error => {
+				failure = error instanceof Error ? error.message : String(error);
+			},
+		);
+		const outputFailure = (error: unknown): void => {
+			failure ??= error instanceof Error ? error.message : String(error);
+		};
+		// Observe failures immediately, but an output failure is not proof that the root exited.
+		// Include Bun's exit callback in the grace period so an earlier OS notification
+		// still records the exit code before publishing completion.
+		const drained = Promise.all([stdout.done.catch(outputFailure), stderr.done.catch(outputFailure), exited]);
+		const finish = (exitCode?: number, error?: string): Promise<void> => {
+			code ??= exitCode;
+			failure ??= error;
+			completion ??= (async () => {
+				let timer: NodeJS.Timeout | undefined;
+				try {
+					// Root termination, not pipe EOF, controls service lifetime. Keep the final
+					// buffered output, then close our readers even if a descendant retains them.
+					await Promise.race([
+						drained,
+						new Promise<void>(resolve => {
+							timer = setTimeout(resolve, PIPE_OUTPUT_DRAIN_MS);
+						}),
+					]);
+				} finally {
+					clearTimeout(timer);
+					stdout.cancel();
+					stderr.cancel();
+					// Root death also retires the writable end, even if Bun's own
+					// subprocess callback is still waiting on inherited handles.
+					try {
+						void Promise.resolve(process.stdin.end()).catch(() => undefined);
+					} catch {
+						// The sink may already be closed by graceful stdin shutdown.
+					}
+					process.unref();
+				}
+				if (code === undefined && failure === undefined) {
+					// Closing the readers can release Bun's delayed exit callback. Give
+					// that callback a bounded chance to supply the real exit code.
+					try {
+						await Promise.race([
+							exited,
+							new Promise<void>(resolve => {
+								timer = setTimeout(resolve, PIPE_OUTPUT_DRAIN_MS);
+							}),
+						]);
+					} finally {
+						clearTimeout(timer);
+					}
+				}
+				await this.#settle(record, generation, code ?? process.exitCode ?? undefined, failure);
+			})().finally(() => {
+				if (record.finishPipe === finish) record.finishPipe = undefined;
+			});
+			return completion;
+		};
+		record.finishPipe = finish;
+		void exited
+			.then(() => finish())
+			.catch(error => {
+				logger.warn("Failed to settle pipe daemon", {
+					name: record.snapshot.name,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			});
+		if (rootProcess) {
+			// Keep the OS identity captured at launch. On Windows, inherited handles
+			// can delay Bun's callbacks even though the root has already terminated.
+			void rootProcess
+				.waitForExit()
+				.then(exited => (exited ? finish() : undefined))
+				.catch(error => {
+					logger.warn("Failed to observe pipe daemon process exit", {
+						name: record.snapshot.name,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				});
+		}
 	}
 
 	async #launchDetached(record: ManagedDaemon, generation: number): Promise<void> {
 		const logPath = path.join(record.dir, LOG_FILE);
 		const output = await fs.open(logPath, "a", 0o600);
 		try {
+			if (generation !== record.generation) return;
+			if (record.stopRequested || this.#shuttingDown) {
+				await this.#settle(record, generation);
+				return;
+			}
 			const process = Bun.spawn([record.spec.application, ...record.spec.args], {
 				cwd: record.spec.cwd,
 				env: workerEnvFromParent(record.spec.env),
@@ -928,25 +1030,42 @@ class DaemonBroker {
 		}
 	}
 
-	async #drain(record: ManagedDaemon, generation: number, stream: ReadableStream<Uint8Array>): Promise<void> {
+	#drain(record: ManagedDaemon, generation: number, stream: ReadableStream<Uint8Array>): PipeOutput {
 		const reader = stream.getReader();
 		const decoder = new TextDecoder();
-		try {
-			for (;;) {
-				const { done, value } = await reader.read();
-				if (done) break;
-				if (generation === record.generation)
-					this.#onOutput(record, generation, decoder.decode(value, { stream: true }));
+		let cancelled = false;
+		let closed = false;
+		const done = (async () => {
+			try {
+				for (;;) {
+					const { done, value } = await reader.read();
+					if (done || cancelled) break;
+					if (generation === record.generation)
+						this.#onOutput(record, generation, decoder.decode(value, { stream: true }));
+				}
+				const tail = decoder.decode();
+				if (tail && !cancelled && generation === record.generation) this.#onOutput(record, generation, tail);
+			} catch (error) {
+				if (!cancelled) throw error;
+			} finally {
+				closed = true;
+				reader.releaseLock();
 			}
-			const tail = decoder.decode();
-			if (tail && generation === record.generation) this.#onOutput(record, generation, tail);
-		} finally {
-			reader.releaseLock();
-		}
+		})();
+		return {
+			done,
+			cancel() {
+				if (closed || cancelled) return;
+				cancelled = true;
+				// Cancellation must not make terminal settlement depend on the stream's
+				// underlying cancel hook. Pending reads stop publishing output immediately.
+				void reader.cancel().catch(() => undefined);
+			},
+		};
 	}
 
 	#onOutput(record: ManagedDaemon, generation: number, raw: string): void {
-		if (generation !== record.generation) return;
+		if (generation !== record.generation || settledState(record.snapshot.state)) return;
 		const output = raw.toWellFormed();
 		const text = record.log?.append(output) ?? output;
 		record.snapshot.outputBytes += Buffer.byteLength(text, "utf8");
@@ -991,8 +1110,8 @@ class DaemonBroker {
 		if (!record.fileOutput || settledState(record.snapshot.state)) return;
 		const generation = record.generation;
 		await this.#readDetachedOutput(record, generation);
-		if (generation !== record.generation || record.process) return;
-		const processRef = record.snapshot.pid === undefined ? null : Process.fromPid(record.snapshot.pid);
+		if (generation !== record.generation || record.process || record.snapshot.pid === undefined) return;
+		const processRef = Process.fromPid(record.snapshot.pid);
 		if (processRef?.status() === "running") return;
 		await this.#settle(record, generation);
 	}
@@ -1009,8 +1128,9 @@ class DaemonBroker {
 		const host = ready.host ?? "127.0.0.1";
 		const port = ready.port;
 		if (port === undefined) return;
-		while (generation === record.generation && !terminalState(record.snapshot.state)) {
+		while (generation === record.generation && !settledState(record.snapshot.state)) {
 			if (await connectPort(host, port)) {
+				if (generation !== record.generation || settledState(record.snapshot.state)) return;
 				record.portReady = true;
 				syncReadyPending(record);
 				this.#markReady(record);
@@ -1081,6 +1201,14 @@ class DaemonBroker {
 			);
 			this.#persist(record);
 			record.restartTimer = setTimeout(() => {
+				if (
+					generation !== record.generation ||
+					record.stopRequested ||
+					this.#shuttingDown ||
+					record.snapshot.state !== "restarting"
+				) {
+					return;
+				}
 				record.restartTimer = undefined;
 				void this.#launch(record);
 			}, delay);
@@ -1100,8 +1228,9 @@ class DaemonBroker {
 				: undefined;
 		if (completion) record.pendingCompletions.push(completion);
 		this.#persist(record);
-		await record.log?.close();
-		record.log = undefined;
+		const log = record.log;
+		await log?.close();
+		if (generation === record.generation && record.log === log) record.log = undefined;
 		await record.persistQueue;
 		if (
 			completion &&
@@ -1255,7 +1384,18 @@ class DaemonBroker {
 
 	async #stopRecord(record: ManagedDaemon, timeoutMs: number): Promise<void> {
 		await this.#refreshDetached(record);
-		if (terminalState(record.snapshot.state)) return;
+		if (terminalState(record.snapshot.state)) {
+			await record.finishPipe?.();
+			await record.log?.close();
+			return;
+		}
+		const generation = record.generation;
+		const process = record.process;
+		const finishPipe = record.finishPipe;
+		// Keep a stable reference before yielding; a reused PID or a replacement
+		// generation must never be mistaken for the process this stop owns.
+		const processRef = record.snapshot.pid === undefined ? null : Process.fromPid(record.snapshot.pid);
+		const stopped = (): boolean => generation !== record.generation || terminalState(record.snapshot.state);
 		record.stopRequested = true;
 		if (record.restartTimer) {
 			clearTimeout(record.restartTimer);
@@ -1263,8 +1403,9 @@ class DaemonBroker {
 			record.snapshot.state = "exited";
 			record.snapshot.exitedAt = Date.now();
 			this.#persist(record);
-			await record.log?.close();
-			record.log = undefined;
+			const log = record.log;
+			await log?.close();
+			if (generation === record.generation && record.log === log) record.log = undefined;
 			return;
 		}
 		record.snapshot.state = "stopping";
@@ -1275,29 +1416,46 @@ class DaemonBroker {
 			} catch {
 				// The process may have exited between refresh and stdin close.
 			}
-			if (await this.#waitUntil(record, () => terminalState(record.snapshot.state), timeoutMs)) return;
+			if (await this.#waitUntil(record, stopped, timeoutMs)) return;
 		}
-		const processRef = record.snapshot.pid === undefined ? null : Process.fromPid(record.snapshot.pid);
+		if (stopped()) {
+			await finishPipe?.();
+			return;
+		}
 		if (processRef) await processRef.terminate({ group: true, gracefulMs: timeoutMs, timeoutMs: timeoutMs + 1_000 });
 		else record.pty?.kill();
-		const settled = await this.#waitUntil(record, () => terminalState(record.snapshot.state), timeoutMs + 1_000);
-		if (!settled && record.pty) record.pty.kill();
+		if (generation !== record.generation) return;
+		if (finishPipe && ((process && process.exitCode !== null) || processRef?.status() === "exited")) {
+			// The OS can confirm death before Bun's exit/pipe callbacks finish on Windows.
+			// Join the same completion task so native reconciliation cannot double-settle.
+			await finishPipe(process?.exitCode ?? undefined);
+		}
+		const settled = await this.#waitUntil(record, stopped, timeoutMs + 1_000);
+		if (!settled && generation === record.generation && record.pty) record.pty.kill();
+		if (generation === record.generation && terminalState(record.snapshot.state)) await finishPipe?.();
 	}
 
 	async #restart(name: string): Promise<DaemonRpcResult> {
-		const record = this.#record(name);
-		await this.#stopRecord(record, 2_000);
-		await record.log?.close();
-		record.log = await DaemonLog.open(record.dir);
-		record.stopRequested = false;
-		// Settled history does not need subscription writes, but a new generation
-		// must persist the owner's current capability for crash recovery.
-		const owner = record.snapshot.owner;
-		record.completionCapable = owner !== undefined && this.#completionSubscriptions.has(owner);
-		record.completionSubscriptionId = owner === undefined ? undefined : this.#completionSubscriptions.get(owner);
-		await this.#launch(record);
-		await record.persistQueue;
-		return { op: "restart", daemon: record.snapshot };
+		if (this.#startingNames.has(name)) throw new Error(`Daemon ${name} is already starting`);
+		this.#startingNames.add(name);
+		try {
+			const record = this.#record(name);
+			await this.#stopRecord(record, 2_000);
+			if (!terminalState(record.snapshot.state)) throw new Error(`Daemon ${name} did not stop`);
+			await record.log?.close();
+			record.log = await DaemonLog.open(record.dir);
+			record.stopRequested = false;
+			// Settled history does not need subscription writes, but a new generation
+			// must persist the owner's current capability for crash recovery.
+			const owner = record.snapshot.owner;
+			record.completionCapable = owner !== undefined && this.#completionSubscriptions.has(owner);
+			record.completionSubscriptionId = owner === undefined ? undefined : this.#completionSubscriptions.get(owner);
+			await this.#launch(record);
+			await record.persistQueue;
+			return { op: "restart", daemon: record.snapshot };
+		} finally {
+			this.#startingNames.delete(name);
+		}
 	}
 
 	async #mode(operation: Extract<DaemonOperation, { op: "mode" }>): Promise<DaemonRpcResult> {

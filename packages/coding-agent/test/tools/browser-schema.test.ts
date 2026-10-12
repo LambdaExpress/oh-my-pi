@@ -54,6 +54,8 @@ describe("browser prelude", () => {
 			{ ignore_https_errors: "yes" },
 			{ allow_file_access: 1 },
 			{ headed: "yes" },
+			{ viewport: { width: 390, height: 844, deviceScaleFactor: "2" } },
+			{ viewport: { width: 390, height: 844, hasTouch: "yes" } },
 		]) {
 			await expect(prelude.invoke({ action: "open", ...invalid }, context)).rejects.toThrow(
 				/browser received invalid arguments/,

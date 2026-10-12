@@ -5783,19 +5783,33 @@ describe("agentLoop passive additionalContext", () => {
 
 	it("resolves functional concurrency from beforeToolCall-revised args", async () => {
 		const toolSchema = type({ value: "string" });
-		const concurrencySeen: unknown[] = [];
+		const firstStarted = Promise.withResolvers<void>();
+		const releaseFirst = Promise.withResolvers<void>();
+		const exclusiveStarted = Promise.withResolvers<void>();
+		const releaseExclusive = Promise.withResolvers<void>();
+		const order: string[] = [];
+		let state = 0;
+		let observed = 0;
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
 			name: "echo",
 			label: "Echo",
 			description: "Echo tool",
 			parameters: toolSchema,
-			concurrency: args => {
-				concurrencySeen.push({ ...(args as Record<string, unknown>) });
-				return (args as { value: string }).value === "exclusive" ? "exclusive" : "shared";
-			},
+			concurrency: args => (args.value === "exclusive" ? "exclusive" : "shared"),
 			async execute(_toolCallId, params) {
+				order.push(`${params.value}:start`);
+				if (params.value === "first") {
+					firstStarted.resolve();
+					await releaseFirst.promise;
+					state = 40;
+				} else if (params.value === "exclusive") {
+					exclusiveStarted.resolve();
+					await releaseExclusive.promise;
+					state += 2;
+				} else observed = state;
+				order.push(`${params.value}:end`);
 				return {
-					content: [{ type: "text", text: `echoed: ${params.value}` }],
+					content: [{ type: "text", text: String(state) }],
 					details: { value: params.value },
 				};
 			},
@@ -5805,25 +5819,43 @@ describe("agentLoop passive additionalContext", () => {
 
 		const mock = createMockModel({
 			responses: [
-				{ content: [{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "shared" } }] },
+				{
+					content: [
+						{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "first" } },
+						{ type: "toolCall", id: "tool-2", name: "echo", arguments: { value: "shared" } },
+						{ type: "toolCall", id: "tool-3", name: "echo", arguments: { value: "observe" } },
+					],
+				},
 				{ content: ["done"] },
 			],
 		});
 		const config: AgentLoopConfig = {
 			model: mock.model,
 			convertToLlm: identityConverter,
-			beforeToolCall: async () => ({ args: { value: "exclusive" } }),
+			beforeToolCall: async ({ toolCall }) =>
+				toolCall.id === "tool-2" ? { args: { value: "exclusive" } } : undefined,
 		};
 
-		const stream = agentLoop([createUserMessage("echo something")], context, config, undefined, mock.stream);
-		for await (const _ of stream) {
-			// drain
+		const completion = agentLoop([createUserMessage("run")], context, config, undefined, mock.stream).result();
+		try {
+			await firstStarted.promise;
+			releaseFirst.resolve();
+			await exclusiveStarted.promise;
+		} finally {
+			releaseFirst.resolve();
+			releaseExclusive.resolve();
+			await completion;
 		}
 
-		// Scheduling resolves concurrency AFTER the hook revision, so an
-		// argument-dependent policy (e.g. bash pty => exclusive) sees the
-		// arguments the tool actually runs with.
-		expect(concurrencySeen).toEqual([{ value: "exclusive" }]);
+		expect(order).toEqual([
+			"first:start",
+			"first:end",
+			"exclusive:start",
+			"exclusive:end",
+			"observe:start",
+			"observe:end",
+		]);
+		expect(observed).toBe(42);
 	});
 
 	it("rejects a beforeToolCall args replacement that fails schema validation", async () => {

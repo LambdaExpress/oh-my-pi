@@ -12,6 +12,7 @@ import type { ToolSession } from "../../tools";
 import type { RuntimeCallIdentity } from "../js/shared/runtime";
 import { bridgeValueFromToolResult, callSessionTool, type JsStatusEvent } from "../js/tool-bridge";
 import type { EvalShadowCellSession } from "../speculation/cell-session";
+import { captureEvalKernelContext, type EvalKernelContextRunner } from "../speculation/runtime-context";
 
 export interface PyToolBridgeEntry {
 	toolSession: ToolSession;
@@ -43,7 +44,11 @@ interface BridgeServer {
 	stop: () => Promise<void>;
 }
 
-const registrations = new Map<string, PyToolBridgeEntry>();
+interface RegisteredPyToolBridgeEntry extends PyToolBridgeEntry {
+	runInEvalContext: EvalKernelContextRunner;
+}
+
+const registrations = new Map<string, RegisteredPyToolBridgeEntry>();
 let serverPromise: Promise<BridgeServer> | null = null;
 
 function markExpectedBridgeShutdownError(error: unknown): error is Error {
@@ -104,7 +109,7 @@ async function waitForSpeculativeClaim<T>(claim: Promise<T>, name: string, signa
 async function callSessionToolPromptOnAbort(
 	name: string,
 	args: unknown,
-	entry: PyToolBridgeEntry,
+	entry: RegisteredPyToolBridgeEntry,
 	identity?: RuntimeCallIdentity,
 ): Promise<unknown> {
 	if (entry.abortRequested?.()) {
@@ -128,6 +133,7 @@ async function callSessionToolPromptOnAbort(
 		emitStatus: entry.emitStatus,
 		defaultIntent: "py prelude",
 		identity,
+		runInEvalContext: entry.runInEvalContext,
 	});
 	const signal = entry.shieldedSignal ?? entry.signal;
 	if (!signal) return await call;
@@ -269,9 +275,10 @@ function bridgeRegistrationKey(sessionId: string, runId: string): string {
 
 export function registerPyToolBridge(sessionId: string, runId: string, entry: PyToolBridgeEntry): () => void {
 	const key = bridgeRegistrationKey(sessionId, runId);
-	registrations.set(key, entry);
+	const registration = { ...entry, runInEvalContext: captureEvalKernelContext() };
+	registrations.set(key, registration);
 	return () => {
-		if (registrations.get(key) === entry) {
+		if (registrations.get(key) === registration) {
 			registrations.delete(key);
 		}
 	};

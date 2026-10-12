@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { ArtifactManager } from "@oh-my-pi/pi-coding-agent/session/artifacts";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 
-describe("ArtifactManager concurrent first-use", () => {
+describe("ArtifactManager concurrent allocation", () => {
 	const dirs: string[] = [];
 
 	function freshDir(): string {
@@ -19,11 +19,9 @@ describe("ArtifactManager concurrent first-use", () => {
 		}
 	});
 
-	// First-use init (dir scan → #nextId seed) must run exactly once. Two callers
-	// racing a fresh manager both yield inside #scanExistingIds before either
-	// marks init done; if the second re-seeds #nextId after the first consumed an
-	// id, both allocate the same numeric id and the second write clobbers the
-	// first. Same toolType => file overwrite; the first id resolves to B's bytes.
+	// Directory scans yield before seeding #nextId. A later scan must not move
+	// the counter backwards after a concurrent caller already consumed an ID.
+	// Same toolType => file overwrite; the first ID resolves to B's bytes.
 	it("hands concurrent same-toolType savers distinct ids that each resolve to their own content", async () => {
 		const mgr = new ArtifactManager(freshDir());
 		const [idA, idB] = await Promise.all([mgr.save("CONTENT-A", "bash"), mgr.save("CONTENT-B", "bash")]);
@@ -68,5 +66,20 @@ describe("ArtifactManager concurrent first-use", () => {
 		expect(idA).not.toBe(idB);
 		expect(await Bun.file((await mgr.getPath(idA)) as string).text()).toBe("NEW-A");
 		expect(await Bun.file((await mgr.getPath(idB)) as string).text()).toBe("NEW-B");
+	});
+
+	it("does not reuse outstanding path reservations when later scans find no published files", async () => {
+		const mgr = new ArtifactManager(freshDir());
+		const reservations = await Promise.all(Array.from({ length: 16 }, () => mgr.allocatePath("eval")));
+		const contents = Array.from({ length: 16 }, (_, index) => `concurrent-output-${index}`);
+		const ids = await Promise.all(
+			contents.map((content, index) => mgr.save(content, index % 2 === 0 ? "read" : "bash")),
+		);
+
+		const allIds = [...reservations.map(reservation => reservation.id), ...ids];
+		expect(new Set(allIds).size).toBe(allIds.length);
+		for (const [index, id] of ids.entries()) {
+			expect(await Bun.file((await mgr.getPath(id))!).text()).toBe(contents[index]);
+		}
 	});
 });

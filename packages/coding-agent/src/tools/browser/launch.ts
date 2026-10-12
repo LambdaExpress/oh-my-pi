@@ -12,6 +12,7 @@ import type {
 	Page,
 	default as Puppeteer,
 	Target,
+	Viewport,
 } from "puppeteer-core";
 import stealthTamperingScript from "../puppeteer/00_stealth_tampering.txt" with { type: "text" };
 import stealthActivityScript from "../puppeteer/01_stealth_activity.txt" with { type: "text" };
@@ -608,17 +609,13 @@ export async function removeUserDataDir(dir: string): Promise<void> {
 	}
 }
 
-export async function applyViewport(
-	page: Page,
-	viewport?: { width: number; height: number; deviceScaleFactor?: number },
-): Promise<void> {
+export async function applyViewport(page: Page, viewport?: Viewport): Promise<void> {
 	if (!viewport) {
 		await page.setViewport(DEFAULT_VIEWPORT);
 		return;
 	}
 	await page.setViewport({
-		width: viewport.width,
-		height: viewport.height,
+		...viewport,
 		deviceScaleFactor: viewport.deviceScaleFactor ?? DEFAULT_VIEWPORT.deviceScaleFactor,
 	});
 }

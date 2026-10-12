@@ -9,12 +9,13 @@ import type {
 import type { ImageContent, ToolExample } from "@oh-my-pi/pi-ai";
 import { formatBackgroundNotice } from "@oh-my-pi/pi-tui/tools/bash";
 import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
-import { isRecord, prompt } from "@oh-my-pi/pi-utils";
+import { isRecord, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { raceJobSettlement, resolveAutoBackgroundWaitMs } from "../async";
 import { jsBackend, pythonBackend } from "../eval";
 import type { ExecutorBackend, ExecutorBackendResult } from "../eval/backend";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../eval/bridge-timeout";
 import { IdleTimeout } from "../eval/idle-timeout";
+import { resolveJsKernelIdentity } from "../eval/js";
 import {
 	EVAL_BROWSER_ACTIVITY_OP,
 	type EvalPreludeDefinition,
@@ -23,9 +24,14 @@ import {
 } from "../eval/preludes";
 import { prepareEvalSource } from "../eval/input";
 import type { BackendProbeOptions } from "../eval/probe";
+import { resolvePythonKernelIdentity } from "../eval/py";
 import { defaultEvalSessionId } from "../eval/session-id";
 import { EvalShadowCellSession } from "../eval/speculation/cell-session";
-import { runWithEvalShadowCell } from "../eval/speculation/runtime-context";
+import {
+	isEvalKernelLeasedByCaller,
+	runWithEvalKernelLease,
+	runWithEvalShadowCell,
+} from "../eval/speculation/runtime-context";
 import type { EvalCellResult, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "@oh-my-pi/pi-tui/tools/eval";
 import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
 import evalAgentsTopic from "../prompts/tools/eval-agents.md" with { type: "text" };
@@ -153,6 +159,9 @@ const MAX_DISPLAY_TEXT_BYTES = 8000;
 const DISPLAY_ELISION_RESERVE_BYTES = 64;
 /** Minimum spacing between live eval updates; bursts coalesce to one trailing snapshot. */
 const LIVE_UPDATE_INTERVAL_MS = 50;
+// Tools rebuilt for the same session still address one retained kernel. Keep
+// its cell/reset lease here, not in agent-core's turn-wide exclusive barrier.
+const evalExecutionQueues = new Map<string, Promise<void>>();
 
 interface FormattedDisplayJson {
 	fullText: string;
@@ -462,7 +471,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		}
 		return this.#cachedParams ?? evalSchema;
 	}
-	readonly concurrency = "exclusive";
+	readonly concurrency = "shared";
 	readonly strict = true;
 	readonly intent = (args: Partial<typeof evalSchema.infer>): string | undefined => {
 		const title = typeof args.title === "string" ? args.title : undefined;
@@ -531,6 +540,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	readonly #shadowCells = new Map<string, EvalShadowCellSession>();
 	readonly #browserCalls = new Set<string>();
 	readonly #environmentModes: Partial<Record<EvalLanguage, "managed" | "project">> = {};
+	readonly #proxyExecutionQueues = new Map<string, Promise<void>>();
 
 	/**
 	 * Languages enabled for this session, in display order. Detached tools (no
@@ -554,6 +564,63 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		onUpdate?: AgentToolUpdateCallback,
 		ctx?: AgentToolContext,
 	): Promise<AgentToolResult<EvalToolDetails | undefined>> {
+		throwIfAborted(signal);
+		const queues = this.session ? evalExecutionQueues : this.#proxyExecutionQueues;
+		const key = this.session
+			? params.language === "py"
+				? resolvePythonKernelIdentity(this.session).sessionId
+				: resolveJsKernelIdentity(this.session).sessionKey
+			: params.language;
+		if (isEvalKernelLeasedByCaller(key)) {
+			throw new ToolError("Eval kernel is busy in the calling cell; it cannot evaluate or reset itself.");
+		}
+		const previous = queues.get(key) ?? Promise.resolve();
+		const release = Promise.withResolvers<void>();
+		const lease = { key, active: false };
+		const releaseLease = () => {
+			lease.active = false;
+			release.resolve();
+		};
+		const settled = previous.then(() => release.promise);
+		queues.set(key, settled);
+		void settled.then(() => {
+			if (queues.get(key) === settled) queues.delete(key);
+		});
+		let execution: Promise<AgentToolResult<EvalToolDetails | undefined>> | undefined;
+		try {
+			// Reserve in call order before probing/preparing source. A queued reset
+			// cannot tear down a running cell, and cancellation cannot release a
+			// later cell ahead of this predecessor.
+			try {
+				await untilAborted(signal, previous);
+			} catch (error) {
+				throwIfAborted(signal);
+				throw error;
+			}
+			throwIfAborted(signal);
+			lease.active = true;
+			return await runWithEvalKernelLease(lease, () =>
+				this.#execute(_toolCallId, params, signal, onUpdate, ctx, lease, active => {
+					execution = active;
+				}),
+			);
+		} finally {
+			// Auto-background returns before the cell settles. Its retained-kernel
+			// lease must survive that foreground result.
+			if (execution) void execution.then(releaseLease, releaseLease);
+			else releaseLease();
+		}
+	}
+
+	async #execute(
+		_toolCallId: string,
+		params: typeof evalSchema.infer,
+		signal: AbortSignal | undefined,
+		onUpdate: AgentToolUpdateCallback | undefined,
+		ctx: AgentToolContext | undefined,
+		kernelLease: { key: string; active: boolean },
+		retainExecution: (execution: Promise<AgentToolResult<EvalToolDetails | undefined>>) => void,
+	): Promise<AgentToolResult<EvalToolDetails | undefined>> {
 		const shadowCell = this.#shadowCells.get(_toolCallId);
 		this.#shadowCells.delete(_toolCallId);
 		if (this.#proxyExecutor) {
@@ -575,6 +642,13 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				? 0
 				: clampTimeout("eval", params.timeout, cfgToolsMaxTimeout.get(session.settings)) * 1000;
 		const resolved = await resolveBackend(session, cellLanguage, { signal, timeoutMs: cellTimeoutMs });
+		const effectiveKey =
+			resolved.backend.id === "python"
+				? resolvePythonKernelIdentity(session).sessionId
+				: resolveJsKernelIdentity(session).sessionKey;
+		if (isEvalKernelLeasedByCaller(effectiveKey, kernelLease)) {
+			throw new ToolError("Eval kernel is busy in the calling cell; it cannot evaluate or reset itself.");
+		}
 		const source = await prepareEvalSource(params, session, signal);
 		if (shadowCell && (source.filename || source.packages?.length || source.environment)) {
 			await shadowCell.discard("file-backed or environment-changing eval requires authoritative execution");
@@ -601,7 +675,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					onUpdate({ content: [{ type: "text", text }], details });
 				}
 			: undefined;
-		const run = async (
+		const executeCells = async (
 			runSignal: AbortSignal | undefined,
 			emitUpdate: ((text: string, details: EvalToolDetails) => void) | undefined,
 		): Promise<AgentToolResult<EvalToolDetails | undefined>> => {
@@ -623,7 +697,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					activeShadowCell = undefined;
 				}
 			}
-			const execution = runWithEvalShadowCell(activeShadowCell, () =>
+			return runWithEvalShadowCell(activeShadowCell, () =>
 				this.#runCells({
 					toolCallId: _toolCallId,
 					session,
@@ -636,6 +710,13 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					emitUpdate,
 				}),
 			);
+		};
+		const run = (
+			runSignal: AbortSignal | undefined,
+			emitUpdate: ((text: string, details: EvalToolDetails) => void) | undefined,
+		): Promise<AgentToolResult<EvalToolDetails | undefined>> => {
+			const execution = executeCells(runSignal, emitUpdate);
+			retainExecution(execution);
 			return session.trackEvalExecution?.(execution, sessionAbortController) ?? execution;
 		};
 
