@@ -194,26 +194,6 @@ describe("SSH file transfer core", () => {
 		expect(progress.map(update => update.transferredBytes)).toEqual([0, 1, 2, 3, 4, 4]);
 	});
 
-	it("prevents the POSIX progress watcher from inheriting stage cleanup traps", async () => {
-		const payload = binaryPayload(4);
-		const localPath = path.join(testDir, "upload-zsh-progress.bin");
-		await fs.writeFile(localPath, payload);
-		const commands: string[] = [];
-		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockImplementation(async (_host, command) => {
-			commands.push(command);
-			return { args: [command.includes("OMP_TRANSFER_COMMITTED") ? "commit" : "stage"] };
-		});
-		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>(command: string[]) =>
-			command[1] === "commit"
-				? createChild<In>({ stdout: [new TextEncoder().encode("OMP_TRANSFER_COMMITTED\n")] })
-				: createChild<In>(),
-		);
-
-		await executeSshFileTransfer(uploadPlan(localPath, payload.byteLength));
-
-		expect(commands[0]).toContain("(\n\ttrap - HUP INT TERM\n\twhile :; do");
-	});
-
 	it("downloads irregular binary chunks through partial local writes", async () => {
 		const payload = binaryPayload(160 * 1024 + 19);
 		const localPath = path.join(testDir, "nested", "download.bin");
@@ -348,38 +328,9 @@ describe("SSH file transfer core", () => {
 		let spawnIndex = 0;
 		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() => {
 			spawnIndex++;
-			// The first commit dies with the connection (2); the idempotent retry (3) also
-			// fails without a marker, so recovery (4) confirms the committed upload.
+			// The commit loses its output; recovery confirms identity without
+			// replaying a replacement against a potentially changed destination.
 			if (spawnIndex === 2) return createChild<In>({ exitError: new Error("connection lost after commit") });
-			if (spawnIndex === 4) {
-				return createChild<In>({ stdout: [new TextEncoder().encode("OMP_TRANSFER_COMMITTED\n")] });
-			}
-			return createChild<In>();
-		});
-
-		await expect(executeSshFileTransfer(uploadPlan(localPath, 3))).resolves.toMatchObject({
-			transferredBytes: 3,
-			totalBytes: 3,
-		});
-		expect(spawnIndex).toBe(4);
-		expect(commands[1]).toContain('ln "$stage" "$proof"');
-		expect(commands[3]).toContain('"$destination" -ef "$proof"');
-	});
-
-	it("retries a failed upload commit once before recovering", async () => {
-		const localPath = path.join(testDir, "upload.bin");
-		await fs.writeFile(localPath, new Uint8Array([1, 2, 3]));
-		const commands: string[] = [];
-		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockImplementation(async (_host, command) => {
-			commands.push(command);
-			return { args: [`invocation-${commands.length}`] };
-		});
-		let spawnIndex = 0;
-		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() => {
-			spawnIndex++;
-			// The first commit attempt fails before the marker; the idempotent retry
-			// (spawn 3) succeeds with the marker, so recovery never runs.
-			if (spawnIndex === 2) return createChild<In>({ exitError: new Error("connection lost before marker") });
 			if (spawnIndex === 3) {
 				return createChild<In>({ stdout: [new TextEncoder().encode("OMP_TRANSFER_COMMITTED\n")] });
 			}
@@ -391,55 +342,65 @@ describe("SSH file transfer core", () => {
 			totalBytes: 3,
 		});
 		expect(spawnIndex).toBe(3);
-		expect(commands).toHaveLength(3);
-		// The first commit script is idempotent: a failed hardlink is tolerated when the
-		// proof already exists and still refers to the same stage file.
-		expect(commands[1]).toContain('ln "$stage" "$proof"');
-		expect(commands[1]).toContain('"$stage" -ef "$proof"');
-		// Recovery was never invoked.
-		expect(commands.every(command => !command.includes("cannot determine SSH transfer commit state"))).toBe(true);
 	});
 
-	it("commits a POSIX upload when wc reports a BSD-style leading space", async () => {
-		const localPath = path.join(testDir, "upload-bsd-wc.bin");
-		const payload = new Uint8Array([1, 2, 3]);
-		await fs.writeFile(localPath, payload);
-		const commands: string[] = [];
-		let commitAttempts = 0;
-		let recoveryAttempts = 0;
-		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockImplementation(async (_host, command) => {
-			commands.push(command);
-			return { args: [`invocation-${commands.length}`] };
-		});
+	it("acknowledges one complete identity marker through partial writes", async () => {
+		const localPath = path.join(testDir, "upload-marker.bin");
+		await fs.writeFile(localPath, new Uint8Array([1, 2, 3]));
+		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockResolvedValue({ args: ["fixture"] });
+		const accepted: number[] = [];
+		let spawnIndex = 0;
 		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() => {
-			const script = commands.at(-1) ?? "";
-			if (!script.includes("OMP_TRANSFER_COMMITTED")) return createChild<In>();
-			if (script.includes("cannot determine SSH transfer commit state")) {
-				recoveryAttempts++;
-				return createChild<In>({ exitError: new Error("recovery should not be needed") });
-			}
-
-			commitAttempts++;
-			// A macOS/BSD wc emits a leading blank before the byte count. Model the
-			// remote commit gate rather than merely asserting generated script text.
-			const wcOutput = " 3\n";
-			const normalized = script.includes("tr -d");
-			const comparedSize = normalized ? wcOutput.replace(/\s/g, "") : wcOutput.trimEnd();
-			if (comparedSize !== String(payload.byteLength)) {
-				return createChild<In>({ exitError: new Error("staged transfer size does not match preflight") });
-			}
-			return createChild<In>({ stdout: [new TextEncoder().encode("OMP_TRANSFER_COMMITTED\n")] });
+			if (++spawnIndex !== 2) return createChild<In>();
+			return createChild<In>({
+				stdout: [new TextEncoder().encode("OMP_TRANSFER_COM"), new TextEncoder().encode("MITTED\r\n")],
+				sink: {
+					write(chunk) {
+						accepted.push(chunk[0]!);
+						return 1;
+					},
+					end() {},
+				},
+			});
 		});
 
-		await expect(executeSshFileTransfer(uploadPlan(localPath, payload.byteLength))).resolves.toMatchObject({
-			transferredBytes: payload.byteLength,
-			totalBytes: payload.byteLength,
-		});
-		expect(commitAttempts).toBe(1);
-		expect(recoveryAttempts).toBe(0);
+		await executeSshFileTransfer(uploadPlan(localPath, 3));
+
+		expect(new TextDecoder().decode(new Uint8Array(accepted))).toBe("ACK\n");
+		expect(spawnIndex).toBe(2);
 	});
 
-	it("confirms a committed upload whose proof was already cleaned", async () => {
+	it("does not acknowledge marker substrings in unrelated stdout", async () => {
+		const localPath = path.join(testDir, "upload-marker-substring.bin");
+		await fs.writeFile(localPath, new Uint8Array([1, 2, 3]));
+		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockResolvedValue({ args: ["fixture"] });
+		const acknowledgementWrites: Uint8Array[] = [];
+		let spawnIndex = 0;
+		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() => {
+			spawnIndex++;
+			if (spawnIndex === 1) return createChild<In>();
+			return createChild<In>({
+				stdout: [new TextEncoder().encode("banner OMP_TRANSFER_COMMITTED\n")],
+				sink: {
+					write(chunk) {
+						acknowledgementWrites.push(chunk.slice());
+						return chunk.byteLength;
+					},
+					end() {},
+				},
+			});
+		});
+
+		const error = await executeSshFileTransfer(uploadPlan(localPath, 3)).catch(error => error);
+
+		expect(error).toBeInstanceOf(Error);
+		expect(error.message).toMatch(/completion is uncertain/);
+		expect(acknowledgementWrites).toEqual([]);
+		expect(await fs.readFile(localPath)).toEqual(Buffer.from([1, 2, 3]));
+		expect(spawnIndex).toBe(3);
+	});
+
+	it("retains uncertainty when neither commit nor recovery can be acknowledged", async () => {
 		const localPath = path.join(testDir, "upload.bin");
 		await fs.writeFile(localPath, new Uint8Array([1, 2, 3]));
 		const commands: string[] = [];
@@ -450,24 +411,47 @@ describe("SSH file transfer core", () => {
 		let spawnIndex = 0;
 		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() => {
 			spawnIndex++;
-			// Commit (2) and its retry (3) die without a marker; recovery (4) confirms the
-			// destination after the stage and proof were already cleaned up.
-			if (spawnIndex === 2) return createChild<In>({ exitError: new Error("connection lost after commit") });
-			if (spawnIndex === 4) {
-				return createChild<In>({ stdout: [new TextEncoder().encode("OMP_TRANSFER_COMMITTED\n")] });
+			if (spawnIndex === 2) return createChild<In>({ exitError: new Error("connection lost before marker") });
+			if (spawnIndex === 3) {
+				return createChild<In>({ exitError: new Error("recovery connection lost") });
 			}
 			return createChild<In>();
 		});
 
-		await expect(executeSshFileTransfer(uploadPlan(localPath, 3))).resolves.toMatchObject({
-			transferredBytes: 3,
-			totalBytes: 3,
+		const error = await executeSshFileTransfer(uploadPlan(localPath, 3)).catch(error => error);
+		expect(error).toBeInstanceOf(Error);
+		expect(error.message).toMatch(/completion is uncertain/);
+		expect(error.message).toMatch(/destination version and previous-destination preservation are unknown/);
+		expect(error.message).not.toMatch(/commit failed/);
+		expect(await fs.readFile(localPath)).toEqual(Buffer.from([1, 2, 3]));
+		expect(spawnIndex).toBe(3);
+	});
+
+	it("retains the confirmed commit fact when cleanup and recovery acknowledgements are lost", async () => {
+		const localPath = path.join(testDir, "upload-bsd-wc.bin");
+		const payload = new Uint8Array([1, 2, 3]);
+		await fs.writeFile(localPath, payload);
+		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockResolvedValue({ args: ["fixture"] });
+		let spawnIndex = 0;
+		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() => {
+			spawnIndex++;
+			if (spawnIndex === 2) {
+				return createChild<In>({
+					stdout: [new TextEncoder().encode("OMP_TRANSFER_COMMITTED\n")],
+					exitError: new Error("connection lost during cleanup"),
+				});
+			}
+			if (spawnIndex === 3) return createChild<In>({ exitError: new Error("recovery unavailable") });
+			return createChild<In>();
 		});
-		expect(spawnIndex).toBe(4);
-		// Recovery keeps its fallback failure path and now also confirms a committed
-		// destination by size when both the stage and the proof are gone.
-		expect(commands[3]).toContain("cannot determine SSH transfer commit state");
-		expect(commands[3]).toContain('wc -c < "$destination"');
+
+		const error = await executeSshFileTransfer(uploadPlan(localPath, payload.byteLength)).catch(error => error);
+		expect(error).toBeInstanceOf(Error);
+		expect(error.message).toMatch(/completion is uncertain/);
+		expect(error.message).toMatch(/destination matched the uploaded file when the commit marker was emitted/);
+		expect(error.message).not.toMatch(/commit failed/);
+		expect(await fs.readFile(localPath)).toEqual(Buffer.from(payload));
+		expect(spawnIndex).toBe(3);
 	});
 
 	it("reports finite zero-byte progress and commits an empty download", async () => {

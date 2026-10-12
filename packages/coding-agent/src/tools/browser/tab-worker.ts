@@ -168,6 +168,7 @@ import {
 	clickElement,
 	clickQueryHandlerText,
 	fillViaHandle,
+	focusElement,
 	highlightElement,
 	type HighlightOptions,
 	type InteractionHandle,
@@ -176,7 +177,9 @@ import {
 	mouseDown,
 	mouseMove,
 	mouseUp,
+	resolveScrollArguments,
 	setElementChecked,
+	type ScrollDeltaOptions,
 	type ScrollOptions,
 	uploadFilesToElement,
 	wheel,
@@ -347,7 +350,7 @@ interface TabApi {
 	type(selector: string, text: string): Promise<void>;
 	fill(selector: string, value: string): Promise<void>;
 	press(key: KeyInput, opts?: { selector?: string }): Promise<void>;
-	scroll(deltaX: number, deltaY: number, opts?: ScrollOptions): Promise<void>;
+	scroll(deltaXOrOptions: number | ScrollDeltaOptions, deltaY?: number, opts?: ScrollOptions): Promise<void>;
 	drag(from: DragTarget, to: DragTarget): Promise<void>;
 	waitFor(selector: string, opts?: { timeout?: number }): Promise<ActionableHandle>;
 	evaluate<R, TArgs extends unknown[]>(fn: string | ((...args: TArgs) => R | Promise<R>), ...args: TArgs): Promise<R>;
@@ -667,6 +670,7 @@ export function toActionableHandle(
 			}
 		}
 		enriched.fill = value => fillViaHandle(enriched, value);
+		enriched.focus = () => focusElement(enriched);
 		enriched.click = options =>
 			clickElement(enriched, "handle.click()", undefined, {
 				button: options?.button,
@@ -692,7 +696,7 @@ export function toActionableHandle(
 	}
 
 	for (const method of GUARDED_HANDLE_METHODS) {
-		if (method === "type") continue;
+		if (method === "type" || method === "focus") continue;
 		const original = originals.interactive[method];
 		if (!original) continue;
 		methods[method] = (...args) =>
@@ -726,6 +730,17 @@ export function toActionableHandle(
 				"handle.fill()",
 				signal,
 				() => fillViaHandle(enriched, value, signal),
+				invalidate,
+			),
+		);
+	enriched.focus = () =>
+		guard<void>("handle.focus()", signal =>
+			runGuardedHandleAction(
+				enriched,
+				originals,
+				"handle.focus()",
+				signal,
+				() => focusElement(enriched, signal),
 				invalidate,
 			),
 		);
@@ -2082,24 +2097,23 @@ export class WorkerCore {
 					assertTabPressArgs(key, opts);
 					const selector = opts?.selector;
 					if (selector) {
-						if (parseAriaRefSelector(selector) !== null) {
-							const handle = await this.#resolveAriaRef(selector);
-							try {
-								await untilAborted(sig, () => handle.focus());
-							} finally {
-								await handle.dispose().catch(() => undefined);
-							}
-						} else await untilAborted(sig, () => page.focus(normalizeSelector(selector)));
+						const handle = await this.#resolveActionHandle(selector, actionOpMs, sig);
+						try {
+							await focusElement(handle, sig);
+						} finally {
+							await handle.dispose().catch(() => undefined);
+						}
 					}
 					await untilAborted(sig, () => page.keyboard.press(key));
 				}),
-			scroll: (deltaX, deltaY, opts) =>
+			scroll: (deltaXOrOptions, deltaYArg, opts) =>
 				op("tab.scroll()", actionOpMs, async sig => {
-					if (!opts?.selector) {
+					const { deltaX, deltaY, selector } = resolveScrollArguments(deltaXOrOptions, deltaYArg, opts);
+					if (!selector) {
 						await untilAborted(sig, () => dispatchScroll(() => page.mouse.wheel({ deltaX, deltaY })));
 						return;
 					}
-					const handle = await this.#resolveActionHandle(opts.selector, actionOpMs, sig);
+					const handle = await this.#resolveActionHandle(selector, actionOpMs, sig);
 					try {
 						await untilAborted(sig, () =>
 							handle.evaluate(
@@ -2511,7 +2525,7 @@ export class WorkerCore {
 					async sig => {
 						const handle = await this.#resolveActionHandle(selector, actionOpMs, sig);
 						try {
-							await untilAborted(sig, () => handle.focus());
+							await focusElement(handle, sig);
 						} finally {
 							await handle.dispose().catch(() => undefined);
 						}

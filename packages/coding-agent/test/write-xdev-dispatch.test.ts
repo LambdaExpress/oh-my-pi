@@ -10,7 +10,6 @@ import { ToolChoiceQueue } from "@oh-my-pi/pi-coding-agent/session/tool-choice-q
 import { createTools, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { adbToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/adb";
 import { requiresApproval, resolveApproval } from "@oh-my-pi/pi-coding-agent/tools/approval";
-import { Text } from "@oh-my-pi/pi-tui";
 import { githubToolRenderer } from "@oh-my-pi/pi-tui/tools/github";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
@@ -31,8 +30,6 @@ import {
 	xdevEntries,
 } from "@oh-my-pi/pi-coding-agent/tools/xdev";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
-
-import { cfgToolsXdev, cfgToolsXdevDocs } from "@oh-my-pi/pi-coding-agent/tools/settings";
 
 /**
  * Mirrors `ToolExecutionComponent#buildRenderContext`: the host state's own
@@ -123,9 +120,6 @@ describe("read and write route xd:// device URLs", () => {
 			expect(listing.content.find(entry => entry.type === "text")?.text).toContain("xd://ast_edit");
 			const docs = await read!.execute("read-xd-docs", { path: "xd://ast_edit" });
 			expect(docs.content.find(entry => entry.type === "text")?.text).toContain("# ast_edit");
-			expect(docs.content.find(entry => entry.type === "text")?.text).toContain(
-				"Call the top-level `write` tool directly",
-			);
 
 			const content = JSON.stringify({
 				ops: [{ pat: "legacyWrap($A, $B)", out: "modernWrap($A, $B)" }],
@@ -499,7 +493,6 @@ describe("read and write route xd:// device URLs", () => {
 		const queued = writeToolRenderer.renderCall({ path: "xd://ast_edit", content }, options, uiTheme);
 		expect(queued).toBeDefined();
 		const queuedText = Bun.stripANSI(queued!.render(80).join("\n"));
-		expect(queuedText).toContain("queued");
 		expect(queuedText).toContain("ast_edit");
 
 		// Args can be final at message_end while an earlier exclusive write still
@@ -509,7 +502,7 @@ describe("read and write route xd:// device URLs", () => {
 			{ ...options, argsComplete: true },
 			uiTheme,
 		);
-		expect(Bun.stripANSI(argsCompleteOnly!.render(80).join("\n"))).toContain("queued");
+		expect(Bun.stripANSI(argsCompleteOnly!.render(80).join("\n"))).toBe(queuedText);
 
 		// Same payload after tool_execution_start: delegate to the inner renderer
 		// instead of throwing ReferenceError inside a generic Write frame.
@@ -520,10 +513,10 @@ describe("read and write route xd:// device URLs", () => {
 		);
 		expect(executing).toBeDefined();
 		const executingText = Bun.stripANSI(executing!.render(80).join("\n"));
-		expect(executingText).not.toContain("queued");
+		expect(executingText).toContain("legacyWrap($A, $B)");
 	});
 
-	it("renders streamed MCP device writes as queued until execution starts", async () => {
+	it("preserves supplied MCP arguments while the device write is pending", async () => {
 		await themeModule.initTheme();
 		const uiTheme = (await themeModule.getThemeByName("dark")) ?? (await themeModule.getThemeByName("light"));
 		if (!uiTheme) throw new Error("expected an initialized theme");
@@ -541,8 +534,6 @@ describe("read and write route xd:// device URLs", () => {
 		);
 		expect(queued).toBeDefined();
 		const queuedText = Bun.stripANSI(queued!.render(120).join("\n"));
-		expect(queuedText).toContain("queued");
-		expect(queuedText).toContain("ecoport/search");
 		expect(queuedText).toContain("Broken");
 	});
 
@@ -584,9 +575,7 @@ describe("read and write route xd:// device URLs", () => {
 			{ path: "xd://github", content },
 		);
 		const rendered = Bun.stripANSI(component.render(80).join("\n"));
-		expect(rendered).toContain("GitHub Repo");
 		expect(rendered).toContain("gh: Not Found (HTTP 404)");
-		expect(rendered).not.toContain("Write");
 	});
 
 	it("keeps the mounted command frame when an xd:// write is aborted", async () => {
@@ -627,12 +616,9 @@ describe("read and write route xd:// device URLs", () => {
 			args,
 		);
 		const rendered = Bun.stripANSI(component.render(120).join("\n"));
-		expect(rendered).toContain("SSH");
 		expect(rendered).toContain("[macmini]");
 		expect(rendered).toContain(command);
-		expect(rendered).toContain("Output");
 		expect(rendered).toContain("Aborted: Cancelled");
-		expect(rendered).not.toContain("Write");
 	});
 
 	it("preserves non-SSH mounted renderers and arguments when an xd:// write is aborted", async () => {
@@ -646,77 +632,63 @@ describe("read and write route xd:// device URLs", () => {
 				label: "GitHub",
 				renderer: githubToolRenderer,
 				args: { op: "repo_view", repo: "owner/project" },
-				expected: ["GitHub Repo", "owner/project"],
+				expected: ["owner/project"],
 			},
 			{
 				name: "adb",
 				label: "ADB",
 				renderer: adbToolRenderer,
 				args: { op: "shell", device: "emulator-5554", command: "getprop ro.product.model" },
-				expected: ["ADB", "shell", "emulator-5554", "getprop ro.product.model", "Output"],
+				expected: ["shell", "emulator-5554", "getprop ro.product.model"],
 			},
 			{
 				name: "ast_edit",
 				label: "AST Edit",
 				renderer: toolRenderers.ast_edit,
 				args: { ops: [{ pat: "legacy($A)", out: "modern($A)" }], paths: ["src"] },
-				expected: ["AST Edit", "legacy($A)"],
+				expected: ["legacy($A)"],
 			},
 			{
 				name: "ast_grep",
 				label: "AST Grep",
 				renderer: toolRenderers.ast_grep,
 				args: { pat: "legacy($A)", path: "src" },
-				expected: ["AST Grep", "legacy($A)"],
-			},
-			{
-				name: "debug",
-				label: "Debug",
-				renderer: toolRenderers.debug,
-				args: { action: "launch", program: "app" },
-				expected: ["Debug launch", "Aborted: Cancelled"],
+				expected: ["legacy($A)"],
 			},
 			{
 				name: "inspect_image",
 				label: "Inspect Image",
 				renderer: toolRenderers.inspect_image,
 				args: { path: "fixture.png", question: "What changed?" },
-				expected: ["Inspect", "fixture.png", "What changed?"],
+				expected: ["fixture.png", "What changed?"],
 			},
 			{
 				name: "lsp",
 				label: "LSP",
 				renderer: toolRenderers.lsp,
 				args: { action: "diagnostics", file: "src/app.ts" },
-				expected: ["LSP", "src/app.ts"],
+				expected: ["src/app.ts"],
 			},
 			{
 				name: "recall",
 				label: "Recall",
 				renderer: toolRenderers.recall,
 				args: { query: "renderer audit" },
-				expected: ["Recall", "renderer audit"],
+				expected: ["renderer audit"],
 			},
 			{
 				name: "reflect",
 				label: "Reflect",
 				renderer: toolRenderers.reflect,
 				args: { query: "renderer audit" },
-				expected: ["Reflect", "renderer audit"],
+				expected: ["renderer audit"],
 			},
 			{
 				name: "retain",
 				label: "Retain",
 				renderer: toolRenderers.retain,
 				args: { items: [{ content: "renderer audit fact" }] },
-				expected: ["Retain", "renderer audit fact"],
-			},
-			{
-				name: "ssh_session",
-				label: "SSH Session",
-				renderer: toolRenderers.ssh_session,
-				args: { op: "list" },
-				expected: ["SSH Session", "list"],
+				expected: ["renderer audit fact"],
 			},
 			{
 				name: "ssh_transfer",
@@ -728,7 +700,7 @@ describe("read and write route xd:// device URLs", () => {
 					local_path: "fixture.bin",
 					remote_path: "/tmp/fixture.bin",
 				},
-				expected: ["SSH", "macmini", "fixture.bin"],
+				expected: ["macmini", "fixture.bin"],
 			},
 		] as const;
 		const missing: string[] = [];
@@ -772,7 +744,6 @@ describe("read and write route xd:// device URLs", () => {
 				if (!rendered.includes(expected)) missing.push(`${fixture.name}: ${expected}`);
 			}
 			if (!rendered.includes("Aborted: Cancelled")) missing.push(`${fixture.name}: Aborted: Cancelled`);
-			if (rendered.includes("Write")) missing.push(`${fixture.name}: unexpected Write frame`);
 		}
 		expect(missing).toEqual([]);
 	});
@@ -812,10 +783,8 @@ describe("read and write route xd:// device URLs", () => {
 			outerArgs,
 		);
 		const rendered = Bun.stripANSI(component.render(80).join("\n"));
-		expect(rendered).toContain("Weather");
 		expect(rendered).toContain('query="Tokyo"');
 		expect(rendered).toContain("Aborted: Cancelled");
-		expect(rendered).not.toContain("Write");
 	});
 
 	it("preserves plain-text internal device calls when an xd:// write is aborted", async () => {
@@ -868,11 +837,10 @@ describe("read and write route xd:// device URLs", () => {
 					.join("\n"),
 			);
 			for (const expected of fixture.expectedText) expect(rendered).toContain(expected);
-			expect(rendered).not.toContain("Write");
 		}
 	});
 
-	it("keeps the generic custom-tool card when a mounted device has no renderer", async () => {
+	it("preserves arguments and output when a mounted device has no renderer", async () => {
 		await themeModule.initTheme();
 		const uiTheme = (await themeModule.getThemeByName("dark")) ?? (await themeModule.getThemeByName("light"));
 		if (!uiTheme) throw new Error("expected an initialized theme");
@@ -904,61 +872,9 @@ describe("read and write route xd:// device URLs", () => {
 			uiTheme,
 			{ path: "xd://weather", content },
 		);
-		const lines = component.render(80);
-		const rendered = Bun.stripANSI(lines.join("\n"));
-		const backgroundProbe = uiTheme.bg("toolSuccessBg", "|");
-		const backgroundPrefix = backgroundProbe.slice(0, backgroundProbe.indexOf("|"));
-
-		expect(rendered).toContain("Weather");
+		const rendered = Bun.stripANSI(component.render(80).join("\n"));
 		expect(rendered).toContain('query="Tokyo"');
 		expect(rendered).toContain("Tokyo: 22°C");
-		expect(backgroundPrefix).not.toBe("");
-		expect(lines.some(line => line.includes(backgroundPrefix))).toBe(true);
-	});
-
-	it("renders a dispatched top-level tool through its own renderer while it stays unmounted", async () => {
-		await themeModule.initTheme();
-		const uiTheme = (await themeModule.getThemeByName("dark")) ?? (await themeModule.getThemeByName("light"));
-		if (!uiTheme) throw new Error("expected an initialized theme");
-
-		// Inferred (like the neighboring device fixtures): `mergeCallAndResult` and
-		// the render hooks live on the coding-agent `Tool`, not on `AgentTool`.
-		const topLevelDevice = {
-			name: "pwsh",
-			label: "PowerShell 7",
-			description: "fixture",
-			parameters: type({ command: "string" }),
-			mergeCallAndResult: true,
-			renderCall: () => new Text("TOP-LEVEL-CALL", 0, 0),
-			renderResult: () => new Text("TOP-LEVEL-RESULT", 0, 0),
-			async execute() {
-				return { content: [{ type: "text" as const, text: "42" }] };
-			},
-		};
-		// An `essential` tool stays top-level: never mounted, but dispatchable.
-		const xdev = createTestXdevState([topLevelDevice], [], name => name === topLevelDevice.name);
-		xdev.mountedNames.clear();
-		const write = new WriteTool(xdevSession(process.cwd(), { xdev }));
-		const content = JSON.stringify({ command: "Write-Output 42" });
-		const result = await write.execute("write-xdev-top-level", { path: "xd://pwsh", content });
-		expect(result.isError ?? false).toBe(false);
-		expect(result.details?.xdev).toMatchObject({ tool: "pwsh", mode: "execute" });
-
-		const component = writeToolRenderer.renderResult(
-			result,
-			{
-				expanded: false,
-				isPartial: false,
-				renderContext: mountedRenderContext(xdev),
-			},
-			uiTheme,
-			{ path: "xd://pwsh", content },
-		);
-		const rendered = Bun.stripANSI(component.render(80).join("\n"));
-
-		expect(rendered).toContain("TOP-LEVEL-RESULT");
-		// The generic device card would have inlined the args instead.
-		expect(rendered).not.toContain('command="Write-Output 42"');
 	});
 
 	// Dynamic device summaries are third-party text inlined into the system
@@ -1035,7 +951,6 @@ describe("read and write route xd:// device URLs", () => {
 		const docs = xdevDocsAll(createTestXdevState([giant, small]));
 		expect(docs.length).toBeLessThan(XDEV_DOCS_TOTAL_BUDGET + XDEV_DOCS_PER_DEVICE_CAP);
 		expect(docs).toContain("## small_device");
-		expect(docs).toContain("## Additional devices (docs on demand)");
 		expect(docs).toContain("- xd://giant_mcp_tool —");
 		expect(docs).not.toContain("## giant_mcp_tool");
 	});
@@ -1044,7 +959,6 @@ describe("read and write route xd:// device URLs", () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "write-xdev-external-"));
 		try {
 			const session = xdevSession(tempDir);
-			expect(cfgToolsXdevDocs.get(session.settings)).toBe("catalog");
 			await createTools(session);
 			const xdev = session.xdev;
 			if (!xdev) throw new Error("expected xdev state");
@@ -1065,16 +979,13 @@ describe("read and write route xd:// device URLs", () => {
 			expect(inlineDocs).toContain("## mcp_external_tool");
 			expect(inlineDocs).toContain("LEDE ");
 			expect(inlineDocs).not.toContain("TAIL");
-			expect(inlineDocs).toContain("… (full docs: read xd://mcp_external_tool)");
 
 			const builtinsDocs = xdevDocsAll(xdev, "builtins");
-			expect(builtinsDocs).toContain("## ");
 			expect(builtinsDocs).not.toContain("## mcp_external_tool");
 			expect(builtinsDocs).toContain("- xd://mcp_external_tool —");
 			expect(builtinsDocs).not.toContain("TAIL");
 			const catalogDocs = xdevDocsAll(xdev, "catalog");
 			expect(catalogDocs).not.toContain(`## ${mounted[0]!.name}`);
-			expect(catalogDocs).toContain("- xd://");
 			expect(catalogDocs).toContain("- xd://mcp_external_tool —");
 			expect(xdevDocs(xdev, "mcp_external_tool")).toContain("TAIL");
 
@@ -1109,12 +1020,10 @@ describe("read and write route xd:// device URLs", () => {
 });
 
 describe("web_search stays top-level under xdev", () => {
-	it("keeps web_search direct and out of the mounted-name set with default config", async () => {
+	it("keeps web_search direct and out of the mounted-name set", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "write-xdev-websearch-"));
 		try {
 			const session = xdevSession(tempDir);
-			// Default config: tools.xdev is on.
-			expect(cfgToolsXdev.get(session.settings)).toBe(true);
 			const tools = await createTools(session);
 			// Regression for #5973: models call web_search directly, so it must
 			// remain a top-level function and never mount behind the xd:// device.

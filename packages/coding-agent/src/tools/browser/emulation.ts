@@ -1,14 +1,10 @@
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-import type { Device, Frame, NetworkConditions, Page, Permission } from "puppeteer-core";
+import type { Device, Frame, NetworkConditions, Page, Permission, Viewport } from "puppeteer-core";
 import { applyViewport } from "./launch";
 
 /** Viewport dimensions accepted by runtime emulation. */
-export interface EmulationViewport {
-	/** Viewport width in CSS pixels. */
-	width: number;
-	/** Viewport height in CSS pixels. */
-	height: number;
-	/** Device scale factor. */
+export interface EmulationViewport extends Viewport {
+	/** Device scale factor alias; deviceScaleFactor takes precedence when both are supplied. */
 	scale?: number;
 }
 
@@ -95,6 +91,22 @@ function copyOptions(options: BrowserEmulateOptions): BrowserEmulateOptions {
 	return structuredClone(options);
 }
 
+function copyViewport(viewport: Viewport | null): Viewport | null {
+	return viewport ? { ...viewport } : null;
+}
+
+function sameViewport(a: Viewport | null, b: Viewport | null): boolean {
+	if (a === null || b === null) return a === b;
+	return (
+		a.width === b.width &&
+		a.height === b.height &&
+		a.deviceScaleFactor === b.deviceScaleFactor &&
+		a.isMobile === b.isMobile &&
+		a.hasTouch === b.hasTouch &&
+		a.isLandscape === b.isLandscape
+	);
+}
+
 function pageOrigin(page: Page): string | null {
 	try {
 		const origin = new URL(page.url()).origin;
@@ -117,6 +129,8 @@ export class BrowserEmulationController {
 	readonly #baseUserAgent: string;
 	readonly #state: BrowserEmulateOptions = {};
 	readonly #permissionsByOrigin = new Map<string, Set<Permission>>();
+	#lastViewport: Viewport | null;
+	#viewportReset = false;
 	#clipboardShim: string | undefined;
 	readonly #navigationHandler: (frame: Frame) => void;
 
@@ -125,6 +139,7 @@ export class BrowserEmulationController {
 		this.#devices = devices;
 		this.#networkConditions = networkConditions;
 		this.#baseUserAgent = baseUserAgent;
+		this.#lastViewport = copyViewport(page.viewport());
 		this.#navigationHandler = frame => {
 			if (frame !== this.#page.mainFrame()) return;
 			if (this.#state.geolocation) void this.#grantPermissions(["geolocation"]).catch(() => undefined);
@@ -139,6 +154,8 @@ export class BrowserEmulationController {
 
 	/** Merge supplied overrides, apply the effective state, and return a detached state snapshot. */
 	async emulate(options: BrowserEmulateOptions = {}): Promise<BrowserEmulateOptions> {
+		this.#synchronizeViewport();
+		if (hasOwn(options, "viewport")) this.#viewportReset = false;
 		Object.assign(this.#state, copyOptions(options));
 		await this.reapply();
 		return copyOptions(this.#state);
@@ -146,20 +163,26 @@ export class BrowserEmulationController {
 
 	/** Re-apply every active override after a browser lifecycle resume. */
 	async reapply(): Promise<void> {
+		this.#synchronizeViewport();
 		const state = this.#state;
+		let device: Device | undefined;
 		if (hasOwn(state, "device")) {
-			const device = this.#devices[state.device];
+			device = this.#devices[state.device];
 			if (!device)
 				throw new ToolError(`Unknown Puppeteer device ${JSON.stringify(state.device)}. Use tab.devices().`);
-			await this.#page.emulate(device);
+			await applyUserAgentOverride(this.#page, device.userAgent);
 		}
+		// Apply only the effective viewport. Bouncing through the device viewport
+		// first can toggle mobile/touch mode and reload the app even on an unchanged run.
 		if (hasOwn(state, "viewport")) {
+			const { scale, ...viewport } = state.viewport;
 			await applyViewport(this.#page, {
-				width: state.viewport.width,
-				height: state.viewport.height,
-				deviceScaleFactor: state.viewport.scale,
+				...viewport,
+				deviceScaleFactor: viewport.deviceScaleFactor ?? scale,
 			});
-		}
+		} else if (this.#viewportReset) await this.#page.setViewport(null);
+		else if (device) await this.#page.setViewport(device.viewport);
+		this.#lastViewport = copyViewport(this.#page.viewport());
 		if (hasOwn(state, "userAgent")) {
 			if (state.userAgent !== null) await applyUserAgentOverride(this.#page, state.userAgent);
 			else if (!hasOwn(state, "device")) await applyUserAgentOverride(this.#page, this.#baseUserAgent);
@@ -197,6 +220,23 @@ export class BrowserEmulationController {
 		if (hasOwn(state, "timezone")) await this.#page.emulateTimezone(state.timezone ?? undefined);
 		if (hasOwn(state, "locale")) await this.#page.emulateLocale(state.locale ?? undefined);
 		if (hasOwn(state, "cpuThrottling")) await this.#page.emulateCPUThrottling(state.cpuThrottling);
+	}
+
+	/** Adopt raw page.setViewport() changes before persistent overrides are reapplied. */
+	#synchronizeViewport(): void {
+		// Snapshot values: raw code may mutate and reuse the object from page.viewport().
+		// Remember our last application so device emulation is not mistaken for a raw override.
+		const viewport = this.#page.viewport();
+		if (sameViewport(viewport, this.#lastViewport)) return;
+		this.#lastViewport = copyViewport(viewport);
+		this.#viewportReset = viewport === null;
+		if (this.#lastViewport) {
+			this.#state.viewport = {
+				...this.#lastViewport,
+				// Puppeteer's omitted scale means native scale (0), not omp's 1.25 default.
+				deviceScaleFactor: this.#lastViewport.deviceScaleFactor ?? 0,
+			};
+		} else delete this.#state.viewport;
 	}
 
 	/** Read text through the page clipboard, falling back only to a prior shim write. */

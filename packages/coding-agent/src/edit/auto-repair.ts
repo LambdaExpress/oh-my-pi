@@ -1,5 +1,6 @@
 /**
- * Auto-repair for edits that introduce a parse failure.
+ * Auto-repair for definite parse regressions from trusted grammars.
+ * PowerShell remains uncertain without its authoritative parser.
  *
  * When an applied edit turns a file that parsed into one that no longer does,
  * this module localizes the breakage to the smallest hunk set whose reversion
@@ -44,8 +45,25 @@ interface EditHunk {
 	bEnd: number;
 }
 
+export type SourceParseStatus = "parsed" | "unparsed" | "unknown";
+
+/** Lightweight grammar results are not syntax authority for PowerShell. */
+export function sourceParseStatus(code: string, path: string): SourceParseStatus {
+	if (/\.(?:ps1|psm1|psd1)$/i.test(path)) return "unknown";
+	try {
+		return summarizeCode({ code: code.length === 0 ? "\n" : code, path }).parsed ? "parsed" : "unparsed";
+	} catch {
+		return "unknown";
+	}
+}
+
+/** Repair and warnings require a definite clean-to-broken transition. */
+export function hasParseRegression({ path, prev, next }: AppliedEditSnapshot): boolean {
+	return sourceParseStatus(prev, path) === "parsed" && sourceParseStatus(next, path) === "unparsed";
+}
+
 function parsesSource(code: string, path: string): boolean {
-	return summarizeCode({ code: code.length === 0 ? "\n" : code, path }).parsed;
+	return sourceParseStatus(code, path) === "parsed";
 }
 
 /** The localized broken region plus its parseable pre-image reference. */
@@ -136,10 +154,11 @@ function isolateCulpritHunks(path: string, a: string[], b: string[], hunks: Edit
 
 /**
  * Localize the parse breakage introduced by `prev → next` to a bounded line
- * region. Returns `undefined` when the breakage cannot be isolated under
- * {@link MAX_REGION_LINES} — callers fall back to the plain parse warning.
+ * region. Returns `undefined` for uncertain/non-regressed syntax or when the
+ * breakage cannot be isolated under {@link MAX_REGION_LINES}.
  */
 export function computeRepairRegion(snapshot: AppliedEditSnapshot): RepairRegion | undefined {
+	if (!hasParseRegression(snapshot)) return undefined;
 	const { path, prev, next } = snapshot;
 	const { hunks, a, b } = buildHunks(prev, next);
 	const culprits = isolateCulpritHunks(path, a, b, hunks);
@@ -291,6 +310,7 @@ export async function attemptEditAutoRepair(options: {
 }): Promise<EditAutoRepairOutcome | undefined> {
 	const { session, snapshot, writethrough } = options;
 	if (!cfgEditAutoRepairEnabled.get(session.settings)) return undefined;
+	if (!hasParseRegression(snapshot)) return undefined;
 	const registry = session.modelRegistry;
 	if (!registry) return undefined;
 	const model = resolveRoleSelection(["smol"], session.settings, registry.getAvailable())?.model;
@@ -310,7 +330,7 @@ export async function attemptEditAutoRepair(options: {
 	} catch {
 		return undefined;
 	}
-	if (parsesSource(current, snapshot.path)) return undefined;
+	if (sourceParseStatus(current, snapshot.path) !== "unparsed") return undefined;
 
 	const modelName = `${model.provider}/${model.id}`;
 	logger.debug("Edit auto-repair started", { path: snapshot.path, model: modelName });

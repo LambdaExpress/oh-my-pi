@@ -907,6 +907,16 @@ export async function buildRemoteCommand(
 		return [...(host.distribution ? ["--distribution", host.distribution] : []), "--exec", "sh", "-lc", command];
 	}
 	await validateKeyPermissions(host.keyPath, options?.platform);
+	const info = getCachedHostInfoSync(host);
+	if (info?.os === "windows" && info.shell === "powershell") {
+		// OpenSSH can start PowerShell with an OEM console code page even when
+		// $OutputEncoding is UTF-8. Assignments emit no bytes, including on the
+		// raw transfer route, and leave non-PowerShell login shells untouched.
+		command =
+			"[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); " +
+			"$OutputEncoding = [Console]::OutputEncoding; " +
+			command;
+	}
 	return [...buildCommonArgs(host, options), buildSshTarget(host.username, host.host), command];
 }
 

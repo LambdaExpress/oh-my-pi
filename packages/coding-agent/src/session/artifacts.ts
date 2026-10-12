@@ -76,7 +76,6 @@ export class ArtifactManager {
 	#nextId = 0;
 	readonly #dir: string;
 	#dirCreated = false;
-	#initPromise: Promise<void> | null = null;
 
 	/**
 	 * @param dir Directory that will hold artifact files. Created lazily on first save.
@@ -98,19 +97,18 @@ export class ArtifactManager {
 			await fs.mkdir(this.#dir, { recursive: true });
 			this.#dirCreated = true;
 		}
-		// Memoize the first-use scan so it runs exactly once. Concurrent callers
-		// share the in-flight promise instead of each re-seeding #nextId across
-		// the readdir yield in #scanExistingIds (which would hand duplicate ids).
-		this.#initPromise ??= this.#scanExistingIds();
-		await this.#initPromise;
+		// A fork can copy inherited artifacts after this manager's first use.
+		// Refresh the disk high-water mark before every allocation, not just init.
+		await this.#scanExistingIds();
 	}
 
 	/**
-	 * Scan existing artifact files to find the next available ID.
-	 * This ensures we don't overwrite artifacts when resuming a session.
+	 * Advance the next ID past existing files without releasing outstanding
+	 * allocations. Concurrent scans may finish after another caller reserved an
+	 * ID, so the counter must never move backwards.
 	 */
 	async #scanExistingIds(): Promise<void> {
-		const files = await this.listFiles();
+		const files = await fs.readdir(this.#dir);
 		let maxId = -1;
 		for (const file of files) {
 			// Files are named: {id}.{toolType}.log
@@ -120,7 +118,7 @@ export class ArtifactManager {
 				if (id > maxId) maxId = id;
 			}
 		}
-		this.#nextId = maxId + 1;
+		this.#nextId = Math.max(this.#nextId, maxId + 1);
 	}
 
 	/**

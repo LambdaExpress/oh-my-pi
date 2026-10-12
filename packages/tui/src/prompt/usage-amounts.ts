@@ -1,4 +1,5 @@
 import { resolveUsedFraction, type UsageLimit } from "@oh-my-pi/pi-ai/usage";
+import { t } from "../i18n";
 
 /**
  * Formatting for usage limits that carry an absolute amount but no fraction,
@@ -37,10 +38,12 @@ export function isRemainingOnlyAbsoluteAmount(limit: UsageLimit): boolean {
 	);
 }
 
-function formatQuantity(value: number, unit: UsageLimit["amount"]["unit"], suffix: string): string {
-	if (unit === "usd") return `$${value.toFixed(2)} ${suffix}`;
-	const formatted = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value);
-	return `${formatted} ${unit} ${suffix}`;
+function formatQuantity(value: number, unit: UsageLimit["amount"]["unit"], suffix: "left" | "used"): string {
+	const formatted =
+		unit === "usd"
+			? `$${value.toFixed(2)}`
+			: `${new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value)}${t(` ${unit}`)}`;
+	return suffix === "left" ? t("{value} left", { value: formatted }) : t("{value} used", { value: formatted });
 }
 
 /**

@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added Codex extra usage credit balances and server-provided local/cloud message estimates to usage reports, separately from subscription quota windows and saved resets.
 - Added Command Code subscription quota reporting, so `/usage` and the status line show the five-hour and weekly credit windows (with reset countdowns) instead of a spend estimate for `commandcode` models.
 
 ### Changed
@@ -12,6 +13,7 @@
 
 ### Fixed
 
+- Fixed older Codex usage snapshots hiding extra credit balances by retiring the previous cached report format.
 - Fixed tool argument validation discarding schema-valid explicit `null` values and replacing valid nulls with required-field defaults.
 - Fixed hosted image results reporting requested dimensions instead of the actual dimensions encoded in returned image bytes.
 - Fixed native Codex WebSocket lanes aborting active answers when they reject in-flight steering; deferred input now resumes once through an independent request while preserving streamed output and tool progress.

@@ -49,6 +49,7 @@ import { buildSkillPromptMessage, type Skill } from "../extensibility/skills";
 import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { IrcBus } from "../irc/bus";
+import { cfgLspEnabled } from "../lsp/settings";
 import type { MCPManager } from "../mcp/manager";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import { initializeExtensions } from "../modes/runtime-init";
@@ -4046,6 +4047,11 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
 						agent: agent.systemPrompt,
 						context: options.context?.trim() ?? "",
+						lspUnavailable:
+							!lspEnabled ||
+							!cfgLspEnabled.get(subagentSettings) ||
+							(options.restrictToolNames === true && !toolNames?.includes("lsp")),
+						lspReadOnly: isReadOnlyAgent(agent) || options.restrictToolNames === true,
 						planReference: options.planReference?.content ?? "",
 						planReferencePath: options.planReference?.path ?? "",
 						worktree: worktree ?? "",
@@ -4089,6 +4095,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				agentName: agent.name,
 				expectedAgentRef,
 				enableLsp: lspEnabled,
+				lspReadOnly: isReadOnlyAgent(agent) || options.restrictToolNames === true,
 				enableIrc: options.enableIrc,
 				skipPythonPreflight,
 				enableMCP,

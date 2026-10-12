@@ -6,7 +6,7 @@ import type { ToolSession } from "../../tools";
 import { committedTodoPhases } from "../../tools/todo";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { schemaDeclaresIntentField } from "../../utils/tool-schema";
-import { findEnabledEvalPrelude, invokeEvalPrelude } from "../preludes";
+import { EVAL_BROWSER_ACTIVITY_OP, findEnabledEvalPrelude, invokeEvalPrelude } from "../preludes";
 import { EVAL_AGENT_BRIDGE_NAME, type EvalAgentHandleResult, runEvalAgent } from "../agent-bridge";
 import { EVAL_BUDGET_BRIDGE_NAME, type EvalBudgetResult, runEvalBudget } from "../budget-bridge";
 import { withBridgeTimeoutPause } from "../bridge-timeout";
@@ -27,7 +27,7 @@ import {
 	runEvalWait,
 } from "../handle-bridge";
 import type { EvalShadowCellSession } from "../speculation/cell-session";
-import { getActiveEvalShadowCell } from "../speculation/runtime-context";
+import { type EvalKernelContextRunner, getActiveEvalShadowCell } from "../speculation/runtime-context";
 import { EVAL_WORKPOOL_BRIDGE_NAME, type EvalWorkpoolResult, runEvalWorkpool } from "../workpool-bridge";
 import type { RuntimeCallIdentity } from "./shared/runtime";
 import type { JsStatusEvent } from "./shared/types";
@@ -41,6 +41,7 @@ export interface ToolBridgeOptions {
 	defaultIntent?: string;
 	identity?: RuntimeCallIdentity;
 	shadowCell?: EvalShadowCellSession;
+	runInEvalContext?: EvalKernelContextRunner;
 }
 
 type ToolValue =
@@ -224,10 +225,17 @@ function waitForSpeculativeClaim<T>(claim: Promise<T>, signal?: AbortSignal): Pr
 }
 
 export async function callSessionTool(name: string, args: unknown, options: ToolBridgeOptions): Promise<ToolValue> {
+	return options.runInEvalContext
+		? options.runInEvalContext(() => executeSessionTool(name, args, options))
+		: executeSessionTool(name, args, options);
+}
+
+async function executeSessionTool(name: string, args: unknown, options: ToolBridgeOptions): Promise<ToolValue> {
 	if (name === "__prelude__") {
 		const request = parsePreludeRequest(args);
 		const toolCallId = `prelude-${request.name}-${crypto.randomUUID()}`;
 		try {
+			if (request.name === "browser") options.emitStatus?.({ op: EVAL_BROWSER_ACTIVITY_OP });
 			// Browser/computer operations own their deadlines. Charging their host
 			// wait to Eval as well can kill its kernel during a first-use browser
 			// install or an explicitly longer navigation. Caller abort still flows

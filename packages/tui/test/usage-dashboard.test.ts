@@ -261,6 +261,36 @@ describe("UsageDashboardComponent", () => {
 		});
 	}
 
+	it("keeps balances visible beyond the quota window cap in stacked and inline cards", () => {
+		const quotas = Array.from({ length: 5 }, (_, index) =>
+			limit("openai-codex", "account", `window-${index}`, `Quota ${index}`, 0.5 - index * 0.1, "ok"),
+		);
+		const component = dashboard([
+			report("openai-codex", "a@test", [
+				...quotas,
+				{
+					id: "openai-codex:credits",
+					label: "Extra usage credits",
+					scope: { provider: "openai-codex", accountId: "account", windowId: "credits" },
+					amount: { remaining: 125.5, unit: "credits" },
+				},
+			]),
+		]);
+		try {
+			for (const width of [40, 100]) {
+				const lines = component.render(width).map(line => Bun.stripANSI(line));
+				const output = lines.join("\n");
+				expect(output).toContain("Extra usage credits");
+				expect(output).toContain("125.5 credits left");
+				expect(output).toContain("+1 more");
+				expect(output).not.toContain("Quota 4");
+				for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			}
+		} finally {
+			component.dispose();
+		}
+	});
+
 	it("keeps usable bars and matching label rows across multi-column cards", () => {
 		const component = dashboard([
 			report("anthropic", "a@test", [

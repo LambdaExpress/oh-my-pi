@@ -304,6 +304,62 @@ describe.skipIf(!pythonPath)("IDA worker response protocol", () => {
 		]);
 	});
 
+	it.each(["strings-managed-empty", "strings-managed-partial"])(
+		"finds CLR byte anchors even when the analyzer omits some or all strings: %s",
+		async mode => {
+			const [result] = (await runWorker(mode)) as Array<{
+				text: string;
+				items: Array<[number | string, string]>;
+				constraints: Array<[number | string, string]>;
+			}>;
+			expect(result?.constraints).toEqual([
+				[0x400000 + 142655, "VRCConstraintSource"],
+				[0x400000 + 163386, "RegisterConstraint"],
+				[`file+0x${(163405).toString(16)}`, "UnregisterConstraint"],
+			]);
+			for (const [location, text] of result?.constraints ?? []) {
+				const address = typeof location === "number" ? `0x${location.toString(16)}` : location;
+				expect(result?.text).toContain(`${address}  ${JSON.stringify(text)}`);
+			}
+			const entries = result?.items ?? [];
+			expect(entries.filter(([, text]) => text === "Native message")).toEqual([[0x400100, "Native message"]]);
+			expect(entries.filter(([, text]) => text.startsWith("é"))).toEqual([[0x400260, "ééééé"]]);
+			expect(entries).toContainEqual([0x400280, "日本語の名前😀"]);
+			expect(entries).toContainEqual([0x400302, "ReadableName"]);
+			expect(entries).toContainEqual([0x400342, "VisibleAfterControl"]);
+		},
+	);
+
+	it("preserves analyzed native addresses, wide Unicode and explicitly listed short strings", async () => {
+		const [result] = (await runWorker("strings-native")) as Array<{
+			text: string;
+			items: Array<[number | string, string]>;
+			constraints: Array<[number | string, string]>;
+		}>;
+		const expected: Array<[number, string]> = [
+			[0x400100, "Native message"],
+			[0x400140, "约束来源名称"],
+			[0x400180, "Source 😀 value"],
+			[0x4001c0, "ID"],
+		];
+		expect(result?.items).toEqual(expected);
+		expect(result?.text).toBe(
+			expected.map(([ea, text]) => `0x${ea.toString(16)}  ${JSON.stringify(text)}`).join("\n"),
+		);
+		expect(result?.constraints).toEqual([]);
+	});
+
+	it("rebuilds a missing native list with wide Unicode decoded by IDA and a character minimum", async () => {
+		const [result] = (await runWorker("strings-rebuilt-wide")) as Array<{
+			items: Array<[number | string, string]>;
+		}>;
+		expect(result?.items).toEqual([
+			[0x400100, "Native message"],
+			[0x400140, "约束来源名称"],
+			[0x400180, "Source 😀 value"],
+		]);
+	});
+
 	it.each(["pseudocode-native", "pseudocode-managed-supported"])(
 		"以正确 SDK 绑定生成伪代码并清除颜色标签：%s",
 		async mode => {

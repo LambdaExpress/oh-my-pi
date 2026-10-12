@@ -79,6 +79,8 @@ export interface EvalCellResult {
 
 /** Tool result detail object surfaced to the UI/transcript. */
 export interface EvalToolDetails {
+	/** This call entered the built-in browser bridge, including failed or aborted attempts. */
+	hasBrowserActivity?: boolean;
 	cells?: EvalCellResult[];
 	jsonOutputs?: unknown[];
 	images?: ImageContent[];
@@ -787,19 +789,24 @@ export const evalToolRenderer = {
 	animatedPendingPreview: true,
 	animatedPartialResult: true,
 	/**
-	 * Folded row reads as the cell's title (what the call is for), falling back
-	 * to the language it runs — never the code body, which is what the fold
-	 * exists to hide.
+	 * Folded rows distinguish actual built-in browser activity from ordinary
+	 * eval, retaining the cell title without exposing its language or code.
 	 */
 	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const details = context.result?.details as EvalToolDetails | undefined;
+		const label =
+			details?.hasBrowserActivity === true ||
+			details?.statusEvents?.some(event => event.op === "browser") ||
+			details?.cells?.some(cell => cell.statusEvents?.some(event => event.op === "browser"))
+				? "Browser"
+				: "Eval";
 		const cells = getRenderCells((args ?? {}) as EvalRenderArgs);
 		for (const cell of cells) {
 			if (!cell.title) continue;
 			const title = sanitizeDisplayWarning(cell.title);
-			if (title.length > 0) return { label: "Eval", detail: context.theme.fg("muted", title) };
+			if (title.length > 0) return { label, detail: context.theme.fg("muted", title) };
 		}
-		const language = cells[0]?.language === "js" ? "javascript" : "python";
-		return { label: "Eval", detail: context.theme.fg("muted", t("running {language}", { language })) };
+		return { label };
 	},
 	renderCall(args: EvalRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		const cells = getRenderCells(args);

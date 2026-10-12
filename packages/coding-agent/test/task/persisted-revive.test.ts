@@ -510,6 +510,53 @@ describe("persisted subagent revival", () => {
 		expect(presentations).toEqual([{ tools: ["read", "write", "yield"], mountedXdevTools: [] }]);
 	});
 
+	it("cold revival preserves readonly LSP access and never adds a previously ungranted LSP", async () => {
+		for (const granted of [true, false]) {
+			const cwd = makeTempDir("@pi-readonly-lsp-revive-");
+			const source = path.join(cwd, "source.ts");
+			const original = "export function Original() {}\n";
+			await Bun.write(source, original);
+			const sessionFile = await createPersistedSession(cwd, undefined, "default", undefined, {
+				tools: granted ? ["read", "lsp", "yield"] : ["read", "yield"],
+				readOnly: true,
+			});
+			const authStorage = await AuthStorage.create(path.join(cwd, "auth.db"));
+			authStorage.keys.setRuntime("anthropic", "test-key");
+			const modelRegistry = new ModelRegistry(authStorage, path.join(cwd, "models.yml"));
+			const ref = AgentRegistry.global().register(createRef(sessionFile));
+			const reviver = await createFactory(cwd, undefined, { authStorage, modelRegistry })(ref);
+			if (!reviver) throw new Error("Expected a persisted reviver");
+			let revived: AgentSession | undefined;
+			try {
+				revived = await reviver(ref);
+				const lsp = revived.getToolByName("lsp");
+				if (!granted) {
+					expect(lsp).toBeUndefined();
+					expect(revived.getEnabledToolNames()).not.toContain("lsp");
+					continue;
+				}
+				if (!lsp) throw new Error("Missing persisted LSP tool");
+				const read = revived.getToolByName("read");
+				if (!read) throw new Error("Missing revived read tool");
+				const docs = await read.execute("revived-lsp-docs", { path: "xd://lsp" });
+				expect(docs.content.find(block => block.type === "text")?.text).toContain('"references"');
+				await expect(
+					lsp.execute("revived-lsp-rename", {
+						action: "rename",
+						file: source,
+						line: 1,
+						symbol: "Original",
+						new_name: "Changed",
+					}),
+				).rejects.toThrow("disabled in this read-only session");
+				expect(await Bun.file(source).text()).toBe(original);
+			} finally {
+				await revived?.dispose();
+				authStorage.close();
+			}
+		}
+	});
+
 	it("preserves normal revival capability wiring for contracts without the marker", async () => {
 		const cwd = makeTempDir("@pi-normal-revive-");
 		const sessionFile = await createPersistedSession(cwd);
@@ -529,7 +576,6 @@ describe("persisted subagent revival", () => {
 		await reviver(ref);
 
 		expect(capturedOptions?.restrictToolNames).toBeUndefined();
-		expect(capturedOptions?.enableLsp).toBe(true);
 		expect(capturedOptions?.mcpManager).toBe(hostileMcp);
 		// The ambient proxy (mcp__server_read) is not part of the persisted
 		// contract (["read", "yield"]), so the non-widening filter keeps

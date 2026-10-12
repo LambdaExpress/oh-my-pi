@@ -5,14 +5,13 @@ use std::{
 	sync::{LazyLock, Mutex},
 };
 
-use pi_ast::{
-	block::{
-		BlockRangeOptions, EnclosingBoundaryOptions, LineRange, NodeSpan, enclosing_block_boundaries,
-		node_chain_at,
-	},
-	summary::{SummaryOptions, summarize_code},
+use pi_ast::block::{
+	BlockRangeOptions, EnclosingBoundaryOptions, LineRange, NodeSpan, enclosing_block_boundaries,
+	node_chain_at,
 };
 use xxhash_rust::xxh64::xxh64;
+
+use crate::session::source_parses;
 
 const CACHE_MAX: usize = 256;
 type Key = (u64, usize, String, u32, u32);
@@ -93,7 +92,7 @@ pub fn enclosing_boundaries(lines: &[String], path: &str, start: u32, end: u32) 
 	boundaries
 }
 
-/// Whether text parses cleanly for the supplied path language.
+/// Whether the shared edit guard establishes a definite clean parse.
 pub fn parses_cleanly(path: Option<&str>, text: &str) -> bool {
 	let Some(path) = path else { return false };
 	let cache_key = key(text, path, 0, 0);
@@ -102,16 +101,7 @@ pub fn parses_cleanly(path: Option<&str>, text: &str) -> bool {
 	{
 		return *cached;
 	}
-	let parsed = summarize_code(SummaryOptions {
-		code:               text.to_owned(),
-		lang:               None,
-		path:               Some(path.to_owned()),
-		min_body_lines:     None,
-		min_comment_lines:  None,
-		unfold_until_lines: None,
-		unfold_limit_lines: None,
-	})
-	.is_ok_and(|summary| summary.parsed);
+	let parsed = source_parses(text, path);
 	if let Ok(mut cache) = CACHE.lock() {
 		let SyntaxCache { parses, parse_order, .. } = &mut *cache;
 		insert_fifo(parses, parse_order, cache_key, parsed);

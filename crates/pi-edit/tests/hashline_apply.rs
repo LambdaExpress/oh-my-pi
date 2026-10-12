@@ -366,6 +366,18 @@ fn syntax_helpers_use_pi_ast() {
 }
 
 #[test]
+fn powershell_hashline_edits_do_not_repair_uncertain_grammar() {
+	let before =
+		include_str!("fixtures/syntax/powershell-before.ps1").trim_start_matches('\u{feff}');
+	let after = include_str!("fixtures/syntax/powershell-after.ps1").trim_start_matches('\u{feff}');
+	let after_lines = after.lines().collect::<Vec<_>>();
+	let edits = replacement(3, 3, &after_lines[2..after_lines.len() - 1], 1);
+	let result = apply(before, &edits, Some("probe.ps1"));
+	assert_eq!(result.text, after, "the authored edit must survive unchanged");
+	assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+}
+
+#[test]
 fn clipboard_cut_then_gap_paste_moves_lines() {
 	let cut = Edit::Cut {
 		range:    ParsedRange { start: Anchor { line: 2 }, end: Anchor { line: 3 } },

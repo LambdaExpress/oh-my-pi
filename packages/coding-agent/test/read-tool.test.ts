@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { deflateSync } from "node:zlib";
 import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { registerArtifactsDir } from "@oh-my-pi/pi-coding-agent/internal-urls/registry-helpers";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -63,6 +64,68 @@ describe("read attachment URLs", () => {
 		await expect(tool.execute("read-missing-attachment", { path: "attachment://2" })).rejects.toThrow(
 			"Could not resolve image attachment 'attachment://2'. Available attachment URIs: attachment://1.",
 		);
+	});
+});
+
+describe("read repetition tracking", () => {
+	function pixelPng(red: number, green: number, blue: number): Buffer {
+		const template = Buffer.from(TINY_PNG_BASE64, "base64");
+		const pixels = deflateSync(Buffer.from([0, red, green, blue, 255]), { level: 0 });
+		const chunk = Buffer.alloc(pixels.length + 12);
+		chunk.writeUInt32BE(pixels.length);
+		chunk.write("IDAT", 4);
+		pixels.copy(chunk, 8);
+		chunk.writeUInt32BE(Bun.hash.crc32(chunk.subarray(4, -4)), chunk.length - 4);
+		return Buffer.concat([template.subarray(0, 33), chunk, template.subarray(-12)]);
+	}
+
+	it("resets repetition when image bytes change beneath identical metadata", async () => {
+		using tmp = TempDir.createSync("@read-image-repetition-");
+		const imagePath = path.join(tmp.path(), "pixel.png");
+		const tool = new ReadTool(createSession(tmp.path(), imagePath));
+		let baselineText: TextContent[] = [];
+		for (const [index, pixels] of [pixelPng(255, 0, 0), pixelPng(0, 255, 0), pixelPng(0, 0, 255)].entries()) {
+			fs.writeFileSync(imagePath, pixels);
+			const result = await tool.execute(`read-overwritten-image-${index}`, { path: imagePath });
+			const text = result.content.filter(block => block.type === "text");
+			if (index === 0) baselineText = text;
+			expect(text).toEqual(baselineText);
+			expect(result.content).toContainEqual({
+				type: "image",
+				data: pixels.toString("base64"),
+				mimeType: "image/png",
+			});
+		}
+
+		const second = await tool.execute("read-unchanged-image-second", { path: imagePath });
+		expect(second.content.filter(block => block.type === "text")).toEqual(baselineText);
+		const third = await tool.execute("read-unchanged-image-third", { path: imagePath });
+		expect(third.content.filter(block => block.type === "text")).not.toEqual(baselineText);
+
+		fs.writeFileSync(imagePath, pixelPng(255, 0, 0));
+		const changed = await tool.execute("read-image-after-hint", { path: imagePath });
+		expect(changed.content.filter(block => block.type === "text")).toEqual(baselineText);
+	});
+
+	it("hints on unchanged text and resets after a text overwrite", async () => {
+		using tmp = TempDir.createSync("@read-text-repetition-");
+		const filePath = path.join(tmp.path(), "notes.txt");
+		fs.writeFileSync(filePath, "original text\n");
+		const tool = new ReadTool(createSession(tmp.path(), ""));
+		const read = (id: string) => tool.execute(id, { path: `${filePath}:raw` });
+		const first = await read("read-text-first");
+		expect(first.content).toEqual([{ type: "text", text: "original text\n" }]);
+		expect((await read("read-text-second")).content).toEqual(first.content);
+		const third = await read("read-text-third");
+		expect(third.content).not.toEqual(first.content);
+		expect(third.content[0]).toEqual({
+			type: "text",
+			text: expect.stringMatching(/^original text\n/),
+		});
+
+		fs.writeFileSync(filePath, "replacement text\n");
+		expect((await read("read-text-changed")).content).toEqual([{ type: "text", text: "replacement text\n" }]);
+		expect((await read("read-text-changed-second")).content).toEqual([{ type: "text", text: "replacement text\n" }]);
 	});
 });
 

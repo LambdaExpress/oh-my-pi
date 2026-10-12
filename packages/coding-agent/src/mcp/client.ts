@@ -6,6 +6,7 @@
 import * as path from "node:path";
 import * as url from "node:url";
 import { getProjectDir, logger, withTimeout } from "@oh-my-pi/pi-utils";
+import { MCPTransportError } from "./errors";
 import { describeMCPTimeout, isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "./timeout";
 import { createHttpTransport } from "./transports/http";
 import { LegacySseConnectionTimeoutError, createSseTransport } from "./transports/sse";
@@ -388,11 +389,29 @@ export async function readResource(
 	options?: MCPRequestOptions,
 ): Promise<MCPResourceReadResult> {
 	const params: MCPResourceReadParams = { uri };
-	return connection.transport.request<MCPResourceReadResult>(
-		"resources/read",
-		params as unknown as Record<string, unknown>,
-		options,
-	);
+	try {
+		return await connection.transport.request<MCPResourceReadResult>(
+			"resources/read",
+			params as unknown as Record<string, unknown>,
+			options,
+		);
+	} catch (error) {
+		if (!(error instanceof MCPTransportError)) throw error;
+		throw new MCPTransportError({
+			transport: error.transport,
+			stage: error.stage,
+			failure: error.failure,
+			retryable: error.retryable,
+			code: error.code,
+			data: error.data,
+			traceId: error.traceId,
+			cause: error,
+			message:
+				`Resource "${uri}" on MCP server "${connection.name}" is unavailable: ${error.message}. ` +
+				"Check that the MCP server and its backing application are running and ready; inspect their logs " +
+				"before retrying this resource read. No resource data was returned.",
+		});
+	}
 }
 
 /**

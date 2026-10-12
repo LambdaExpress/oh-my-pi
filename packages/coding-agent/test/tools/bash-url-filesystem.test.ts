@@ -6,6 +6,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { resolveLocalRoot } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
+import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { stripWindowsExtendedLengthPathPrefix } from "@oh-my-pi/pi-utils";
 
 let tempDir: string;
@@ -41,6 +42,59 @@ async function run(command: string, cwd?: string): Promise<{ text: string; isErr
 }
 
 describe("bash internal URLs through the shell filesystem", () => {
+	it("creates, reads, and removes the same session scratch directory", async () => {
+		expect((await run("mkdir -p local://phone-logs")).isError).toBeUndefined();
+		const read = await new ReadTool(session).execute("read-scratch", { path: "local://phone-logs" });
+		expect(stripWindowsExtendedLengthPathPrefix(read.details?.resolvedPath ?? "")).toBe(
+			path.join(localRoot, "phone-logs"),
+		);
+		expect((await fs.stat(path.join(localRoot, "phone-logs"))).isDirectory()).toBe(true);
+
+		expect((await run("rmdir local://phone-logs")).isError).toBeUndefined();
+		await expect(fs.stat(path.join(localRoot, "phone-logs"))).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("removes variable-composed URL parents without removing the scratch mount", async () => {
+		const { isError } = await run('mkdir -p local://work/a/b && scheme=local && rmdir -p "$scheme://work/a/b"');
+
+		expect(isError).toBeUndefined();
+		await expect(fs.stat(path.join(localRoot, "work"))).rejects.toMatchObject({ code: "ENOENT" });
+		expect((await fs.stat(localRoot)).isDirectory()).toBe(true);
+		expect((await fs.stat(tempDir)).isDirectory()).toBe(true);
+	});
+
+	it("preserves nonempty URL directories while still removing later empty operands", async () => {
+		const { isError } = await run(
+			"mkdir -p local://full local://empty && printf kept > local://full/kept && rmdir local://full local://empty",
+		);
+
+		expect(isError).toBe(true);
+		expect(await fs.readFile(path.join(localRoot, "full", "kept"), "utf8")).toBe("kept");
+		await expect(fs.stat(path.join(localRoot, "empty"))).rejects.toMatchObject({ code: "ENOENT" });
+		expect((await run("rmdir --ignore-fail-on-non-empty local://full")).isError).toBeUndefined();
+		expect(await fs.readFile(path.join(localRoot, "full", "kept"), "utf8")).toBe("kept");
+	});
+
+	it("does not reinterpret URL parents or unknown schemes as host directories", async () => {
+		const outside = path.join(tempDir, "outside");
+		await fs.mkdir(outside);
+
+		expect((await run("rmdir -p local://../outside")).isError).toBe(true);
+		expect((await run("rmdir unsupported://outside")).isError).toBe(true);
+		expect((await fs.stat(outside)).isDirectory()).toBe(true);
+	});
+
+	it("refuses to remove a directory reached through a scratch symlink escaping its root", async () => {
+		const outside = path.join(tempDir, "outside");
+		const target = path.join(outside, "empty");
+		await fs.mkdir(target, { recursive: true });
+		await fs.mkdir(localRoot, { recursive: true });
+		await fs.symlink(outside, path.join(localRoot, "escape"), process.platform === "win32" ? "junction" : "dir");
+
+		expect((await run("rmdir local://escape/empty")).isError).toBe(true);
+		expect((await fs.stat(target)).isDirectory()).toBe(true);
+	});
+
 	it("resolves variable-composed URLs and redirections at access time, leaving literal text alone", async () => {
 		const { text, isError } = await run(
 			`scheme=local; printf 'hi\\n' > "$scheme://out.txt"; printf 'more\\n' >> local://out.txt; cat local://out.txt; echo 'local://out.txt'`,

@@ -4,8 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SSHHost } from "@oh-my-pi/pi-coding-agent/capability/ssh";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { cfgLspEnabled } from "@oh-my-pi/pi-coding-agent/lsp/settings";
 import { createLocalWslTargets } from "@oh-my-pi/pi-coding-agent/ssh/wsl";
-import { AdbTool, BUILTIN_TOOLS, createTools, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import {
+	AdbTool,
+	BUILTIN_TOOLS,
+	createTools,
+	resolveBuiltinToolPlan,
+	type ToolSession,
+} from "@oh-my-pi/pi-coding-agent/tools";
 import { BUILTIN_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/builtin-names";
 
 Bun.env.PI_PYTHON_SKIP_CHECK = "1";
@@ -155,6 +162,80 @@ describe("createTools", () => {
 		const names = tools.map(t => t.name);
 
 		expect(names).toEqual(["read", "write"]);
+	});
+
+	it("grants enabled read-only subagents LSP docs without granting mutation or filesystem writes", async () => {
+		const session = createTestSession({
+			enableLsp: true,
+			lspReadOnly: true,
+			taskDepth: 1,
+			skipPythonPreflight: true,
+		});
+		const tools = await createTools(session, ["read", "grep", "glob"]);
+		const read = tools.find(tool => tool.name === "read")!;
+		const write = tools.find(tool => tool.name === "write")!;
+		const lsp = tools.find(tool => tool.name === "lsp")!;
+		const docs = await read.execute("readonly-lsp-docs", { path: "xd://lsp" });
+		expect(docs.content.find(block => block.type === "text")?.text).toContain('"references"');
+		await expect(
+			lsp.execute("readonly-lsp-rename", {
+				action: "rename",
+				file: "source.ts",
+				line: 1,
+				symbol: "source",
+				new_name: "changed",
+			}),
+		).rejects.toThrow("disabled in this read-only session");
+		await expect(
+			write.execute("readonly-filesystem-write", {
+				path: "source.ts",
+				content: "changed",
+			}),
+		).rejects.toThrow("Filesystem writes are not available");
+	});
+
+	it("never widens disabled or explicitly restricted read-only subagent LSP access", async () => {
+		for (const overrides of [
+			{ enableLsp: false },
+			{ settings: createSettingsWithOverrides({ "lsp.enabled": false }) },
+			{ restrictToolNames: true },
+		]) {
+			const session = createTestSession({
+				enableLsp: true,
+				lspReadOnly: true,
+				taskDepth: 1,
+				skipPythonPreflight: true,
+				...overrides,
+			});
+			const tools = await createTools(session, ["read", "grep"]);
+			expect(tools.map(tool => tool.name)).not.toContain("lsp");
+			const read = tools.find(tool => tool.name === "read")!;
+			await expect(read.execute("unavailable-lsp-docs", { path: "xd://lsp" })).rejects.toThrow();
+		}
+	});
+
+	it("keeps read-only LSP selection consistent across live setting changes", async () => {
+		const session = createTestSession({
+			enableLsp: true,
+			lspReadOnly: true,
+			taskDepth: 1,
+			skipPythonPreflight: true,
+		});
+		const requested = ["read", "grep"];
+		try {
+			const initial = await resolveBuiltinToolPlan(session, requested);
+			expect(initial.names).toContain("lsp");
+			cfgLspEnabled.set(session.settings, false);
+			const disabled = await resolveBuiltinToolPlan(session, requested);
+			expect(disabled.names).not.toContain("lsp");
+			expect(disabled.isAllowed("lsp")).toBe(false);
+			cfgLspEnabled.set(session.settings, true);
+			const enabled = await resolveBuiltinToolPlan(session, requested);
+			expect(enabled.names).toContain("lsp");
+			expect(enabled.isAllowed("lsp")).toBe(true);
+		} finally {
+			session.settings.cancelPendingSaves();
+		}
 	});
 
 	it("creates xd:// presentation state without remounting explicitly requested built-ins", async () => {

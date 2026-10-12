@@ -725,6 +725,18 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 	// Auto-include AST counterparts when their text-based sibling is present.
 	// Restricted callers own the active list and must not have it widened.
 	if (requestedTools && !restrictToolNames) {
+		// Read-only agents declare text navigation tools, but an enabled LSP is
+		// their semantic counterpart. The executor supplies the read-only action
+		// policy; settings and host restrictions still own availability.
+		if (
+			session.lspReadOnly === true &&
+			enableLsp &&
+			cfgLspEnabled.get(session.settings) &&
+			requestedTools.includes("read") &&
+			!requestedTools.includes("lsp")
+		) {
+			requestedTools.push("lsp");
+		}
 		if (
 			cfgCompactionExperimentalContextManagement.get(session.settings) &&
 			requestedTools.includes("read") &&

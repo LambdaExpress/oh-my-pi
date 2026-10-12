@@ -3,6 +3,9 @@ import { untilAborted } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../tools";
 import { denyError, formatApprovalPrompt, resolveApproval, resolveApprovalFromContext } from "../tools/approval";
 
+/** Display-only browser entry signal; eval consumes it without rendering a status row. */
+export const EVAL_BROWSER_ACTIVITY_OP = "browser-activity";
+
 /** Host context supplied when an eval prelude calls back out of its language VM. */
 export interface EvalPreludeContext {
 	/** Live owning session; authorization is always resolved against its current preludes. */

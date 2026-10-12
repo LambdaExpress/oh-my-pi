@@ -65,6 +65,11 @@ beforeAll(async () => {
 				}
 				return new Response("authorized");
 			}
+			if (url.pathname === "/no-viewport") {
+				return new Response("<!doctype html><title>mobile layout fixture</title><p>Mobile layout</p>", {
+					headers: { "Content-Type": "text/html" },
+				});
+			}
 			return new Response(
 				"<!doctype html><meta name='viewport' content='width=device-width'><title>emulation fixture</title><input id='paste'>",
 				{ headers: { "Content-Type": "text/html" } },
@@ -81,6 +86,109 @@ afterAll(async () => {
 });
 
 describe.skipIf(!CHROMIUM_AVAILABLE)("browser device, network, media, and clipboard emulation", () => {
+	it("preserves mobile viewport options on open and reuse while retaining the scale alias", async () => {
+		const name = `mobile-open-${crypto.randomUUID()}`;
+		const evaluate = async (code: string) =>
+			valueFrom(
+				(await invoke({ action: "call", name, chain: [{ method: "evaluate", args: [code] }] })) as {
+					details?: Record<string, unknown>;
+				},
+			);
+		const dimensions =
+			"({ width:innerWidth, height:innerHeight, ratio:devicePixelRatio, touch:navigator.maxTouchPoints > 0 })";
+		await invoke({
+			action: "open",
+			name,
+			url: pageUrl,
+			viewport: { width: 390, height: 844, scale: 3, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
+		});
+		try {
+			expect(await evaluate(dimensions)).toEqual({ width: 390, height: 844, ratio: 2, touch: true });
+			await invoke({
+				action: "call",
+				name,
+				chain: [{ method: "goto", args: [`${pageUrl}no-viewport`] }],
+			});
+			expect(await evaluate("innerWidth")).toBeGreaterThan(390);
+			await invoke({
+				action: "open",
+				name,
+				url: pageUrl,
+				viewport: { width: 430, height: 932, scale: 3, isMobile: true, hasTouch: true },
+			});
+			expect(await evaluate(dimensions)).toEqual({ width: 430, height: 932, ratio: 3, touch: true });
+			await invoke({
+				action: "open",
+				name,
+				url: pageUrl,
+				viewport: { width: 1440, height: 1100, deviceScaleFactor: 1, isMobile: false, hasTouch: false },
+			});
+			expect(await evaluate(dimensions)).toEqual({ width: 1440, height: 1100, ratio: 1, touch: false });
+		} finally {
+			await invoke({ action: "close", name, kill: true });
+		}
+	}, 30_000);
+
+	it("adopts raw viewport changes without discarding independent persistent emulation", async () => {
+		await invoke({ action: "open", name: "emulation", url: pageUrl });
+		try {
+			await call("emulate", [
+				{ viewport: { width: 390, height: 844, scale: 1 }, offline: true, colorScheme: "dark" },
+			]);
+			const stateCode =
+				"return await tab.evaluate(() => ({ width:innerWidth, height:innerHeight, ratio:devicePixelRatio, offline:!navigator.onLine, dark:matchMedia('(prefers-color-scheme: dark)').matches }))";
+			const immediate = await run(`await page.setViewport({ width:1440, height:1100 });
+${stateCode}`);
+			expect(immediate).toMatchObject({ width: 1440, height: 1100, offline: true, dark: true });
+			expect(await run(stateCode)).toEqual(immediate);
+
+			expect(
+				await run(`const viewport = page.viewport();
+Object.assign(viewport, { width:640, height:480, deviceScaleFactor:1 });
+await page.setViewport(viewport);
+await tab.emulate({ reducedMotion:true });
+return await tab.evaluate(() => ({ width:innerWidth, height:innerHeight, ratio:devicePixelRatio, reduced:matchMedia('(prefers-reduced-motion: reduce)').matches, offline:!navigator.onLine }));`),
+			).toEqual({ width: 640, height: 480, ratio: 1, reduced: true, offline: true });
+
+			await call("emulate", [{ viewport: { width: 600, height: 500, scale: 1.5 } }]);
+			expect(
+				await run(
+					"return await tab.evaluate(() => ({ width:innerWidth, height:innerHeight, ratio:devicePixelRatio, dark:matchMedia('(prefers-color-scheme: dark)').matches }))",
+				),
+			).toEqual({ width: 600, height: 500, ratio: 1.5, dark: true });
+		} finally {
+			await invoke({ action: "close", name: "emulation", kill: true });
+		}
+	}, 30_000);
+
+	it("keeps raw viewport and print media overrides across device-profile reapplication", async () => {
+		await invoke({ action: "open", name: "emulation", url: pageUrl });
+		try {
+			await call("emulate", [{ device: "iPhone 14" }]);
+			const stateCode =
+				"return await tab.evaluate(() => ({ width:innerWidth, height:innerHeight, ratio:devicePixelRatio, touch:navigator.maxTouchPoints > 0, deviceAgent:navigator.userAgent.includes('iPhone'), appState:window.viewportMarker, print:matchMedia('print').matches }))";
+			// Puppeteer's raw media-type setter replaces media features. Exercise its
+			// persistence without conflating that with persistent color-scheme settings.
+			const immediate =
+				await run(`await page.setViewport({ width:1440, height:1100, deviceScaleFactor:2, isMobile:false, hasTouch:false });
+await page.emulateMediaType("print");
+await tab.evaluate(() => { window.viewportMarker = "kept"; });
+${stateCode}`);
+			expect(immediate).toEqual({
+				width: 1440,
+				height: 1100,
+				ratio: 2,
+				touch: false,
+				deviceAgent: true,
+				appState: "kept",
+				print: true,
+			});
+			expect(await run(stateCode)).toEqual(immediate);
+		} finally {
+			await invoke({ action: "close", name: "emulation", kill: true });
+		}
+	}, 30_000);
+
 	it("persists independent overrides and exposes them to page APIs and requests", async () => {
 		await invoke({ action: "open", name: "emulation", url: pageUrl });
 		try {

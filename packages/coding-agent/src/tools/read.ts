@@ -760,7 +760,18 @@ function appendRepeatReadHint(session: ToolSession, path: string, result: AgentT
 	const tracker = holder[kRepeatReadTracker];
 	if (tracker.size > REPEAT_READ_TRACKER_CAP) tracker.clear();
 
-	const hash = Bun.hash.xxHash64(block.text);
+	// Chain the ordered blocks without copying large image payloads into a
+	// concatenated string. Image metadata text alone stays unchanged on overwrite.
+	let hash = 0n;
+	for (const content of result.content) {
+		hash = Bun.hash.xxHash64(content.type, hash);
+		if (content.type === "text") {
+			hash = Bun.hash.xxHash64(content.text, hash);
+		} else {
+			hash = Bun.hash.xxHash64(content.mimeType, hash);
+			hash = Bun.hash.xxHash64(content.data, hash);
+		}
+	}
 	const entry = tracker.get(path);
 	if (!entry || entry.hash !== hash) {
 		tracker.set(path, { hash, count: 1 });

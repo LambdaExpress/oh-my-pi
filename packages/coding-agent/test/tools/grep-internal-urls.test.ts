@@ -273,6 +273,27 @@ describe("GrepTool internal URL resolution", () => {
 		expect(text).not.toContain("INFO");
 	});
 
+	it("preserves regex whitespace and matches Chinese artifact summary punctuation", async () => {
+		const summary =
+			"失败!  - 失败:    12，通过:    42，已跳过:     0，总计:    54，持续时间: 4 s - Test.Unit.iFX.dll (net6.0)";
+		await Bun.write(path.join(artifactsDir, "177.bash.log"), `baseline output\n${summary}\n`);
+		const tool = new GrepTool(createSession());
+		const original = await tool.execute("original-regex", {
+			pattern: "Failed |失败 |Expected:|But was:|Error Message:|错误消息:",
+			path: "artifact://177",
+		});
+		expect(original.details?.matchCount).toBe(0);
+		expect(original.details?.truncated).toBe(false);
+
+		const corrected = await tool.execute("corrected-regex", {
+			pattern: "Failed |失败[!:]|Expected:|But was:|Error Message:|错误消息:",
+			path: "artifact://177",
+		});
+		expect(corrected.details?.matchCount).toBe(1);
+		expect(corrected.details?.truncated).toBe(false);
+		expect(getResultText(corrected)).toContain(summary);
+	});
+
 	it("searches virtual internal URL content without a backing file", async () => {
 		registerVirtualDocs(new Map([["doc.md", "alpha line\nneedle in virtual content\ngamma line\n"]]));
 

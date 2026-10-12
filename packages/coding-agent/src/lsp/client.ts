@@ -213,6 +213,37 @@ export async function prepareTypeScriptProject(
 	return project;
 }
 
+/** A workspace query needs at least one enabled semantic project, not just an initialized syntax server. */
+export async function prepareTypeScriptWorkspaceSymbols(
+	client: LspClient,
+	signal?: AbortSignal,
+): Promise<string | undefined> {
+	if (!supportsTsserverRequest(client.serverCapabilities)) return undefined;
+	const unavailableProjects = new Set<string>();
+	let openedFile = false;
+	for (const uri of client.openFiles.keys()) {
+		if (!uri.startsWith("file:")) continue;
+		openedFile = true;
+		const filePath = uriToFile(uri);
+		try {
+			const project = await prepareTypeScriptProject(client, filePath, signal);
+			if (project?.status === "available") return undefined;
+		} catch (err) {
+			throwIfAborted(signal);
+			const project = typeScriptClientStates.get(client)?.projects.get(uri);
+			if (project?.status !== "unavailable" || !(err instanceof Error) || project.error !== err.message) throw err;
+			const scope = project.project ?? path.relative(client.cwd, filePath);
+			unavailableProjects.add(
+				project.languageServiceDisabled
+					? `semantic service disabled for ${scope}`
+					: `no semantic project for ${scope}`,
+			);
+		}
+	}
+	if (!openedFile) return "no opened TypeScript semantic project; open a source file in this workspace first";
+	return `no enabled TypeScript semantic project (${Array.from(unavailableProjects).join("; ")})`;
+}
+
 /**
  * URIs whose server overlay OMP has intentionally advanced ahead of the on-disk
  * file for an in-flight write/edit: the writethrough syncs the new (and possibly
@@ -979,6 +1010,15 @@ export function supportsDocumentDiagnostics(client: LspClient): boolean {
 	if (!registrations) return false;
 	for (const method of registrations.values()) {
 		if (method === "textDocument/diagnostic") return true;
+	}
+	return false;
+}
+
+/** Workspace symbols can be advertised during initialize or registered after project loading. */
+export function supportsWorkspaceSymbols(client: LspClient): boolean {
+	if (client.serverCapabilities?.workspaceSymbolProvider) return true;
+	for (const method of client.dynamicCapabilityRegistrations?.values() ?? []) {
+		if (method === "workspace/symbol") return true;
 	}
 	return false;
 }

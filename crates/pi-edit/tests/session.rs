@@ -720,3 +720,55 @@ async fn result_text_uses_compact_preview_and_header() {
 	assert_eq!(outcome.files[0].old_text.as_deref(), Some("one\ntwo\nthree\n"));
 	assert_eq!(outcome.files[0].new_text.as_deref(), Some("one\nTWO\nthree\n"));
 }
+
+#[tokio::test]
+async fn powershell_grammar_uncertainty_does_not_flag_valid_edits() {
+	let before = include_str!("fixtures/syntax/powershell-before.ps1");
+	let after = include_str!("fixtures/syntax/powershell-after.ps1");
+	let ws = Workspace::new(EditMode::ApplyPatch);
+	ws.write("probe.ps1", before);
+	let mut patch = String::from("*** Begin Patch\n*** Update File: probe.ps1\n@@\n");
+	for line in before.trim_start_matches('\u{feff}').lines() {
+		patch.push('-');
+		patch.push_str(line);
+		patch.push('\n');
+	}
+	for line in after.trim_start_matches('\u{feff}').lines() {
+		patch.push('+');
+		patch.push_str(line);
+		patch.push('\n');
+	}
+	patch.push_str("*** End Patch");
+	let outcome = ws
+		.apply_raw(&patch, &DiskWriter::default())
+		.await
+		.expect("valid PowerShell edit");
+	assert_eq!(ws.read("probe.ps1").as_deref(), Some(after));
+	assert!(!outcome.files[0].parse_regressed, "a lightweight grammar is not PowerShell authority");
+}
+
+#[tokio::test]
+async fn syntax_guard_preserves_definite_regressions_and_uncertain_boundaries() {
+	for (path, before, after, regressed) in [
+		("broken.ts", "const value = 1;\n", "const value = (;\n", true),
+		("valid.ts", "const value = 1;\n", "const value = 2;\n", false),
+		("already-invalid.ts", "const value = (;\n", "const next = (;\n", false),
+		("broken.json", "{\"value\":1}\n", "{\"value\":}\n", true),
+		("broken.rs", "fn main() {}\n", "fn main( {}\n", true),
+		("unknown.txt", "const value = 1;\n", "const value = (;\n", false),
+		("broken.ps1", "$value = 1\n", "$value = (\n", false),
+		("broken.psm1", "$value = 1\n", "$value = (\n", false),
+	] {
+		let ws = Workspace::new(EditMode::Replace);
+		ws.write(path, before);
+		let outcome = ws
+			.apply_json(
+				&serde_json::json!({ "path": path, "old_string": before, "new_string": after }),
+				&DiskWriter::default(),
+			)
+			.await
+			.expect("syntax diagnostics never reject an edit");
+		assert_eq!(ws.read(path).as_deref(), Some(after), "{path}");
+		assert_eq!(outcome.files[0].parse_regressed, regressed, "{path}");
+	}
+}

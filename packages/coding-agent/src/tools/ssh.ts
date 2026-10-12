@@ -86,7 +86,7 @@ export class SshTool implements AgentTool<typeof sshSchema, SSHToolDetails> {
 	readonly loadMode = "discoverable" as const;
 	readonly label = "SSH";
 	readonly parameters = sshSchema;
-	readonly concurrency = "exclusive" as const;
+	readonly concurrency = "shared" as const;
 	readonly strict = true;
 	readonly mergeCallAndResult = true;
 	readonly renderCallBeforeExecution = true;

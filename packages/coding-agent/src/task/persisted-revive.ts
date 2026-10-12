@@ -212,7 +212,11 @@ export function createPersistedSubagentReviverFactory(
 				// createAgentSession default to wildcard ("*").
 				spawns: init.spawns ?? "",
 				hasUI: false,
-				enableLsp: restrictToolNames ? false : ctx.enableLsp,
+				enableLsp:
+					!restrictToolNames &&
+					ctx.enableLsp &&
+					(persistedToolNames.has("lsp") || persistedMountedXdevTools.includes("lsp")),
+				lspReadOnly: init.readOnly === true || restrictToolNames,
 				...(restrictToolNames
 					? {
 							enableIrc: false,

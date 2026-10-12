@@ -4,11 +4,25 @@
 
 ### Added
 
+- Added live `Browser`/`Eval` classification for folded eval rows, retained across failed, interrupted, and background executions without distinguishing scripting languages or browser connections.
 - Added an `Inject` notice that shows what the harness put into the model's context: instruction files (`AGENTS.md` and friends) with their sizes, always-apply rules, the rulebook, the skill index, memory instructions, and connected MCP servers' instructions, each with a preview of the injected body (`ctrl+o` expands). Injected skill prompts carry the same label, and under `display.foldToolRows` each notice collapses to one `Inject: AGENTS.md ×2 · Skills` row. Records are journaled, so the notice survives transcript rebuilds.
 - Added an opt-in `display.foldToolRows` transcript mode that draws each activity row — every tool call (full cards, grouped reads, subagent tasks, custom/extension/MCP tools), TTSR rule injections (`TTSR: ts-set-map — …`), todo reminders, and late LSP diagnostics — as one line: `Eval: raw point-by-point inspection`, `Edit: ~/project/README.md +6 -5`, `Write: src/app.ts +42`, `Bash: bun test`. A `write xd://<device>` dispatch folds as the device operation it ran (`ADB: shell logcat -d`, `ADB: pull /sdcard/shot.png`, `atlassian/downloadJiraAttachment: CEN21-7022`) instead of restating the device URL. File targets keep their accent color, edits show `+N -M` and writes `+N` in the diff-added/removed colors, and every other tool falls back to the call's target (command, path, pattern, query). Consecutive folded rows drop the blank row the transcript normally puts between blocks, so a long tool run reads as one compact list while model replies keep their spacing. Fold and unfold the whole transcript with `app.tools.foldRows` (`Alt+Shift+O` by default) or from `/settings`, and the state survives restarts.
 
 ### Fixed
 
+- Fixed SVG focus, trusted off-screen clicks on smooth-scrolling pages, invalid wheel arguments, mobile viewport options, and raw viewport changes being overwritten by persisted browser emulation.
+- Fixed MCP resource reads inheriting long execution timeouts; bounded resource/readiness waits preserve long server startup, cancellation, and actionable failure details.
+- Fixed forked sessions reusing inherited artifact IDs after the child allocator initialized, so spill links recover the content they identify.
+- Fixed executable string views omitting readable managed-PE metadata; unmapped byte strings now carry explicit file offsets.
+- Fixed valid PowerShell edits being warned about or automatically repaired from incomplete grammar results; authoritative syntax validation remains available through PowerShell itself.
+- Fixed independent tools waiting behind finite Eval or SSH commands; cells sharing a kernel remain serialized and recursive same-kernel calls fail promptly.
+- Fixed SSH Chinese output corruption, false upload failures, unsafe ambiguous-commit recovery, and local file-transfer URLs being rejected.
+- Fixed Windows services remaining in `stopping` after their root exited with inherited output pipes, and enabled `rmdir` on session-local shell URLs.
+- Fixed broad `grep` searches silently omitting matching lines; per-file, collection, and output limits now remain visible with narrower-query guidance.
+- Fixed changed images at the same path being reported as identical reads, and enabled line/raw selectors on tool-device documentation topics.
+- Fixed HTML article reads being replaced by unrelated RSS comment or site feeds, and direct RSS/Atom reads losing their supplied titles, links, and content.
+- Fixed submitted skill inputs disappearing from the TUI when the preceding run collapses or the transcript rebuilds before delivery; pending requests remain visible without duplicating journaled messages.
+- Added Simplified Chinese labels and credit units for Codex extra usage balances in `/usage show` and `omp usage`.
 - Fixed remote and local compaction divider labels remaining in English when the interface language is Simplified Chinese, including native terminal headings.
 - Fixed PowerShell `timeout: 0` silently becoming a one-second deadline; zero now disables the command deadline while preserving cancellation and bounded output cleanup.
 - Fixed flat todo appends requiring a phase after completed work; omitted phases now select the existing actionable phase without reopening completed tasks.

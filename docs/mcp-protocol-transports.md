@@ -130,7 +130,7 @@ If the read loop exits unexpectedly, `finally` triggers `#handleClose()` with th
 
 Per request:
 
-- timeout from `resolveMCPTimeoutMs`: `OMP_MCP_TIMEOUT_MS` env override, else `config.timeout ?? 30000`; `0` disables
+- timeout from `resolveMCPRequestTimeoutMs`: valid `OMP_MCP_TIMEOUT_MS` overrides win; positive inherited resource-read/catalog budgets are capped at 30 seconds, while initialization and configured tool-call budgets remain unchanged; `0` disables
 - optional `AbortSignal` from caller
 - abort and timeout both reject the pending promise and clean its map entry; a late write rejection is ignored after settlement
 
@@ -184,7 +184,7 @@ So `connected` means "transport usable", not "persistent stream established".
 
 For `request()`:
 
-- timeout uses `AbortController` via `createMCPTimeout` (`OMP_MCP_TIMEOUT_MS` override, else `config.timeout ?? 30000`; `0` disables)
+- timeout uses `AbortController` via `createMCPTimeout` and the shared method-specific request policy described above; `0` disables
 - external signal, if provided, is merged via `AbortSignal.any([...])`
 - AbortError handling distinguishes caller abort vs timeout
 

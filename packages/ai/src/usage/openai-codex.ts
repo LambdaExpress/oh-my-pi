@@ -50,6 +50,8 @@ interface CodexUsageCreditsPayload {
 	unlimited?: boolean;
 	overage_limit_reached?: boolean;
 	balance?: string | number;
+	approx_local_messages?: [number, number] | null;
+	approx_cloud_messages?: [number, number] | null;
 }
 
 interface CodexUsageSpendControlPayload {
@@ -263,6 +265,34 @@ function parseUsagePayload(payload: unknown): ParsedUsage | null {
 		return null;
 	}
 	return parsed;
+}
+
+/** Extra usage is a remaining-only credit balance, separate from plan windows and saved resets. */
+function buildCreditBalanceLimit(payload: unknown, accountId: string | undefined): UsageLimit | undefined {
+	if (!isRecord(payload) || !isRecord(payload.credits)) return undefined;
+	const credits = payload.credits;
+	const balance = toNumber(credits.balance);
+	if (balance === undefined) return undefined;
+
+	const notes: string[] = [];
+	for (const [key, label] of [
+		["approx_local_messages", "Estimated local messages remaining"],
+		["approx_cloud_messages", "Estimated cloud messages remaining"],
+	] as const) {
+		const range = credits[key];
+		if (!Array.isArray(range) || range.length !== 2) continue;
+		const low = toNumber(range[0]);
+		const high = toNumber(range[1]);
+		if (low === undefined || high === undefined || low < 0 || high < low) continue;
+		notes.push(`${label}: ${low}–${high}`);
+	}
+	return {
+		id: "openai-codex:credits",
+		label: "Extra usage credits",
+		scope: { provider: "openai-codex", accountId, windowId: "credits" },
+		amount: { remaining: balance, unit: "credits" },
+		...(notes.length > 0 ? { notes } : {}),
+	};
 }
 
 /**
@@ -504,6 +534,8 @@ function buildPlanMeterState(
 
 export const openaiCodexUsageProvider: UsageProvider = {
 	id: "openai-codex",
+	// Retire plan-only snapshots that predate extra credit balance reporting.
+	cacheVersion: 1,
 	supports(params: UsageFetchParams): boolean {
 		return params.provider === "openai-codex" && params.credential.type === "oauth";
 	},
@@ -626,6 +658,9 @@ export const openaiCodexUsageProvider: UsageProvider = {
 				);
 			}
 		}
+
+		const creditBalance = buildCreditBalanceLimit(payload, accountId);
+		if (creditBalance) limits.push(creditBalance);
 
 		const resetCredits = parseResetCredits(payload);
 		if (resetCredits && resetCredits.availableCount > 0) {

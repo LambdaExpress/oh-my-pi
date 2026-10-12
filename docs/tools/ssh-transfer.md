@@ -15,7 +15,7 @@
 | --- | --- | --- | --- |
 | `op` | `"upload" \| "download"` | Yes | Transfer direction. Upload copies a local file to the remote host; download copies a remote file to the local filesystem. |
 | `host` | `string` | Yes | SSH host name — a configured host or a session alias created by `ssh_session`. |
-| `local_path` | `string` | Yes | Local file path. |
+| `local_path` | `string` | Yes | Local filesystem path or file-backed internal URL such as `local://file`. Download URLs must be mutable; line selections and remote internal URLs are rejected. |
 | `remote_path` | `string` | Yes | Absolute remote file path for the detected remote platform. |
 | `overwrite` | `boolean` | No | Replace an existing destination. Default `false`; existing destinations are rejected unless set. |
 | `async` | `boolean` | No | Run the transfer in the background with live progress. Default `false`. Background completion is delivered automatically; use `job` only to inspect or cancel. |
@@ -35,6 +35,7 @@
 - Existing destination without `overwrite: true` is rejected.
 - Non-absolute `remote_path` for the detected remote platform is rejected.
 - Transfer failures surface the remote error, including connection and permission failures.
+- Lost commit acknowledgement is reported as uncertain completion with available identity/preservation evidence. Recovery confirms only matching proof identity and never replaces an unrelated destination; matching size alone is insufficient.
 
 ## Notes
 - This tool is the required path for local ↔ remote file content; never embed file bytes or base64 in `ssh` command text.

@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import type { SSHHost } from "@oh-my-pi/pi-coding-agent/capability/ssh";
@@ -9,6 +11,8 @@ import type { SshFileTransferPlan, SshFileTransferProgress } from "@oh-my-pi/pi-
 import * as fileTransfer from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { SshTransferTool } from "@oh-my-pi/pi-coding-agent/tools/ssh-transfer";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
+import { type ChildProcess, ptree } from "@oh-my-pi/pi-utils";
 
 const SOURCE: SourceMeta = {
 	provider: "test",
@@ -141,7 +145,7 @@ describe("SshTransferTool", () => {
 		expect(completions).toHaveLength(1);
 	});
 
-	it("rejects unknown hosts and internal URLs before SSH probing", async () => {
+	it("rejects unknown hosts and internal remote URLs before SSH probing", async () => {
 		const ensureHostInfo = vi.spyOn(connectionManager, "ensureHostInfo");
 		const tool = new SshTransferTool(createSession(), [HOST.name], new Map([[HOST.name, HOST]]), "fixture");
 
@@ -157,8 +161,8 @@ describe("SshTransferTool", () => {
 			tool.execute("internal", {
 				op: "upload",
 				host: HOST.name,
-				local_path: "local://blob.bin",
-				remote_path: "/srv/blob.bin",
+				local_path: "blob.bin",
+				remote_path: "local://blob.bin",
 			}),
 		).rejects.toThrow(/filesystem paths/);
 		expect(ensureHostInfo).not.toHaveBeenCalled();
@@ -176,5 +180,166 @@ describe("SshTransferTool", () => {
 		expect(result.details?.status).toBe("cancelled");
 		expect(text).toContain("Cleanup deadline exceeded after 12 seconds");
 		expect(text).not.toContain("password");
+	});
+});
+
+type TestStdin = "pipe" | "ignore" | Buffer | Uint8Array | null;
+
+function remoteChild<In extends TestStdin>(output: Uint8Array, accepted?: Uint8Array[]): ChildProcess<In> {
+	const stdout = new ReadableStream<Uint8Array>({
+		start(controller) {
+			if (output.byteLength > 0) controller.enqueue(output);
+			controller.close();
+		},
+	});
+	return {
+		stdin: {
+			write(chunk: Uint8Array) {
+				accepted?.push(chunk.slice());
+				return chunk.byteLength;
+			},
+			end() {},
+		},
+		stdout,
+		bytes: async () => output,
+		exited: Promise.resolve(0),
+		exitedCleanly: Promise.resolve(0),
+		kill() {},
+		[Symbol.dispose]() {},
+	} as unknown as ChildProcess<In>;
+}
+
+describe("SSH transfer local file-backed URLs", () => {
+	let directory: string;
+	let session: ToolSession;
+	const payload = new Uint8Array([0, 255, 195, 40, 128, 65]);
+
+	beforeEach(async () => {
+		directory = await fs.mkdtemp(path.join(os.tmpdir(), "omp-ssh-transfer-urls-"));
+		session = {
+			...createSession(),
+			cwd: directory,
+			getSessionFile: () => null,
+			getArtifactsDir: () => path.join(directory, "artifacts"),
+		} as ToolSession;
+		vi.spyOn(connectionManager, "ensureConnection").mockResolvedValue(undefined);
+		vi.spyOn(connectionManager, "ensureHostInfo").mockResolvedValue(HOST_INFO);
+		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockResolvedValue({ args: ["fixture"] });
+	});
+
+	afterEach(async () => {
+		vi.restoreAllMocks();
+		await fs.rm(directory, { recursive: true, force: true });
+	});
+
+	for (const pinned of [false, true]) {
+		it(`uploads local:// binary bytes from the ${pinned ? "pinned parent" : "calling session"} root`, async () => {
+			const artifacts = path.join(directory, pinned ? "parent-artifacts" : "artifacts");
+			if (pinned) {
+				session.localProtocolOptions = {
+					getArtifactsDir: () => artifacts,
+					getSessionId: () => "parent",
+				};
+				await fs.mkdir(path.join(directory, "artifacts", "local"), { recursive: true });
+				await fs.writeFile(path.join(directory, "artifacts", "local", "blob.bin"), "wrong-session");
+			}
+			const source = path.join(artifacts, "local", "blob.bin");
+			await fs.mkdir(path.dirname(source), { recursive: true });
+			await fs.writeFile(source, payload);
+			const accepted: Uint8Array[] = [];
+			let spawnIndex = 0;
+			vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() => {
+				spawnIndex++;
+				if (spawnIndex === 1) return remoteChild<In>(new TextEncoder().encode("missing"));
+				if (spawnIndex === 2) return remoteChild<In>(new Uint8Array(), accepted);
+				return remoteChild<In>(new TextEncoder().encode("OMP_TRANSFER_COMMITTED\n"));
+			});
+			const tool = new SshTransferTool(session, [HOST.name], new Map([[HOST.name, HOST]]), "fixture");
+
+			const result = await tool.execute("local-upload", {
+				op: "upload",
+				host: HOST.name,
+				local_path: "local://blob.bin",
+				remote_path: "/srv/blob.bin",
+			});
+
+			expect(result.details?.status).toBe("completed");
+			expect(Buffer.concat(accepted)).toEqual(Buffer.from(payload));
+			expect(await fs.readFile(source)).toEqual(Buffer.from(payload));
+			expect(result.details?.localPath).toBe(source);
+		});
+	}
+
+	it("downloads bytes into a new mutable local:// destination without URL materialization", async () => {
+		let spawnIndex = 0;
+		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() => {
+			return remoteChild<In>(spawnIndex++ === 0 ? new TextEncoder().encode(String(payload.byteLength)) : payload);
+		});
+		const tool = new SshTransferTool(session, [HOST.name], new Map([[HOST.name, HOST]]), "fixture");
+
+		const result = await tool.execute("local-download", {
+			op: "download",
+			host: HOST.name,
+			local_path: "local://nested/download.bin",
+			remote_path: "/srv/blob.bin",
+		});
+
+		expect(result.details?.status).toBe("completed");
+		expect(await fs.readFile(path.join(directory, "artifacts", "local", "nested", "download.bin"))).toEqual(
+			Buffer.from(payload),
+		);
+		expect(await fs.readdir(path.join(directory, "artifacts", "local", "nested"))).toEqual(["download.bin"]);
+	});
+
+	it("rejects readonly, remote and selected download URLs before touching SSH", async () => {
+		const spawn = vi.spyOn(ptree, "spawn");
+		const tool = new SshTransferTool(session, [HOST.name], new Map([[HOST.name, HOST]]), "fixture");
+		for (const localPath of ["artifact://1", "ssh://fixture/srv/blob.bin", "agent://Main", "local://out.bin:1-2"]) {
+			await expect(
+				tool.execute("invalid-local-download", {
+					op: "download",
+					host: HOST.name,
+					local_path: localPath,
+					remote_path: "/srv/blob.bin",
+				}),
+			).rejects.toBeInstanceOf(ToolError);
+		}
+		expect(spawn).not.toHaveBeenCalled();
+		expect(await fs.readdir(directory)).toEqual([]);
+	});
+
+	it("rejects a local:// symlink escape before any remote I/O", async () => {
+		const outside = path.join(directory, "outside");
+		const root = path.join(directory, "artifacts", "local");
+		await fs.mkdir(outside);
+		await fs.mkdir(root, { recursive: true });
+		await fs.writeFile(path.join(outside, "blob.bin"), payload);
+		await fs.symlink(outside, path.join(root, "linked"), process.platform === "win32" ? "junction" : "dir");
+		const spawn = vi.spyOn(ptree, "spawn");
+		const tool = new SshTransferTool(session, [HOST.name], new Map([[HOST.name, HOST]]), "fixture");
+
+		await expect(
+			tool.execute("escaped-local-upload", {
+				op: "upload",
+				host: HOST.name,
+				local_path: "local://linked/blob.bin",
+				remote_path: "/srv/blob.bin",
+			}),
+		).rejects.toThrow(/escapes local root/);
+
+		expect(spawn).not.toHaveBeenCalled();
+		expect(await fs.readFile(path.join(outside, "blob.bin"))).toEqual(Buffer.from(payload));
+	});
+
+	it("keeps a local:// abort fallback addressable before a progress snapshot exists", () => {
+		const tool = new SshTransferTool(session, [HOST.name], new Map([[HOST.name, HOST]]), "fixture");
+		const result = tool.createAbortedResult("local-abort", {
+			op: "download",
+			host: HOST.name,
+			local_path: "local://download.bin",
+			remote_path: "/srv/blob.bin",
+		});
+		expect(result.details?.status).toBe("cancelled");
+		expect(result.details?.localPath).toBe("local://download.bin");
 	});
 });

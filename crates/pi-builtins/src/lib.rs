@@ -229,6 +229,8 @@ mod realpath;
 mod rg;
 #[cfg(feature = "util.rm")]
 mod rm;
+#[cfg(feature = "util.rmdir")]
+mod rmdir;
 #[cfg(feature = "util.sed")]
 mod sed;
 #[cfg(feature = "util.seq")]

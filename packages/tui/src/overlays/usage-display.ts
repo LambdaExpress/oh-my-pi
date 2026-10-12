@@ -1,12 +1,22 @@
 import type { UsageLimit, UsageReport, UsageResetCredits } from "@oh-my-pi/pi-ai";
+import { t } from "../i18n";
 
-/** Include the usage tier in a limit title unless its label already names it. */
+/** Localize the limit label and include its tier unless the source label already names it. */
 export function formatLimitTitle(limit: UsageLimit): string {
+	const label = t(limit.label);
 	const tier = limit.scope.tier;
 	if (tier && !limit.label.toLowerCase().includes(tier.toLowerCase())) {
-		return `${limit.label} (${tier})`;
+		return `${label} (${tier})`;
 	}
-	return limit.label;
+	return label;
+}
+
+/** Compare window names against both source and localized titles to avoid duplicate qualifiers. */
+export function isRedundantLimitWindowLabel(limit: UsageLimit, title: string, windowLabel: string): boolean {
+	const window = windowLabel.toLowerCase();
+	return (
+		window === "quota window" || limit.label.toLowerCase().includes(window) || title.toLowerCase().includes(window)
+	);
 }
 
 function collapseSharedLimits(limits: UsageLimit[]): UsageLimit[] {

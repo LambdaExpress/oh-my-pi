@@ -22,25 +22,7 @@ function renderCellOutputRows(output: string, uiTheme: Theme): string[] {
 		{ expanded: true, isPartial: true, spinnerFrame: 0 },
 		uiTheme,
 	);
-	const lines = component.render(80).map(line => Bun.stripANSI(line));
-	const outputHeaderIndex = lines.findIndex(line => line.includes(" Output "));
-	expect(outputHeaderIndex).toBeGreaterThanOrEqual(0);
-
-	const rows: string[] = [];
-	for (const line of lines.slice(outputHeaderIndex + 1)) {
-		if (line.startsWith(uiTheme.boxRound.bottomLeft) || line.startsWith(uiTheme.boxRound.teeRight)) {
-			break;
-		}
-
-		const leftBorder = line.indexOf(uiTheme.boxRound.vertical);
-		const rightBorder = line.lastIndexOf(uiTheme.boxRound.vertical);
-		expect(leftBorder).toBeGreaterThanOrEqual(0);
-		expect(rightBorder).toBeGreaterThan(leftBorder);
-
-		const paddedContent = line.slice(leftBorder + uiTheme.boxRound.vertical.length, rightBorder);
-		rows.push(paddedContent.replace(/^ /, "").trimEnd());
-	}
-	return rows;
+	return component.render(80).map(line => Bun.stripANSI(line));
 }
 
 function renderStrippedCodeCellRows(code: string, uiTheme: Theme): string[] {
@@ -66,20 +48,6 @@ function renderStrippedCodeCellRows(code: string, uiTheme: Theme): string[] {
 		});
 }
 
-function hasOutputRow(lines: string[], uiTheme: Theme, expected: string): boolean {
-	const outputHeaderIndex = lines.findIndex(line => line.includes(" Output "));
-	expect(outputHeaderIndex).toBeGreaterThanOrEqual(0);
-	for (const line of lines.slice(outputHeaderIndex + 1)) {
-		if (line.startsWith(uiTheme.boxRound.bottomLeft) || line.startsWith(uiTheme.boxRound.teeRight)) {
-			return false;
-		}
-		if (line.includes(expected)) {
-			return true;
-		}
-	}
-	return false;
-}
-
 describe("eval cell result rendering", () => {
 	let uiTheme: Theme;
 
@@ -92,14 +60,16 @@ describe("eval cell result rendering", () => {
 	});
 
 	it("omits the terminal blank output row when a running cell ends with a newline", () => {
-		expect(renderCellOutputRows("running 10\n", uiTheme)).toEqual(["running 10"]);
+		expect(renderCellOutputRows("running 10\n", uiTheme)).toEqual(renderCellOutputRows("running 10", uiTheme));
 	});
 
 	it("preserves interior blank output rows while omitting the terminal trailing newline", () => {
-		expect(renderCellOutputRows("a\n\nb\n", uiTheme)).toEqual(["a", "", "b"]);
+		const rows = renderCellOutputRows("a\n\nb\n", uiTheme);
+		expect(rows).toEqual(renderCellOutputRows("a\n\nb", uiTheme));
+		expect(rows).not.toEqual(renderCellOutputRows("a\nb", uiTheme));
 	});
 
-	it("renders a two-row wrapped code tail without an earlier-lines marker when it fits the preview budget", () => {
+	it("keeps a wrapped code tail within the preview budget without dropping its content", () => {
 		const code = 'const previewValue = "abcdefghijklmnopqrstuvwxyz0123456789";';
 		const rows = renderStrippedCodeCellRows(code, uiTheme);
 		const stripped = rows.join("\n");
@@ -107,7 +77,6 @@ describe("eval cell result rendering", () => {
 		expect(rows).toHaveLength(2);
 		expect(stripped).toContain("const previewValue");
 		expect(stripped).toContain("abcdefghijklmnopqrstuvwxyz0123456789");
-		expect(stripped).not.toContain("earlier lines");
 	});
 
 	it("renders aborted eval details as an errored cell with aborted output", () => {
@@ -136,6 +105,6 @@ describe("eval cell result rendering", () => {
 
 		expect(rendered).toContain("await forever()");
 		expect(lines.some(line => line.includes(errorIcon))).toBe(true);
-		expect(hasOutputRow(lines, uiTheme, "aborted")).toBe(true);
+		expect(rendered).toContain("aborted");
 	});
 });

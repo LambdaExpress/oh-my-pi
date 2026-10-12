@@ -49,7 +49,7 @@ import { outputMeta } from "../tools/output-meta";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { type EditMode } from "@oh-my-pi/pi-tui/tools/edit";
 import { resolveEditMode } from "../utils/edit-mode";
-import { attemptEditAutoRepair, type EditAutoRepairOutcome } from "./auto-repair";
+import { attemptEditAutoRepair, type EditAutoRepairOutcome, hasParseRegression } from "./auto-repair";
 import { type AppliedEditSnapshot, createEditBlackboxRecorder } from "./blackbox";
 import hashlineCompactPrompt from "./hashline-compact.md" with { type: "text" };
 import { getLspBatchRequest } from "../lsp/batch";
@@ -623,6 +623,9 @@ export class EditTool implements AgentTool<TInput> {
 				prev: file.oldText,
 				next: file.newText,
 			};
+			// The native flag can come from an older addon or pre-format bytes.
+			// Only definite regressions may trigger a warning, recording, or AI repair.
+			if (!hasParseRegression(snapshot)) continue;
 			try {
 				await record?.(snapshot);
 			} catch {

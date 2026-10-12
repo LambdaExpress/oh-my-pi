@@ -69,6 +69,7 @@ Persistent per DB and shared by all agents. Preloaded: `db` (ida_domain `Databas
 - `resolve`, `func`, `name_of`, `pseudocode`, `asm`
 - `xrefs_to`, `xrefs_from`, `callers`, `callees`
 - `functions(pattern)`, `strings(pattern)`, `imports(pattern)` — optional case-insensitive regex
+- String locations are analysis addresses when mapped, or explicit `file+0x<offset>` labels for readable unmapped bytes. Managed-PE/empty analysis lists are supplemented with file strings; file offsets are not addresses for navigation or edits.
 - `hexdump(t, size=64)`, `read_bytes(t, size)`
 - `rename`, `comment`, `set_type`, `make_function` — same implementations as the RPC actions
 - `help_ida()` — one line per helper

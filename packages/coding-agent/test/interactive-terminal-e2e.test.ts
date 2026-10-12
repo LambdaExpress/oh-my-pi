@@ -2,7 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@oh-my-pi/pi-ai";
-import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -14,7 +14,11 @@ import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mod
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import type { CompactionSummaryMessage, CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
+import type {
+	CompactionSummaryMessage,
+	CustomMessage,
+	SkillPromptDetails,
+} from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { Text, type Component } from "@oh-my-pi/pi-tui";
 import { TempDir, withTimeout } from "@oh-my-pi/pi-utils";
@@ -200,6 +204,124 @@ describe("libkitty end-to-end", () => {
 		const hits = viewport.filter(row => row.includes("hi there omp"));
 		if (hits.length !== 1) dump("viewport after submit", viewport);
 		expect(hits.length).toBe(1);
+	});
+
+	it("keeps submitted skill input visible when the preceding run collapses", async () => {
+		session.settings.set("display.collapseCompletedRuns", true);
+		session.settings.set("display.foldToolRows", true);
+		authStorage.keys.setRuntime("anthropic", "test-key");
+		const providerEntered = Promise.withResolvers<void>();
+		const releaseProvider = Promise.withResolvers<MockResponse>();
+		const mock = createMockModel({
+			responses: [
+				{ content: ["PRECEDING_REPLY"] },
+				() => {
+					providerEntered.resolve();
+					return releaseProvider.promise;
+				},
+			],
+		});
+		session.agent.streamFn = mock.stream;
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		const skillPath = tempDir.join("SKILL.md");
+		await Bun.write(skillPath, "---\nname: review\ndescription: Review a request.\n---\n\nReview the request.\n");
+		mode.skillCommands.set("skill:review", {
+			name: "review",
+			description: "Review a request.",
+			filePath: skillPath,
+			baseDir: tempDir.path(),
+			source: "test",
+		});
+		await session.prompt("preceding request", { expandPromptTemplates: false });
+		await term.waitForRender(() => plainRows(term.getScrollBuffer()).some(row => row.includes("PRECEDING_REPLY")));
+
+		try {
+			term.sendInput("/skill:review SKILL_INPUT_VISIBLE");
+			term.sendInput("\r");
+			await withTimeout(providerEntered.promise, 2_000, "Skill submission did not reach the provider");
+			await term.waitForRender();
+
+			expect(plainRows(term.getScrollBuffer()).filter(row => row.includes("SKILL_INPUT_VISIBLE"))).toHaveLength(1);
+			mode.rebuildChatFromMessages();
+			mode.ui.resetDisplay();
+			await term.waitForRender();
+			expect(plainRows(term.getScrollBuffer()).filter(row => row.includes("SKILL_INPUT_VISIBLE"))).toHaveLength(1);
+		} finally {
+			releaseProvider.resolve({ content: ["SKILL_REPLY"] });
+			await session.waitForIdle();
+		}
+	});
+
+	it("keeps one pending skill row across rebuilds before and after persistence", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		const message: CustomMessage<SkillPromptDetails> = {
+			role: "custom",
+			customType: "skill-prompt",
+			content: "Review the request.",
+			display: true,
+			attribution: "user",
+			details: {
+				name: "review",
+				path: tempDir.join("SKILL.md"),
+				args: "SKILL_PENDING_VISIBLE",
+				prompt: "/skill:review SKILL_PENDING_VISIBLE",
+				lineCount: 1,
+			},
+			timestamp: Date.now(),
+		};
+		const submission = mode.startPendingSubmission({
+			text: message.details!.prompt!,
+			customType: message.customType,
+			customMessage: message,
+			display: true,
+		});
+		const inputRows = () => plainRows(term.getScrollBuffer()).filter(row => row.includes("SKILL_PENDING_VISIBLE"));
+
+		mode.rebuildChatFromMessages();
+		mode.ui.resetDisplay();
+		await term.waitForRender();
+		expect(inputRows()).toHaveLength(1);
+
+		session.sessionManager.appendCustomMessageEntry(
+			message.customType,
+			message.content,
+			message.display,
+			message.details,
+			message.attribution,
+			message.timestamp,
+		);
+		mode.rebuildChatFromMessages();
+		mode.ui.resetDisplay();
+		await term.waitForRender();
+		expect(inputRows()).toHaveLength(1);
+
+		await mode.eventController.handleEvent({ type: "message_start", message });
+		mode.finishPendingSubmission(submission);
+		mode.rebuildChatFromMessages();
+		mode.ui.resetDisplay();
+		await term.waitForRender();
+		expect(inputRows()).toHaveLength(1);
+	});
+
+	it("preserves a repeated plain input while the new submission is not journaled", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		session.sessionManager.appendMessage({
+			role: "user",
+			content: "REPEATED_INPUT_VISIBLE",
+			attribution: "user",
+			timestamp: 1,
+		});
+		mode.rebuildChatFromMessages();
+		mode.startPendingSubmission({ text: "REPEATED_INPUT_VISIBLE" });
+
+		mode.rebuildChatFromMessages();
+		mode.ui.resetDisplay();
+		await term.waitForRender();
+
+		expect(plainRows(term.getScrollBuffer()).filter(row => row.includes("REPEATED_INPUT_VISIBLE"))).toHaveLength(2);
 	});
 
 	it("keeps the whole buffer clean across non-overflowing width resizes", async () => {

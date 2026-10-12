@@ -25,6 +25,7 @@ import { InternalUrlRouter } from "../internal-urls/router";
 import { InternalUrlFilesystem } from "../internal-urls/url-filesystem";
 import grepDescription from "../prompts/tools/grep.md" with { type: "text" };
 import {
+	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_COLUMN,
 	truncateHead,
 	truncateLine,
@@ -952,6 +953,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					limitReached: false,
 				};
 				let skippedOversizedCount = 0;
+				let nativeTotalLimitReached = false;
 				// Only a glob spelled without a directory prefix matches at any depth.
 				// The parsed base alone cannot distinguish `*.ts` from `./*.ts`.
 				try {
@@ -1009,6 +1011,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 									);
 							if (targetRanges) fullySearchedOversizedPaths.add(targetKey);
 							skippedOversizedCount += targetResult.skippedOversized ?? 0;
+							nativeTotalLimitReached ||= targetResult.matches.length >= nativeMaxCount;
 							limitReached = limitReached || Boolean(targetResult.limitReached);
 							totalMatches += targetResult.totalMatches;
 							filesSearched += targetResult.filesSearched;
@@ -1074,6 +1077,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 								);
 						if (searchRanges) fullySearchedOversizedPaths.add(searchPathKey);
 						skippedOversizedCount = result.skippedOversized ?? 0;
+						nativeTotalLimitReached = result.matches.length >= nativeMaxCount;
 					}
 				} catch (err) {
 					if (err instanceof Error && /^regex(?: parse)? error/i.test(err.message)) {
@@ -1139,14 +1143,15 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					}
 					matchesByPath.get(match.path)!.push(match);
 				}
-				let perFileLimitReached = false;
+				const perFileLimitedPaths = new Set<string>();
 				for (const file of fileOrder) {
 					const list = matchesByPath.get(file)!;
 					if (list.length > perFileMatchCap) {
-						perFileLimitReached = true;
+						perFileLimitedPaths.add(file);
 						list.length = perFileMatchCap;
 					}
 				}
+				const perFileLimitReached = perFileLimitedPaths.size > 0;
 				const totalFiles = fileOrder.length;
 				// When native grep stopped at its internal cap, files past the cap were
 				// never surfaced — the file total is only a lower bound.
@@ -1197,6 +1202,34 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 				const limitMessage = fileLimitReached
 					? `Showing files ${skipFiles + 1}-${nextSkip} of ${totalFilesLabel}. Use skip=${nextSkip} for the next page, or narrow paths/pattern.`
 					: "";
+				const limitedWindowFiles = windowFiles.filter(file => perFileLimitedPaths.has(file));
+				const limitNotes: string[] = [];
+				if (limitedWindowFiles.length > 0) {
+					const firstFile = limitedWindowFiles[0]!;
+					const kept = matchesByPath.get(firstFile)!;
+					const nextLine = kept[kept.length - 1]!.lineNumber + 1;
+					limitNotes.push(
+						`Per-file match limit (${perFileMatchCap}) reached in: ${limitedWindowFiles.map(formatPath).join(", ")}. ` +
+							`Additional matching lines are omitted; narrow the pattern or search one file/range, e.g. path=${JSON.stringify(`${formatPath(firstFile)}:${nextLine}-`)}. ` +
+							"`skip` paginates files, not matches within a file.",
+					);
+				}
+				if (totalMatchLimitReached) {
+					limitNotes.push(
+						`Total match limit (${this.#totalMatchLimit}) reached; additional matching lines are omitted. Narrow the file/range or pattern to retrieve them.`,
+					);
+				}
+				// Native limitReached includes both per-file and global collection
+				// limits; do not claim the unseen file count or match count is exact.
+				if (result.limitReached) {
+					limitNotes.push(
+						(nativeTotalLimitReached
+							? `Native total match collection limit (${nativeMaxCount}) reached`
+							: "Native match collection limit reached") +
+							"; additional matching lines or files may be omitted. Narrow the file/range or pattern; these results do not exhaust all matches.",
+					);
+				}
+				if (limitMessage) limitNotes.push(limitMessage);
 				const { record: recordFile, list: fileList } = createFileRecorder();
 				const fileMatchCounts = new Map<string, number>();
 				// Detect explicit file targets that exceed the native grep size cap.
@@ -1260,14 +1293,18 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 						matchCount: 0,
 						fileCount: 0,
 						files: [],
-						truncated: false,
+						truncated: Boolean(result.limitReached),
 						missingPaths: missingPaths.length > 0 ? missingPaths : undefined,
 					};
 					const skipPastEnd = canPaginate && normalizedSkip > 0 && totalFiles > 0 && skipFiles >= totalFiles;
 					const noMatchText = skipPastEnd
-						? `No more results (${totalFilesLabel} files total; skip=${normalizedSkip} is past the end)`
-						: "No matches found";
-					const text = warningNote ? `${noMatchText}\n${warningNote}` : noMatchText;
+						? result.limitReached
+							? `No more collected results (${totalFilesLabel} files collected; skip=${normalizedSkip} is past the collected page)`
+							: `No more results (${totalFilesLabel} files total; skip=${normalizedSkip} is past the end)`
+						: result.limitReached
+							? "No matches found in the collected results"
+							: "No matches found";
+					const text = [noMatchText, ...limitNotes, warningNote].filter(Boolean).join("\n");
 					// Zero matches is useless regardless of warnings: by the time
 					// compaction runs, the follow-up call has already corrected course.
 					return toolResult(details).text(text).useless().done();
@@ -1352,15 +1389,23 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 				const matchOutput = formatFileMatches(fileList, isDirectory || isMultiScope, renderMatchesForFile);
 				outputLines.push(...matchOutput.model);
 				displayLines.push(...matchOutput.display);
-				if (limitMessage) {
-					outputLines.push("", limitMessage);
-				}
-				if (warningNote) {
-					outputLines.push("", warningNote);
-				}
 				const rawOutput = outputLines.join("\n");
-				const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
-				const output = truncation.content;
+				const outputNotes = [...limitNotes, ...(warningNote ? [warningNote] : [])];
+				let footer = outputNotes.length > 0 ? `\n\n${outputNotes.join("\n")}` : "";
+				if (Buffer.byteLength(rawOutput, "utf-8") + Buffer.byteLength(footer, "utf-8") > DEFAULT_MAX_BYTES) {
+					outputNotes.unshift(
+						"Output byte limit reached; additional matching lines are omitted. Narrow the file/range or pattern to retrieve them.",
+					);
+					footer = `\n\n${outputNotes.join("\n")}`;
+				}
+				// Reserve room for the disclosure: appending it before truncateHead
+				// allowed a hot file to hide the warning along with its later hits.
+				const truncation = truncateHead(rawOutput, {
+					maxLines: Number.MAX_SAFE_INTEGER,
+					maxBytes: Math.max(0, DEFAULT_MAX_BYTES - Buffer.byteLength(footer, "utf-8")),
+				});
+				const output = truncation.content + footer;
+				if (outputNotes.length > 0) displayLines.push("", ...outputNotes);
 				const displayText = sanitizeDisplayLines(displayLines.join("\n")).join("\n");
 				let displayTargets: Record<string, string> | undefined;
 				for (const line of displayLines) {

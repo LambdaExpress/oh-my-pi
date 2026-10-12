@@ -9,6 +9,7 @@ import { type FetchImpl, getEnvApiKey, type ImageContent, type TextContent } fro
 import { htmlToMarkdown, notebookToEditableText } from "@oh-my-pi/pi-natives";
 import { $which, ptree, removeWithRetries } from "@oh-my-pi/pi-utils";
 import { type ArchiveFormat, listArchiveRoot, sniffArchiveFormat } from "@oh-my-pi/pi-utils/ar";
+import type { XmlElement } from "@oh-my-pi/pi-utils/docx/xml";
 import type { Settings } from "../config/settings";
 
 import type { ToolSession } from "../sdk";
@@ -370,45 +371,26 @@ function extractHeadHtml(html: string): string {
 }
 
 /**
- * Parse alternate links from HTML head
+ * Parse markdown alternate links from HTML head.
+ * RSS/Atom alternates describe collections or comments, not an equivalent
+ * representation of the requested article. Feeds are rendered only when read directly.
  */
-function parseAlternateLinks(html: string, pageUrl: string): string[] {
+function parseMarkdownAlternateLinks(html: string): string[] {
 	const links: string[] = [];
+	const headHtml = extractHeadHtml(html);
+	const linkTags = headHtml.match(/<link\b[^>]*>/gi) ?? [];
 
-	try {
-		const pagePath = new URL(pageUrl).pathname;
-		const headHtml = extractHeadHtml(html);
-		const linkTags = headHtml.match(/<link\b[^>]*>/gi) ?? [];
+	for (const tag of linkTags) {
+		const rel = getHtmlAttribute(tag, "rel")?.toLowerCase() ?? "";
+		const relTokens = rel.split(/\s+/).filter(Boolean);
+		if (!relTokens.includes("alternate")) continue;
 
-		for (const tag of linkTags) {
-			const rel = getHtmlAttribute(tag, "rel")?.toLowerCase() ?? "";
-			const relTokens = rel.split(/\s+/).filter(Boolean);
-			if (!relTokens.includes("alternate")) continue;
-
-			const href = getHtmlAttribute(tag, "href");
-			const type = getHtmlAttribute(tag, "type")?.toLowerCase() ?? "";
-			if (!href) continue;
-
-			// Skip site-wide feeds
-			if (
-				href.includes("RecentChanges") ||
-				href.includes("Special:") ||
-				href.includes("/feed/") ||
-				href.includes("action=feed")
-			) {
-				continue;
-			}
-
-			if (type.includes("markdown")) {
-				links.push(href);
-			} else if (
-				(type.includes("rss") || type.includes("atom") || type.includes("feed")) &&
-				(href.includes(pagePath) || href.includes("comments"))
-			) {
-				links.push(href);
-			}
+		const href = getHtmlAttribute(tag, "href");
+		const type = getHtmlAttribute(tag, "type")?.toLowerCase() ?? "";
+		if (href && type.includes("markdown")) {
+			links.push(href);
 		}
-	} catch {}
+	}
 
 	return links;
 }
@@ -440,13 +422,19 @@ function extractDocumentLinks(html: string, baseUrl: string): string[] {
 	return links;
 }
 
-/**
- * Strip CDATA wrapper and clean text
- */
+/** Read XML text in document order, including mixed Atom XHTML content. */
+function feedElementText(element: XmlElement | undefined): string {
+	if (!element) return "";
+	let text = "";
+	for (const child of element.children) {
+		text += child.kind === "text" ? child.value : feedElementText(child);
+	}
+	return text;
+}
+
+/** Clean HTML embedded in an RSS description or Atom summary. */
 function cleanFeedText(text: string): string {
 	return text
-		.replace(/<!\[CDATA\[/g, "")
-		.replace(/\]\]>/g, "")
 		.replace(/&lt;/g, "<")
 		.replace(/&gt;/g, ">")
 		.replace(/&amp;/g, "&")
@@ -458,23 +446,26 @@ function cleanFeedText(text: string): string {
 /**
  * Parse RSS/Atom feed to markdown
  */
-async function parseFeedToMarkdown(content: string, maxItems = 10): Promise<string> {
-	const { parseHTML } = await import("@oh-my-pi/pi-utils/dom");
+async function parseFeedToMarkdown(content: string, maxItems = 10): Promise<{ content: string; error?: string }> {
+	const { attribute, childElements, firstChild, localName, parseXml } = await import("@oh-my-pi/pi-utils/docx/xml");
 	try {
-		const doc = parseHTML(content).document;
+		// XML retains RSS <link> text and Atom self-closing elements; an HTML
+		// parser treats <link> as void and silently repairs malformed markup.
+		const root = parseXml(content);
 
 		// Try RSS
-		const channel = doc.querySelector("channel");
-		if (channel) {
-			const title = cleanFeedText(channel.querySelector("title")?.text || "RSS Feed");
-			const items = channel.querySelectorAll("item").slice(0, maxItems);
+		if (localName(root.name) === "rss") {
+			const channel = firstChild(root, "channel");
+			if (!channel) throw new Error("Invalid RSS: missing channel element");
+			const title = feedElementText(firstChild(channel, "title")).trim() || "RSS Feed";
+			const items = childElements(channel, "item").slice(0, maxItems);
 
 			let md = `# ${title}\n\n`;
 			for (const item of items) {
-				const itemTitle = cleanFeedText(item.querySelector("title")?.text || "Untitled");
-				const link = cleanFeedText(item.querySelector("link")?.text || "");
-				const pubDate = cleanFeedText(item.querySelector("pubDate")?.text || "");
-				const desc = cleanFeedText(item.querySelector("description")?.text || "");
+				const itemTitle = feedElementText(firstChild(item, "title")).trim() || "Untitled";
+				const link = feedElementText(firstChild(item, "link")).trim();
+				const pubDate = feedElementText(firstChild(item, "pubDate")).trim();
+				const desc = cleanFeedText(feedElementText(firstChild(item, "description")));
 
 				md += `## ${itemTitle}\n`;
 				if (pubDate) md += `*${pubDate}*\n\n`;
@@ -482,22 +473,21 @@ async function parseFeedToMarkdown(content: string, maxItems = 10): Promise<stri
 				if (link) md += `[Read more](${link})\n\n`;
 				md += "---\n\n";
 			}
-			return md;
+			return { content: md };
 		}
 
 		// Try Atom
-		const feed = doc.querySelector("feed");
-		if (feed) {
-			const title = cleanFeedText(feed.querySelector("title")?.text || "Atom Feed");
-			const entries = feed.querySelectorAll("entry").slice(0, maxItems);
+		if (localName(root.name) === "feed") {
+			const title = feedElementText(firstChild(root, "title")).trim() || "Atom Feed";
+			const entries = childElements(root, "entry").slice(0, maxItems);
 
 			let md = `# ${title}\n\n`;
 			for (const entry of entries) {
-				const entryTitle = cleanFeedText(entry.querySelector("title")?.text || "Untitled");
-				const link = entry.querySelector("link")?.getAttribute("href") || "";
-				const updated = cleanFeedText(entry.querySelector("updated")?.text || "");
+				const entryTitle = feedElementText(firstChild(entry, "title")).trim() || "Untitled";
+				const link = attribute(firstChild(entry, "link"), "href") || "";
+				const updated = feedElementText(firstChild(entry, "updated")).trim();
 				const summary = cleanFeedText(
-					entry.querySelector("summary")?.text || entry.querySelector("content")?.text || "",
+					feedElementText(firstChild(entry, "summary")) || feedElementText(firstChild(entry, "content")),
 				);
 
 				md += `## ${entryTitle}\n`;
@@ -506,11 +496,12 @@ async function parseFeedToMarkdown(content: string, maxItems = 10): Promise<stri
 				if (link) md += `[Read more](${link})\n\n`;
 				md += "---\n\n";
 			}
-			return md;
+			return { content: md };
 		}
-	} catch {}
-
-	return content; // Fall back to raw content
+		throw new Error(`Unsupported feed root element: ${root.name}`);
+	} catch (error) {
+		return { content, error: error instanceof Error ? error.message : String(error) };
+	}
 }
 
 /**
@@ -1303,12 +1294,13 @@ async function renderUrl(
 
 	if (isFeed || (isXml && (rawContent.includes("<rss") || rawContent.includes("<feed")))) {
 		const parsed = await parseFeedToMarkdown(rawContent);
-		const output = finalizeOutput(parsed);
+		if (parsed.error) notes.push(`Feed parsing failed: ${parsed.error}`);
+		const output = finalizeOutput(parsed.content);
 		return {
 			url,
 			finalUrl,
 			contentType: mime,
-			method: "feed",
+			method: parsed.error ? "raw" : "feed",
 			content: output.content,
 			fetchedAt,
 			truncated: output.truncated,
@@ -1333,7 +1325,7 @@ async function renderUrl(
 	// Step 5: For HTML, try digestible formats first (unless raw mode)
 	if (isHtml && !raw) {
 		// 5A: Check for page-specific markdown alternate
-		const alternates = parseAlternateLinks(rawContent, finalUrl);
+		const alternates = parseMarkdownAlternateLinks(rawContent);
 		const markdownAlt = alternates.find(alt => alt.endsWith(".md") || alt.includes("markdown"));
 		if (markdownAlt) {
 			const resolved = markdownAlt.startsWith("http") ? markdownAlt : new URL(markdownAlt, finalUrl).href;
@@ -1388,33 +1380,11 @@ async function renderUrl(
 			};
 		}
 
-		// 5D: Check for feed alternates
-		const feedAlternates = alternates.filter(alt => !alt.endsWith(".md") && !alt.includes("markdown"));
-		for (const altUrl of feedAlternates.slice(0, 2)) {
-			const resolved = altUrl.startsWith("http") ? altUrl : new URL(altUrl, finalUrl).href;
-			const altResult = await loadPage(resolved, { timeout, signal });
-			if (altResult.ok && altResult.content.trim().length > 200) {
-				notes.push(`Used feed alternate: ${resolved}`);
-				const parsed = await parseFeedToMarkdown(altResult.content);
-				const output = finalizeOutput(parsed);
-				return {
-					url,
-					finalUrl,
-					contentType: "application/feed",
-					method: "alternate-feed",
-					content: output.content,
-					fetchedAt,
-					truncated: output.truncated,
-					notes,
-				};
-			}
-		}
-
 		if (signal?.aborted) {
 			throw new ToolAbortError();
 		}
 
-		// 5E: Render HTML via the reader-backend chain
+		// 5D: Render HTML via the reader-backend chain
 		// (native/trafilatura/lynx/parallel/firecrawl/jina)
 		const htmlResult = await renderHtmlToText(
 			finalUrl,

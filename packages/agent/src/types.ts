@@ -1165,7 +1165,9 @@ export interface AgentTool<
 	 * Concurrency mode for tool scheduling when multiple calls are in one turn.
 	 * - "shared": can run alongside other shared tools (default)
 	 * - "exclusive": runs alone; other tools wait until it finishes
-	 * - function: resolved per call from the (raw, pre-validation) arguments
+	 * - function: resolved per call from validated, beforeToolCall-revised arguments
+	 * Tools sharing retained mutable state must serialize that state themselves;
+	 * "exclusive" is a turn-wide barrier, not a per-resource lock.
 	 */
 	concurrency?: "shared" | "exclusive" | ((args: Partial<Static<TParameters>>) => "shared" | "exclusive");
 

@@ -37,6 +37,12 @@ export interface ScrollOptions {
 	selector?: string;
 }
 
+/** Mouse-wheel deltas; an omitted axis defaults to zero. */
+export interface ScrollDeltaOptions extends ScrollOptions {
+	deltaX?: number;
+	deltaY?: number;
+}
+
 /** A browser element handle with omp's additional interaction methods. */
 export type InteractionHandle = ElementHandle & {
 	dblclick(): Promise<void>;
@@ -147,8 +153,67 @@ interface FillElement {
 	};
 }
 
-function requireFiniteNumber(value: number, label: string): void {
-	if (!Number.isFinite(value)) throw new ToolError(`${label} must be a finite number`);
+function requireFiniteNumber(value: unknown, label: string): asserts value is number {
+	if (typeof value !== "number" || !Number.isFinite(value)) throw new ToolError(`${label} must be a finite number`);
+}
+
+/** Validate both scroll forms before resolving a selector or sending browser input. */
+export function resolveScrollArguments(
+	deltaXOrOptions: unknown,
+	deltaY?: unknown,
+	options?: unknown,
+): { deltaX: number; deltaY: number; selector?: string } {
+	let deltaX = deltaXOrOptions;
+	let opts = options;
+	if (deltaXOrOptions !== null && typeof deltaXOrOptions === "object" && !Array.isArray(deltaXOrOptions)) {
+		if (deltaY !== undefined || options !== undefined) {
+			throw new ToolError(
+				"tab.scroll() takes either (deltaX, deltaY, options?) or ({ deltaX?, deltaY?, selector? })",
+			);
+		}
+		const deltas = deltaXOrOptions as Record<string, unknown>;
+		for (const key of Object.keys(deltas)) {
+			if (key !== "deltaX" && key !== "deltaY" && key !== "selector") {
+				throw new ToolError(`tab.scroll() does not support ${JSON.stringify(key)}; use deltaX and/or deltaY`);
+			}
+		}
+		const hasX = Object.prototype.hasOwnProperty.call(deltas, "deltaX");
+		const hasY = Object.prototype.hasOwnProperty.call(deltas, "deltaY");
+		if (!hasX && !hasY) throw new ToolError("tab.scroll() requires at least one of deltaX or deltaY");
+		deltaX = hasX ? deltas.deltaX : 0;
+		deltaY = hasY ? deltas.deltaY : 0;
+		opts = { selector: deltas.selector };
+	}
+	requireFiniteNumber(deltaX, "tab.scroll() deltaX");
+	requireFiniteNumber(deltaY, "tab.scroll() deltaY");
+	let selector: string | undefined;
+	if (opts !== undefined) {
+		if (opts === null || typeof opts !== "object" || Array.isArray(opts)) {
+			throw new ToolError("tab.scroll() options must be an object with an optional selector");
+		}
+		for (const key of Object.keys(opts)) {
+			if (key !== "selector") throw new ToolError(`tab.scroll() options do not support ${JSON.stringify(key)}`);
+		}
+		const value = (opts as Record<string, unknown>).selector;
+		if (value !== undefined) {
+			if (typeof value !== "string" || value.trim().length === 0) {
+				throw new ToolError("tab.scroll() selector must be a non-empty string");
+			}
+			selector = value;
+		}
+	}
+	return { deltaX, deltaY, selector };
+}
+
+/** Focus any DOM element exposing native focus(), including keyboard-focusable SVG. */
+export async function focusElement(handle: ElementHandle, signal?: AbortSignal): Promise<void> {
+	await untilAborted(signal, () =>
+		handle.evaluate(el => {
+			const element = el as unknown as { focus?: () => void };
+			if (typeof element.focus !== "function") throw new Error("The selected element does not support focus()");
+			element.focus();
+		}),
+	);
 }
 
 /** Return a visible point relative to the element's box, or explain why it cannot receive a click. */
@@ -203,12 +268,14 @@ export async function isClickActionable(handle: ElementHandle, signal?: AbortSig
 }
 
 async function actionableClickPoint(handle: ElementHandle, label: string, signal?: AbortSignal): Promise<ClickPoint> {
-	await untilAborted(signal, () =>
-		handle.evaluate(el => {
-			const element = el as unknown as PageElement;
-			element.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
-		}),
-	);
+	const scrollIntoView = () =>
+		untilAborted(signal, () =>
+			handle.evaluate(el => {
+				const element = el as unknown as PageElement;
+				element.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+			}),
+		);
+	await scrollIntoView();
 	let previous = await untilAborted(signal, () => handle.boundingBox());
 	while (true) {
 		throwIfAborted(signal);
@@ -227,6 +294,9 @@ async function actionableClickPoint(handle: ElementHandle, label: string, signal
 		if (stable && !result.ok && result.coveredBy) {
 			throw new ToolError(`${label} blocked: covered by ${result.coveredBy}`);
 		}
+		// A pending smooth anchor scroll can move the target away after the initial
+		// positioning. Reposition an offscreen target rather than waiting on stale geometry.
+		if (!result.ok && result.reason === "off-viewport") await scrollIntoView();
 		previous = current;
 		await untilAborted(signal, () => Bun.sleep(34));
 	}

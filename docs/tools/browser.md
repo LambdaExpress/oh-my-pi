@@ -53,7 +53,7 @@ await tab.close();
 | `name` | Managed-tab name; default `"main"`. |
 | `url` | Navigate the opened or reused tab to this URL. |
 | `app` | `{ cdp_url?, path?, args?, relay?, tern?, target? }`; backend selection is described below. `target` selects an attached page by URL/title substring. |
-| `viewport` | `{ width, height, scale? }`; `scale` becomes the device scale factor. |
+| `viewport` | `{ width, height, scale?, deviceScaleFactor?, isMobile?, hasTouch?, isLandscape? }`. `deviceScaleFactor` takes precedence over `scale`; mobile/touch/orientation flags require Chromium and are rejected by unsupported backends. |
 | `wait_until` | `"load"`, `"domcontentloaded"`, `"networkidle0"`, or `"networkidle2"`. |
 | `dialogs` | `"accept"` or `"dismiss"` automatic policy. Without one, alerts and beforeunload prompts are accepted; confirms and prompts remain pending. |
 | `allowed_domains` | Exact hostnames or `*.example.com` patterns (including the bare domain). The network manager aborts intercepted HTTP(S)/WS(S) requests to other hosts; an empty list leaves requests unrestricted. This is not a sandbox, and native-webview coverage differs below. |
@@ -92,6 +92,8 @@ Direct helpers cross the host bridge and return real structured values. The comp
 Direct `waitFor` and `waitForSelector` return booleans for the resolved handle, but timeouts can throw. `tab.id(number)` and `tab.ref("e5")` return `BrowserElement` proxies. They support `click`, `dblclick`, `check`, `uncheck`, `highlight`, `type`, `fill`, `press`, `hover`, `focus`, `select`, `uploadFile`, `scrollIntoView`, `boundingBox`, `isVisible`, `isHidden`, `text`, `html`, `value`, `attr`, `styles`, `isEnabled`, `isChecked`, and `evaluate`. A string passed to `BrowserElement.evaluate` is a function expression invoked with the element as its first argument.
 
 Selectors accept CSS and Puppeteer `aria/…`, `text/…`, `xpath/…`, `pierce/…`, plus `label/…`, `placeholder/…`, `testid/…`, `alt/…`, `title/…`, and `role/<role>[name="…"]` query handlers. Add ` exact` inside the role name filter for exact matching. Playwright-only pseudos such as `:has-text()` and `:visible` are rejected. Use `tab.select` for `<select>` elements; `tab.fill` does not support them.
+
+`focus` supports elements with native callable focus methods, including SVG with `tabindex`. `scroll(deltaX, deltaY, { selector? })` and `scroll({ deltaX?, deltaY?, selector? })` dispatch relative scrolling; object form requires at least one finite delta and defaults the omitted axis to zero. Absolute `x`/`y` coordinates are unsupported. Raw `page.setViewport()` changes inside a run remain the viewport for subsequent helpers while independent persistent emulation settings remain applied.
 
 `observe()` assigns numeric ids consumed by `tab.id`. `ariaSnapshot()` assigns `[ref=eN]` ids consumed by `tab.ref`; `diff: true` returns a revisioned full, unchanged, or delta object. Navigation and re-rendering invalidate handles; re-observe and act in the same Eval cell.
 

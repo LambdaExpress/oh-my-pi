@@ -23,6 +23,7 @@ import {
 	ensureFileOpen,
 	FileChangeType,
 	getActiveClients,
+	getActiveOrPendingClient,
 	getLspClientKey,
 	getOrCreateClient,
 	isRustAnalyzerClient,
@@ -30,12 +31,14 @@ import {
 	notifyClientWatchedFiles,
 	prepareFileForRequest,
 	prepareTypeScriptProject,
+	prepareTypeScriptWorkspaceSymbols,
 	reconcileFileFromDisk,
 	reconcileIdleChecker,
 	recordTypeScriptProjectFailure,
 	sendNotification,
 	sendRequest,
 	shutdownStaleClients,
+	supportsWorkspaceSymbols,
 	waitForProjectLoaded,
 } from "./client";
 import { getLinterClient } from "./clients";
@@ -1161,41 +1164,73 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			const aggregatedSymbols: SymbolInformation[] = [];
 			const respondingServers = new Set<string>();
 			const serverFailures: string[] = [];
+			const scopeNotes: string[] = [];
+			const startedClients = getActiveClients();
+			const sessionRoot = normalizePathForComparison(this.session.cwd);
 			for (const [workspaceServerName, workspaceServerConfig] of servers) {
 				throwIfAborted(signal);
-				try {
-					const workspaceClient = await getOrCreateClient(
-						workspaceServerConfig,
-						this.session.cwd,
-						undefined,
-						signal,
+				const workspaces = startedClients.filter(client => {
+					if (!client.cwd) return false;
+					const relative = path.relative(sessionRoot, normalizePathForComparison(client.cwd));
+					if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return false;
+					return client.clientKey === getLspClientKey(workspaceServerConfig, client.cwd);
+				});
+				if (workspaces.length === 0) {
+					scopeNotes.push(
+						`  ${workspaceServerName}: no active workspace; open a source file to activate its project`,
 					);
-					const workspaceResult = (await sendRequest(
-						workspaceClient,
-						"workspace/symbol",
-						{ query: normalizedQuery },
-						signal,
-					)) as SymbolInformation[] | null;
-					respondingServers.add(workspaceServerName);
-					if (workspaceResult && workspaceResult.length > 0) {
-						aggregatedSymbols.push(...filterWorkspaceSymbols(workspaceResult, normalizedQuery));
+				}
+				for (const workspace of workspaces) {
+					throwIfAborted(signal);
+					const workspaceCwd = workspace.cwd!;
+					const scope = `${workspaceServerName} (${path.relative(this.session.cwd, workspaceCwd) || "."})`;
+					try {
+						const workspaceClient = await getActiveOrPendingClient(workspaceServerConfig, workspaceCwd, signal);
+						if (!workspaceClient || workspaceClient.status !== "ready") {
+							scopeNotes.push(`  ${scope}: workspace client is no longer available`);
+							continue;
+						}
+						if (!supportsWorkspaceSymbols(workspaceClient)) {
+							scopeNotes.push(`  ${scope}: workspace/symbol is not supported`);
+							continue;
+						}
+						const unavailable = await prepareTypeScriptWorkspaceSymbols(workspaceClient, signal);
+						if (unavailable) {
+							scopeNotes.push(`  ${scope}: ${replaceTabs(unavailable)}`);
+							continue;
+						}
+						await waitForProjectLoaded(workspaceClient, signal);
+						throwIfAborted(signal);
+						const workspaceResult = (await sendRequest(
+							workspaceClient,
+							"workspace/symbol",
+							{ query: normalizedQuery },
+							signal,
+						)) as SymbolInformation[] | null;
+						respondingServers.add(workspaceServerName);
+						if (workspaceResult && workspaceResult.length > 0) {
+							aggregatedSymbols.push(...filterWorkspaceSymbols(workspaceResult, normalizedQuery));
+						}
+					} catch (err) {
+						if (err instanceof ToolAbortError || signal?.aborted) throw err;
+						const message = replaceTabs(err instanceof Error ? err.message : String(err));
+						serverFailures.push(`  ${scope}: ${message}`);
 					}
-				} catch (err) {
-					if (err instanceof ToolAbortError || signal?.aborted) {
-						throw err;
-					}
-					const message = replaceTabs(err instanceof Error ? err.message : String(err));
-					serverFailures.push(`  ${workspaceServerName}: ${message}`);
 				}
 			}
 			const serverFailureSection =
 				serverFailures.length > 0 ? `\nServer failures:\n${serverFailures.join("\n")}` : "";
+			const scopeNoteSection = scopeNotes.length > 0 ? `\nSkipped scopes:\n${scopeNotes.join("\n")}` : "";
+			const scopeSections = serverFailureSection + scopeNoteSection;
 			if (respondingServers.size === 0) {
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Workspace symbol search failed: all language servers failed${serverFailureSection}`,
+							text:
+								serverFailures.length > 0
+									? `Workspace symbol search failed: all available language servers failed${scopeSections}`
+									: `Workspace symbol search unavailable: no active workspace supports this search${scopeSections}`,
 						},
 					],
 					details: { action, serverName: "", success: false, request: params },
@@ -1207,7 +1242,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					content: [
 						{
 							type: "text",
-							text: `No symbols matching "${normalizedQuery}"${serverFailureSection}`,
+							text: `No symbols matching "${normalizedQuery}"${scopeSections}`,
 						},
 					],
 					details: {
@@ -1236,7 +1271,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							'":\n' +
 							lines.map(line => `  ${line}`).join("\n") +
 							truncationLine +
-							serverFailureSection,
+							scopeSections,
 					},
 				],
 				details: {

@@ -9,6 +9,7 @@
 
 ### Changed
 
+- Folded eval rows now show `Browser` after a built-in browser call and `Eval` otherwise, preserving task titles and recognizing saved browser events during historical replay.
 - Folded outgoing agent messages now use IRC labels with direction, recipient, and streaming body previews, matching incoming IRC cards instead of hiding message text behind recipient-only summaries.
 - Folded Grep rows now show the scope before the search pattern so long expressions do not hide the target path; Grep and Glob patterns use muted text while Grep scopes retain their accent color.
 - Folded tool rows show a pen while arguments stream and a clock while waiting for results, including grouped reads and native terminal surfaces.
@@ -18,6 +19,8 @@
 
 ### Fixed
 
+- Localized usage limit titles and absolute remaining/spent amounts across overview cards, detail reports, and native terminal descriptions.
+- Fixed `/usage` overview cards hiding extra credit balances behind the four-window quota preview, including native terminal cards.
 - Fixed full-output recovery notices offering only bare artifact links; notices now include a bounded verbatim read selector.
 - Fixed combined forward and tail read selectors being misidentified as separate paths, including raw-selector ordering and grouped read displays.
 - Fixed debug-server mouse click actions delivering concatenated SGR press and release reports that standard mouse handlers could not parse.

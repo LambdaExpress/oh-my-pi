@@ -1,7 +1,8 @@
+import { MCPTransportError } from "../mcp/errors";
 import { MCPManager } from "../mcp/manager";
 import type { MCPResourceReadResult } from "../mcp/types";
 import mcpDoc from "../prompts/internal-urls/mcp.md" with { type: "text" };
-import type { InternalResource, InternalUrl, ProtocolHandler, SchemeSpec } from "./types";
+import type { InternalResource, InternalUrl, ProtocolHandler, ResolveContext, SchemeSpec } from "./types";
 
 function escapeRegex(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -127,7 +128,8 @@ export class McpProtocolHandler implements ProtocolHandler {
 		return mcpDoc.trim();
 	}
 
-	async resolve(url: InternalUrl): Promise<InternalResource> {
+	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
+		context?.signal?.throwIfAborted();
 		const mcpManager = MCPManager.instance();
 		if (!mcpManager) {
 			throw new Error("No MCP manager available. MCP servers may not be configured.");
@@ -135,17 +137,52 @@ export class McpProtocolHandler implements ProtocolHandler {
 
 		const uri = extractResourceUri(url);
 		let targetServer = resolveTargetServer(mcpManager, uri);
+		const discoveryErrors: Error[] = [];
 		if (!targetServer) {
 			// A configured server may still be handshaking when discovery returned
 			// (the `connectServers` startup race deliberately leaves slow servers in
 			// flight). This one-shot read must observe the final attached state
 			// rather than the mid-handshake snapshot, so wait for pending connects
 			// before loading catalogs and retrying.
-			await mcpManager.waitForPendingConnections();
-			await Promise.allSettled(mcpManager.getConnectedServers().map(name => mcpManager.ensureServerResources(name)));
+			try {
+				await mcpManager.waitForPendingConnections({ signal: context?.signal });
+			} catch (error) {
+				if (context?.signal?.aborted && !(error instanceof MCPTransportError)) {
+					context.signal.throwIfAborted();
+				}
+				discoveryErrors.push(error instanceof Error ? error : new Error(String(error)));
+			}
+			context?.signal?.throwIfAborted();
+			const servers = mcpManager.getConnectedServers();
+			const catalogs = await Promise.allSettled(
+				servers.map(name => mcpManager.ensureServerResources(name, { signal: context?.signal })),
+			);
+			context?.signal?.throwIfAborted();
+			for (const [index, result] of catalogs.entries()) {
+				if (result.status === "rejected") {
+					const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
+					discoveryErrors.push(
+						new Error(`MCP server "${servers[index]}" resource catalog is unavailable: ${message}`, {
+							cause: result.reason,
+						}),
+					);
+				}
+			}
 			targetServer = resolveTargetServer(mcpManager, uri);
 		}
 		if (!targetServer) {
+			if (discoveryErrors.length > 0) {
+				const cause =
+					discoveryErrors.length === 1 && discoveryErrors[0] instanceof MCPTransportError
+						? discoveryErrors[0]
+						: new AggregateError(discoveryErrors, "MCP resource discovery failed");
+				throw new Error(
+					`MCP resource "${uri}" is unavailable because server discovery did not complete.\n` +
+						discoveryErrors.map(error => error.message).join("\n") +
+						"\nCheck the MCP server and backing application logs before retrying this resource read.",
+					{ cause },
+				);
+			}
 			throw new Error(
 				`No MCP server has resource "${uri}".\n\nAvailable resources:\n${formatAvailableResources(mcpManager)}`,
 			);
@@ -153,10 +190,14 @@ export class McpProtocolHandler implements ProtocolHandler {
 
 		let result: MCPResourceReadResult | undefined;
 		try {
-			result = await mcpManager.readServerResource(targetServer, uri);
+			result = await mcpManager.readServerResource(targetServer, uri, { signal: context?.signal });
 		} catch (error) {
+			if (context?.signal?.aborted && !(error instanceof MCPTransportError)) {
+				context.signal.throwIfAborted();
+			}
+			if (error instanceof Error && error.name === "AbortError") throw error;
 			const message = error instanceof Error ? error.message : String(error);
-			throw new Error(`MCP resource read error: ${message}`);
+			throw new Error(`MCP resource read error: ${message}`, { cause: error });
 		}
 
 		if (!result) {
