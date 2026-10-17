@@ -70,6 +70,15 @@ async function startServer(): Promise<void> {
 				return;
 			}
 			if (msg.id === undefined || msg.id === null) return;
+			if (msg.method === "initialize" && markerPath) {
+				process.stdout.write(
+					`${JSON.stringify({
+						jsonrpc: "2.0",
+						method: "notifications/fixture/initialize",
+						params: { firstLaunch: delayInitialize },
+					})}\n`,
+				);
+			}
 			if (msg.method === "initialize" && delayInitialize) {
 				if (markerPath) return;
 				await Bun.sleep(INITIALIZE_DELAY_MS);

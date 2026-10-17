@@ -1,5 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import type { PathLike } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -7,15 +6,12 @@ import { bumpVersion, packSkill } from "../../src/skillshare/pack";
 import { readTar } from "../../src/skillshare/tar";
 
 let tempDir: TempDir;
-let restoreLstat: (() => void) | undefined;
 
 beforeEach(async () => {
 	tempDir = await TempDir.create("@pi-skillshare-pack-");
 });
 
 afterEach(async () => {
-	restoreLstat?.();
-	restoreLstat = undefined;
 	await tempDir.remove();
 });
 
@@ -63,17 +59,9 @@ describe("packSkill", () => {
 			".skillignore": "# comment\n*.log\n!keep.log\ndrafts/\n/root-only.txt\n",
 		});
 		await fs.chmod(tempDir.join("scripts/run.sh"), 0o755);
-		if (process.platform === "win32") {
-			// NTFS chmod cannot supply POSIX execute bits. Keep the real files and
-			// metadata, supplying only the executable mode unavailable on this host.
-			const realLstat = fs.lstat;
-			const lstatSpy = spyOn(fs, "lstat").mockImplementation((async (target: PathLike) => {
-				const stat = await realLstat(target);
-				if (target === tempDir.join("scripts/run.sh")) stat.mode |= 0o111;
-				return stat;
-			}) as typeof fs.lstat);
-			restoreLstat = () => lstatSpy.mockRestore();
-		}
+		// Windows chmod cannot supply POSIX execute bits; the package must carry
+		// the filesystem's actual metadata rather than infer it from the shebang.
+		const scriptExecutable = ((await fs.lstat(tempDir.join("scripts/run.sh"))).mode & 0o111) !== 0;
 
 		const pack = await packSkill(tempDir.path());
 		expect(pack.name).toBe("pdf-tools");
@@ -87,14 +75,14 @@ describe("packSkill", () => {
 			"reference/root-only.txt",
 			"scripts/run.sh",
 		]);
-		expect(pack.files.find(file => file.path === "scripts/run.sh")?.executable).toBe(true);
+		expect(pack.files.find(file => file.path === "scripts/run.sh")?.executable).toBe(scriptExecutable);
 		expect(pack.files.find(file => file.path === "SKILL.md")?.executable).toBe(false);
 		expect(pack.hasScripts).toBe(true);
 		expect(pack.secrets).toEqual([]);
 
 		const entries = readTar(Bun.gunzipSync(pack.tgz));
 		expect(entries.map(entry => entry.path)).toEqual(pack.files.map(file => file.path));
-		expect(entries.find(entry => entry.path === "scripts/run.sh")?.executable).toBe(true);
+		expect(entries.find(entry => entry.path === "scripts/run.sh")?.executable).toBe(scriptExecutable);
 		expect(entries.find(entry => entry.path === "SKILL.md")?.executable).toBe(false);
 		expect(new TextDecoder().decode(entries[0].content)).toBe(SKILL_MD);
 		expect(pack.integrity).toBe(`sha512-${new Bun.CryptoHasher("sha512").update(pack.tgz).digest("base64")}`);

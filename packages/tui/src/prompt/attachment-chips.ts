@@ -12,7 +12,7 @@ import {
 	visibleWidth,
 } from "../index";
 import { fileHyperlink } from "../render/hyperlink";
-import { registerNativeBlob } from "../native/blobs";
+import { nativeImageNode } from "../native/blobs";
 import { node, row, span } from "../native/describe";
 import { plainText } from "../native/spans";
 import type { DescribeContext, NativeNode } from "../native/node";
@@ -35,12 +35,9 @@ const RESTORE_CURSOR = "\x1b8";
  *  (pastes are usually re-encoded JPEG/WebP) convert before transmit — the same pipeline
  *  the transcript uses. `null` = conversion in flight or failed. */
 const kImagePng = Symbol("omp.imagePng");
-/** Content address of the draft image's decoded bytes, registered once for TSP `image` nodes. */
-const kImageBlob = Symbol("omp.imageBlob");
 
 interface ImageContentWithPng extends ImageContent {
 	[kImagePng]?: ImageContent | null;
-	[kImageBlob]?: string;
 }
 
 /**
@@ -59,7 +56,9 @@ export class AttachmentChipsBand implements Component {
 		private readonly requestRender: () => void,
 	) {}
 
-	#native: { chips: readonly ComposerChipDescriptor[]; node: NativeNode } | undefined;
+	#native:
+		| { chips: readonly ComposerChipDescriptor[]; node: NativeNode; images: ReadonlyMap<ImageContent, NativeNode> }
+		| undefined;
 
 	/**
 	 * A wrapping `row` of chip `card`s (`omp.composer.chip`) titled with the
@@ -71,6 +70,7 @@ export class AttachmentChipsBand implements Component {
 		const chips = this.editor.composerChips();
 		if (this.#native?.chips === chips) return this.#native.node;
 		const cards: NativeNode[] = [];
+		const images = new Map<ImageContent, NativeNode>();
 		for (const chip of chips) {
 			const icon = theme.symbol(
 				chip.kind === "paste" ? "chip.paste" : chip.kind === "video" ? "chip.video" : "chip.image",
@@ -88,14 +88,18 @@ export class AttachmentChipsBand implements Component {
 			} else {
 				const dims = this.#imageDims(chip.image);
 				caption = dims ? `${dims.width}x${dims.height}` : "";
-				const image = chip.image as ImageContentWithPng;
-				const blob = image[kImageBlob] ?? registerNativeBlob(Buffer.from(image.data, "base64"), image.mimeType);
-				image[kImageBlob] = blob;
+				const image = chip.image;
+				const native =
+					images.get(image) ??
+					this.#native?.images.get(image) ??
+					nativeImageNode(Buffer.from(image.data, "base64"), image.mimeType);
+				if (native.k !== "image") throw new Error("Attachment thumbnail must be an image node");
+				images.set(image, native);
 				content = node("image", {
-					blob,
+					...native.p,
 					alt: title,
-					w: dims?.width,
-					h: dims?.height,
+					w: dims?.width ?? native.p?.w,
+					h: dims?.height ?? native.p?.h,
 					max: { w: "12ch", h: "4lines" },
 				});
 			}
@@ -108,7 +112,7 @@ export class AttachmentChipsBand implements Component {
 			);
 		}
 		const described = row(cards, { gap: "sm", wrap: true, role: "omp.composer.chips", hidden: cards.length === 0 });
-		this.#native = { chips, node: described };
+		this.#native = { chips, node: described, images };
 		return described;
 	}
 
@@ -283,7 +287,8 @@ export class AttachmentChipsBand implements Component {
 
 	/** Leading 4 rows x 12 cols of the pasted text, muted. */
 	#textInterior(entry: TextAttachment): string[] {
-		const lines = entry.content.split("\n");
+		// Only the leading rows are drawn; don't split a multi-KB paste every frame.
+		const lines = entry.content.split("\n", INNER_ROWS);
 		const rows: string[] = [];
 		for (let r = 0; r < INNER_ROWS; r++) {
 			const cut = truncateToWidth(replaceTabs(lines[r] ?? ""), INNER_COLS);

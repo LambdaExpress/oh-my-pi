@@ -11,7 +11,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { wrapToolWithMetaNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
-import { DEFAULT_MAX_BYTES } from "@oh-my-pi/pi-tui/tools/streaming-output";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 import { TempDir } from "@oh-my-pi/pi-utils/temp";
@@ -173,7 +173,7 @@ describe("读取代理报告字段的行选择器", () => {
 
 	it("对 sidecar 报告字段支持两种 raw 顺序并保留 CRLF", async () => {
 		const lines = reportLines(220);
-		const report = `${lines.join("\r\n")}\r\n`;
+		const report = `\uFEFF${lines.join("\r\n")}\r\n`;
 		fs.writeFileSync(path.join(testDir, `${outputId}.md`), "报告预览");
 		fs.writeFileSync(path.join(testDir, `${outputId}.json`), JSON.stringify({ report }));
 		const tool = new ReadTool(createSession(testDir, ""));
@@ -187,11 +187,25 @@ describe("读取代理报告字段的行选择器", () => {
 
 		expect(leadingRaw.details?.displayContent?.text).toBe(expected);
 		expect(leadingRaw.details?.displayContent?.startLine).toBe(1);
-		expect(leadingRaw.details?.totalLines).toBe(221);
+		expect(leadingRaw.details?.totalLines).toBe(220);
 		expect(leadingRaw.content).toEqual(trailingRaw.content);
 		expect(leadingRaw.content[0]).toEqual(
 			expect.objectContaining({ type: "text", text: expect.stringContaining(expected) }),
 		);
+		const finalLines = await tool.execute("read-report-final-lines", {
+			path: `agent://${outputId}/report:raw:219-220`,
+		});
+		expect(finalLines.content).toEqual([{ type: "text", text: `${lines.slice(-2).join("\r\n")}\r\n` }]);
+		expect(finalLines.details?.displayContent?.lineNumbers).toEqual([219, 220]);
+		expect(finalLines.details?.totalLines).toBe(220);
+		const whole = await tool.execute("read-report-bounded-eof", {
+			path: `agent://${outputId}/report:raw:1-225`,
+		});
+		expect(whole.content).toEqual([{ type: "text", text: report }]);
+		expect(whole.details?.displayContent?.lineNumbers).toEqual(Array.from({ length: 220 }, (_, i) => i + 1));
+		const beyond = await tool.execute("read-report-beyond", { path: `agent://${outputId}/report:raw:221` });
+		expect(beyond.details?.totalLines).toBe(220);
+		expect(beyond.details?.displayContent).toBeUndefined();
 	});
 
 	it("对嵌套报告字段按 1–210 行切片且支持混合尾范围", async () => {
@@ -210,6 +224,33 @@ describe("读取代理报告字段的行选择器", () => {
 		expect(mixed.details?.displayContent?.text).toBe([...lines.slice(0, 2), "…", ...lines.slice(-2)].join("\n"));
 		expect(mixed.details?.displayContent?.lineNumbers).toEqual([1, 2, null, 239, 240]);
 	});
+
+	it.each(["\n", "\r\n"])(
+		"preserves the raw EOF terminator at the physical-line output boundary for %j",
+		async ending => {
+			const report = `x${ending}`.repeat(DEFAULT_MAX_LINES);
+			const longerReport = `${report}last${ending}`;
+			fs.writeFileSync(path.join(testDir, `${outputId}.md`), JSON.stringify({ report, longerReport }));
+			const tool = new ReadTool(createSession(testDir, ""));
+			const result = await tool.execute("read-report-line-boundary", {
+				path: `agent://${outputId}/report:raw:1-${DEFAULT_MAX_LINES}`,
+			});
+
+			expect(result.content).toEqual([{ type: "text", text: report }]);
+			expect(result.details?.totalLines).toBe(DEFAULT_MAX_LINES);
+			expect(result.details?.truncation).toBeUndefined();
+			expect(result.details?.displayContent?.lineNumbers?.at(-1)).toBe(DEFAULT_MAX_LINES);
+
+			const limited = await tool.execute("read-report-over-line-boundary", {
+				path: `agent://${outputId}/longerReport:raw:1-${DEFAULT_MAX_LINES + 1}`,
+			});
+			expect(limited.details?.displayContent?.text).toBe(report.slice(0, -1));
+			expect(limited.details?.displayContent?.lineNumbers?.at(-1)).toBe(DEFAULT_MAX_LINES);
+			expect(limited.details?.totalLines).toBe(DEFAULT_MAX_LINES + 1);
+			expect(limited.details?.truncation?.outputLines).toBe(DEFAULT_MAX_LINES);
+			expect(limited.details?.truncation?.totalLines).toBe(DEFAULT_MAX_LINES + 1);
+		},
+	);
 
 	it("仍原样返回非文本字段并拒绝对其应用行范围", async () => {
 		const value = { complete: true, items: ["一", "二"] };

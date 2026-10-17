@@ -55,6 +55,7 @@ test("bare workspace-member imports resolve through the workspace root manifest"
 		importer,
 	);
 
+	// The rewrite emits a `file://` URL, whose separators are `/` on every platform.
 	expect(rewritten).toContain("/packages/contracts/src/index.ts");
 });
 

@@ -105,6 +105,7 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 	interface NewSessionOptions {
 		getMcpServerInstructions?: () => Map<string, string> | undefined;
 		xdev?: XdevState;
+		presentationPinnedToolNames?: ReadonlySet<string>;
 		lazyWrite?: boolean;
 		deviceOnlyWrite?: boolean;
 		/** Scripted mock model responses; enables driving `session.prompt()`. */
@@ -179,6 +180,7 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 			modelRegistry: { getApiKey: async () => "test-key" } as never,
 			toolRegistry,
 			builtInToolNames: options.xdev && !options.lazyWrite ? ["read", "write"] : ["read"],
+			presentationPinnedToolNames: options.presentationPinnedToolNames,
 			ensureWriteRegistered: async () => {
 				if (!options.xdev) return false;
 				if (!toolRegistry.has("write")) toolRegistry.set("write", writeTool);
@@ -386,6 +388,54 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 		expect(session.getActiveToolNames()).toEqual(initialToolNames);
 		expect(toolRegistry.get("mcp__nucleus_search")).toBe(initialSearchTool);
 		expect(toolRegistry.has("mcp__nucleus_fetch")).toBe(false);
+	});
+
+	it("keeps explicitly pinned startup MCP tools top-level while mounting late discoverable tools", async () => {
+		const search = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		const fetch = createMcpCustomTool("mcp__nucleus_fetch", "nucleus", "fetch", "Fetch nucleus");
+		const { session } = newSession(async toolNames => `tools:${toolNames.join(",")}`, {
+			xdev: createTestXdevState(),
+			presentationPinnedToolNames: new Set(["read", "write", search.name]),
+		});
+
+		await session.refreshMCPTools([search, fetch]);
+
+		expect(session.getActiveToolNames()).toEqual(["read", "write", search.name]);
+		expect(session.getMountedXdevToolNames()).toEqual([fetch.name]);
+		expect(session.getSelectedMCPToolNames()).toEqual([search.name, fetch.name]);
+	});
+
+	it("retains an explicitly restored MCP partition across a disconnect and reconnect", async () => {
+		const { session } = newSession(async toolNames => `tools:${toolNames.join(",")}`, {
+			xdev: createTestXdevState(),
+		});
+		const search = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		const fetch = createMcpCustomTool("mcp__nucleus_fetch", "nucleus", "fetch", "Fetch nucleus");
+		await session.refreshMCPTools([search, fetch]);
+		await session.setActiveToolPresentation(["read", "write", search.name, fetch.name], [fetch.name]);
+
+		await session.refreshMCPTools([]);
+		await session.refreshMCPTools([fetch, search]);
+
+		expect(session.getActiveToolNames()).toEqual(["read", "write", search.name]);
+		expect(session.getMountedXdevToolNames()).toEqual([fetch.name]);
+		expect(session.getSelectedMCPToolNames()).toEqual([search.name, fetch.name]);
+	});
+
+	it("retains the original device-only transport when restoring a read-only non-MCP snapshot", async () => {
+		const { session, isDeviceOnlyWrite } = newSession(async toolNames => `tools:${toolNames.join(",")}`, {
+			xdev: createTestXdevState(),
+			deviceOnlyWrite: true,
+		});
+		const search = createMcpCustomTool("mcp__nucleus_search", "nucleus", "search", "Search nucleus");
+		await session.refreshMCPTools([search]);
+
+		await session.restoreNonMCPToolPresentation(["read"], []);
+
+		expect(session.getActiveToolNames()).toEqual(["read", "write"]);
+		expect(session.getMountedXdevToolNames()).toEqual([search.name]);
+		expect(session.getSelectedMCPToolNames()).toEqual([search.name]);
+		expect(isDeviceOnlyWrite()).toBe(true);
 	});
 
 	it("rebuilds generated guidance when its ordered mounted MCP route projection changes", async () => {

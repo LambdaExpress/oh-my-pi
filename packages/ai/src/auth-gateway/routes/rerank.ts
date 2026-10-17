@@ -4,8 +4,9 @@ import * as rerankWire from "../../providers/rerank-server";
 import { rerank } from "../../rerank";
 import { deterministicUuid } from "../../utils/deterministic-id";
 import {
-	type AuthGatewayBootOptions,
+	type AuthGatewayRouteOptions,
 	buildGatewayApiKeyResolver,
+	gatewayRequestLogFields,
 	mirrorRequestAbort,
 	recordGatewayUsage,
 	resolveGatewayApiKey,
@@ -13,7 +14,7 @@ import {
 import { gatewayResponseHeaders, json, resolveClientIdentity } from "../http";
 
 /** OpenRouter-compatible `POST /v1/rerank` gateway handler. */
-export async function handleRerank(bootOpts: AuthGatewayBootOptions, req: Request, peer: string): Promise<Response> {
+export async function handleRerank(bootOpts: AuthGatewayRouteOptions, req: Request, peer: string): Promise<Response> {
 	const startedAt = performance.now();
 	const requestId = crypto.randomUUID();
 	const controller = mirrorRequestAbort(req);
@@ -39,7 +40,7 @@ export async function handleRerank(bootOpts: AuthGatewayBootOptions, req: Reques
 
 	const client = resolveClientIdentity(req.headers);
 	const sessionId = deterministicUuid(`rerank\u0000${model.provider}/${model.id}`);
-	const apiKey = await resolveGatewayApiKey(bootOpts.storage, model, sessionId, controller.signal, peer);
+	const apiKey = await resolveGatewayApiKey(bootOpts, model, sessionId, controller.signal, peer);
 	if (controller.signal.aborted) return aborted();
 	if ("status" in apiKey) return rerankWire.formatError(apiKey.status, apiKey.type, apiKey.message);
 
@@ -51,19 +52,12 @@ export async function handleRerank(bootOpts: AuthGatewayBootOptions, req: Reques
 		resolvedModel: model.id,
 		stream: false,
 		peer,
+		...gatewayRequestLogFields(bootOpts, apiKey),
 	});
 
 	try {
 		const result = await rerank(model, parsed.request, {
-			apiKey: buildGatewayApiKeyResolver(
-				bootOpts.storage,
-				model,
-				sessionId,
-				apiKey,
-				controller.signal,
-				"rerank",
-				peer,
-			),
+			apiKey: buildGatewayApiKeyResolver(bootOpts, model, sessionId, apiKey, controller.signal, "rerank", peer),
 			fetch: bootOpts.fetch,
 			signal: controller.signal,
 		});

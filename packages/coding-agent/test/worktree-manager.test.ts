@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it as bunIt } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -16,6 +16,10 @@ import {
 } from "@oh-my-pi/pi-coding-agent/worktree/metadata";
 import type { ManagedWorktreeRecord } from "@oh-my-pi/pi-coding-agent/worktree/types";
 import { hashPath, removeWithRetries, setWorktreesDir } from "@oh-my-pi/pi-utils";
+import { createWorktreeGitFixture } from "./helpers/worktree-git-fixture";
+
+const gitFixture = createWorktreeGitFixture(bunIt);
+const { it, runGit, initRepo } = gitFixture;
 
 const ENV_KEYS = [
 	"OMP_WORKTREE_DIR",
@@ -68,32 +72,6 @@ async function pathExists(target: string): Promise<boolean> {
 	}
 }
 
-async function runGit(cwd: string, args: string[]): Promise<string> {
-	const proc = Bun.spawn(["git", ...args], {
-		cwd,
-		stderr: "pipe",
-		stdout: "pipe",
-		env: {
-			...process.env,
-			GIT_AUTHOR_NAME: "Test User",
-			GIT_AUTHOR_EMAIL: "test@example.com",
-			GIT_COMMITTER_NAME: "Test User",
-			GIT_COMMITTER_EMAIL: "test@example.com",
-		},
-		windowsHide: true,
-	});
-	const [stdout, stderr, exitCode] = await Promise.all([
-		new Response(proc.stdout).text(),
-		new Response(proc.stderr).text(),
-		proc.exited,
-	]);
-	if ((exitCode ?? 0) !== 0) {
-		const detail = stderr.trim() || stdout.trim() || `exit code ${exitCode ?? 0}`;
-		throw new Error(`git ${args.join(" ")} failed: ${detail}`);
-	}
-	return stdout.trim();
-}
-
 function parseWorktreeList(output: string): GitWorktreeEntry[] {
 	return output
 		.split(/\r?\n\r?\n/)
@@ -123,11 +101,7 @@ function findGitWorktree(entries: GitWorktreeEntry[], worktreeRoot: string): Git
 async function createGitRepo(name: string): Promise<{ repoRoot: string; initialSha: string }> {
 	const repoRoot = path.join(tempRoot, name);
 	await fs.mkdir(repoRoot, { recursive: true });
-	await runGit(repoRoot, ["init", "-q", "-b", "main"]);
-	await runGit(repoRoot, ["config", "user.email", "test@example.com"]);
-	await runGit(repoRoot, ["config", "user.name", "Test User"]);
-	await runGit(repoRoot, ["config", "core.autocrlf", "false"]);
-	await runGit(repoRoot, ["config", "core.eol", "lf"]);
+	await initRepo(repoRoot);
 	await fs.mkdir(path.join(repoRoot, "packages", "agent"), { recursive: true });
 	await fs.writeFile(path.join(repoRoot, "README.md"), "base\n", "utf8");
 	await fs.writeFile(path.join(repoRoot, "packages", "agent", "index.ts"), "export const value = 1;\n", "utf8");
@@ -138,11 +112,7 @@ async function createGitRepo(name: string): Promise<{ repoRoot: string; initialS
 async function createRecursiveSubmoduleFixture(name: string): Promise<RecursiveSubmoduleFixture> {
 	const leafRepoRoot = path.join(tempRoot, `${name}-leaf-submodule-repo`);
 	await fs.mkdir(leafRepoRoot, { recursive: true });
-	await runGit(leafRepoRoot, ["init", "-q", "-b", "main"]);
-	await runGit(leafRepoRoot, ["config", "user.email", "test@example.com"]);
-	await runGit(leafRepoRoot, ["config", "user.name", "Test User"]);
-	await runGit(leafRepoRoot, ["config", "core.autocrlf", "false"]);
-	await runGit(leafRepoRoot, ["config", "core.eol", "lf"]);
+	await initRepo(leafRepoRoot);
 	// Attributes travel with cloned submodules; local Git config does not.
 	await fs.writeFile(path.join(leafRepoRoot, ".gitattributes"), "* -text\n", "utf8");
 	await fs.writeFile(path.join(leafRepoRoot, "leaf.txt"), "leaf base\n", "utf8");
@@ -151,11 +121,7 @@ async function createRecursiveSubmoduleFixture(name: string): Promise<RecursiveS
 
 	const childRepoRoot = path.join(tempRoot, `${name}-child-submodule-repo`);
 	await fs.mkdir(childRepoRoot, { recursive: true });
-	await runGit(childRepoRoot, ["init", "-q", "-b", "main"]);
-	await runGit(childRepoRoot, ["config", "user.email", "test@example.com"]);
-	await runGit(childRepoRoot, ["config", "user.name", "Test User"]);
-	await runGit(childRepoRoot, ["config", "core.autocrlf", "false"]);
-	await runGit(childRepoRoot, ["config", "core.eol", "lf"]);
+	await initRepo(childRepoRoot);
 	await fs.writeFile(path.join(childRepoRoot, ".gitattributes"), "* -text\n", "utf8");
 	await fs.writeFile(path.join(childRepoRoot, "child.txt"), "child base\n", "utf8");
 	await runGit(childRepoRoot, ["add", "."]);
@@ -165,11 +131,7 @@ async function createRecursiveSubmoduleFixture(name: string): Promise<RecursiveS
 
 	const superRepoRoot = path.join(tempRoot, `${name}-super-repo`);
 	await fs.mkdir(superRepoRoot, { recursive: true });
-	await runGit(superRepoRoot, ["init", "-q", "-b", "main"]);
-	await runGit(superRepoRoot, ["config", "user.email", "test@example.com"]);
-	await runGit(superRepoRoot, ["config", "user.name", "Test User"]);
-	await runGit(superRepoRoot, ["config", "core.autocrlf", "false"]);
-	await runGit(superRepoRoot, ["config", "core.eol", "lf"]);
+	await initRepo(superRepoRoot);
 	await fs.writeFile(path.join(superRepoRoot, ".gitattributes"), "* -text\n", "utf8");
 	await fs.writeFile(path.join(superRepoRoot, "root.txt"), "root base\n", "utf8");
 	await runGit(superRepoRoot, ["add", "."]);
@@ -211,11 +173,13 @@ beforeEach(async () => {
 	setWorktreesDir(undefined);
 });
 
-afterEach(async () => {
-	setWorktreesDir(undefined);
-	restoreEnv();
-	await removeWithRetries(tempRoot);
-});
+afterEach(() =>
+	gitFixture.close(async () => {
+		setWorktreesDir(undefined);
+		restoreEnv();
+		await removeWithRetries(tempRoot);
+	}),
+);
 
 describe("managed worktree manager", () => {
 	it("creates a detached managed worktree from the repository root with sidecar metadata", async () => {

@@ -185,6 +185,8 @@ export interface LoadedImageInput {
 
 interface LoadInMemoryImageInputOptions {
 	image: ImageContent;
+	/** Raw bytes of `image.data` when the caller already holds them; skips a base64 decode in resize. */
+	bytes?: Uint8Array;
 	resolvedPath: string;
 	textNotePrefix: string;
 	autoResize: boolean;
@@ -214,7 +216,12 @@ async function loadInMemoryImageInput(options: LoadInMemoryImageInputOptions): P
 	const shouldReencodeWebP = options.excludeWebP === true && options.image.mimeType === "image/webp";
 	if (options.autoResize || shouldReencodeWebP) {
 		try {
-			const resized = await resizeImage(options.image, { excludeWebP: options.excludeWebP });
+			const resized = await resizeImage(
+				options.bytes
+					? { bytes: options.bytes, mimeType: options.image.mimeType, data: options.image.data }
+					: options.image,
+				{ excludeWebP: options.excludeWebP },
+			);
 			outputData = resized.data;
 			outputMimeType = resized.mimeType;
 			outputBytes = resized.buffer.byteLength;
@@ -352,6 +359,7 @@ export async function loadImageInput(options: LoadImageInputOptions): Promise<Lo
 	const inputBuffer = await fs.readFile(resolvedPath);
 	return loadInMemoryImageInput({
 		image: { type: "image", data: inputBuffer.toBase64(), mimeType },
+		bytes: inputBuffer,
 		resolvedPath,
 		textNotePrefix: "Read image file",
 		autoResize: options.autoResize,
@@ -386,11 +394,8 @@ export async function loadSvgImageInput(options: LoadImageInputOptions): Promise
 	}
 
 	return loadInMemoryImageInput({
-		image: {
-			type: "image",
-			data: Buffer.from(png.buffer, png.byteOffset, png.byteLength).toString("base64"),
-			mimeType: "image/png",
-		},
+		image: { type: "image", data: png.toBase64(), mimeType: "image/png" },
+		bytes: png,
 		resolvedPath,
 		textNotePrefix: "Read SVG file",
 		autoResize: options.autoResize,
@@ -419,12 +424,13 @@ export async function loadImageBytesInput(options: LoadImageBytesInputOptions): 
 export async function loadImageAttachmentInput(
 	options: LoadImageAttachmentInputOptions,
 ): Promise<LoadedImageInput | null> {
-	if (!SUPPORTED_INPUT_IMAGE_MIME_TYPES.has(options.image.mimeType)) {
+	const image = { ...options.image, mimeType: options.image.mimeType.toLowerCase() };
+	if (!SUPPORTED_INPUT_IMAGE_MIME_TYPES.has(image.mimeType)) {
 		return null;
 	}
 
 	return loadInMemoryImageInput({
-		image: options.image,
+		image,
 		resolvedPath: options.uri,
 		textNotePrefix: `Read image attachment ${options.label}`,
 		autoResize: options.autoResize,

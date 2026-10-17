@@ -306,7 +306,7 @@ async function handleSpeechSetup(flags: { json?: boolean; check?: boolean }): Pr
 	console.log(
 		chalk.dim(
 			t(
-				"Enable speech-to-text via stt.enabled, then hold {key} to talk (or bind app.stt.toggle); enable the speech-generation tool via speechgen.enabled; speak replies aloud via speech.enabled.",
+				"Enable speech-to-text via stt.enabled, then hold {key} by default to talk (remap or disable it with app.stt.pushToTalk, or bind app.stt.toggle separately); enable the speech-generation tool via speechgen.enabled; speak replies aloud via speech.enabled.",
 				{ key: formatKeyHint("space") },
 			),
 		),

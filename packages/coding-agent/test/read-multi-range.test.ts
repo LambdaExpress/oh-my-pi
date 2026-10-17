@@ -219,6 +219,22 @@ describe("read tool multi-range selector", () => {
 		expect(text).not.toContain("line 19");
 	});
 
+	it("keeps comma-separated single-line ranges independent", async () => {
+		const filePath = path.join(tmpDir, "singletons.txt");
+		await fs.writeFile(filePath, makeNumberedContent(30));
+		const tool = new ReadTool(createSession(tmpDir));
+
+		const numbered = await tool.execute("call-singletons", { path: `${filePath}:2,20` });
+		expect(numbered.details?.displayContent).toEqual({
+			text: "line 2\n…\nline 20",
+			startLine: 2,
+			lineNumbers: [2, null, 20],
+		});
+		expect(textOutput(await tool.execute("call-raw-singletons", { path: `${filePath}:2,20:raw` }))).toBe(
+			"line 2\n\n…\n\nline 20",
+		);
+	});
+
 	it("将正向范围和最后若干行保留在同一资源", async () => {
 		const filePath = path.join(tmpDir, "PackageProvenance.json");
 		const lines = makeNumberedContent(180).split("\n");
@@ -282,30 +298,58 @@ describe("read tool multi-range selector", () => {
 		});
 	});
 
-	it("在两种 raw 顺序下按原始换行片段解析混合尾范围", async () => {
+	it("在两种 raw 顺序下按实际文件行解析混合尾范围并保留 CRLF", async () => {
 		const filePath = path.join(tmpDir, "raw.txt");
 		await fs.writeFile(filePath, "one\r\ntwo\r\nthree\r\nfour\r\n");
 		const tool = new ReadTool(createSession(tmpDir));
-		const expected = "two\r\n\n…\n\nfour\r\n";
+		const expected = "two\r\nthree\r\nfour\r\n";
 
 		for (const selector of ["raw:2-2,-2", "2-2,-2:raw"]) {
 			expect(textOutput(await tool.execute(`call-${selector}`, { path: `${filePath}:${selector}` }))).toBe(expected);
 		}
-		expect(textOutput(await tool.execute("call-raw-tail", { path: `${filePath}:raw:-2` }))).toBe("four\r\n");
+		expect(textOutput(await tool.execute("call-raw-tail", { path: `${filePath}:raw:-2` }))).toBe("three\r\nfour\r\n");
+		expect(textOutput(await tool.execute("call-raw-disjoint-tail", { path: `${filePath}:raw:2-2,-1` }))).toBe(
+			"two\r\n\n…\n\nfour\r\n",
+		);
 		const tail = await tool.execute("call-tail", { path: `${filePath}:-2` });
 		expect(tail.details?.displayContent?.lineNumbers).toEqual([3, 4]);
 	});
 
-	it("对超过快照大小的文件按实际总行数解析尾范围", async () => {
+	it.each([false, true])("对超过快照大小的文件按实际文件行解析尾范围（末尾换行：%s）", async trailingNewline => {
 		const filePath = path.join(tmpDir, "large.txt");
 		const lines = Array.from({ length: 5000 }, (_, i) => `line ${i + 1} ${"x".repeat(1000)}`);
-		await fs.writeFile(filePath, lines.join("\n"));
+		const content = `\uFEFF${trailingNewline ? `${lines.join("\r\n")}\r\n` : lines.join("\n")}`;
+		await fs.writeFile(filePath, content);
+		const rawLines = content.split("\n");
+		if (trailingNewline) rawLines.pop();
+		const tail = rawLines.slice(-2).join("\n") + (trailingNewline ? "\n" : "");
+		const session: ToolSession = {
+			...createSession(tmpDir),
+			skills: [{ name: "large-physical-eof", description: "", filePath, baseDir: tmpDir, source: "test" }],
+		};
+		const tool = new ReadTool(session);
 
-		const result = await new ReadTool(createSession(tmpDir)).execute("call-streamed-tail", {
+		const result = await tool.execute("call-streamed-tail", {
 			path: `${filePath}:raw:1-2,-2`,
 		});
 
-		expect(textOutput(result)).toBe(`${lines.slice(0, 2).join("\n")}\n\n…\n\n${lines.slice(-2).join("\n")}`);
+		expect(textOutput(result)).toBe(`${rawLines.slice(0, 2).join("\n")}\n\n…\n\n${tail}`);
+		const pureTail = await tool.execute("call-streamed-pure-tail", { path: `${filePath}:raw:-2` });
+		expect(textOutput(pureTail)).toBe(tail);
+		expect(pureTail.details?.totalLines).toBe(lines.length);
+		expect(pureTail.details?.displayContent?.lineNumbers).toEqual([4999, 5000]);
+		expect(textOutput(await tool.execute("call-streamed-bounded-eof", { path: `${filePath}:raw:4999-5025` }))).toBe(
+			tail,
+		);
+		const rawBeyond = await tool.execute("call-streamed-beyond", { path: `${filePath}:raw:5001` });
+		const numberedBeyond = await tool.execute("call-streamed-numbered-beyond", { path: `${filePath}:5001` });
+		expect(rawBeyond.details?.displayContent).toBeUndefined();
+		expect(textOutput(rawBeyond)).toBe(textOutput(numberedBeyond));
+		const unboundedPrefix = await tool.execute("call-unbuffered-instruction-prefix", {
+			path: "skill://large-physical-eof:raw:1-1",
+		});
+		expect(textOutput(unboundedPrefix)).toBe(rawLines[0]!);
+		expect(unboundedPrefix.details?.totalLines).toBe(lines.length);
 	});
 
 	it("保留普通逗号路径列表和带标点的字面文件名", async () => {
@@ -407,6 +451,37 @@ describe("read tool multi-range selector", () => {
 			startLine: 2,
 			lineNumbers: [2, 3, null, 29, 30],
 		});
+	});
+
+	it("preserves ACP raw physical lines and CRLF rather than using disk lines", async () => {
+		const filePath = path.join(tmpDir, "bridge-raw.txt");
+		await fs.writeFile(filePath, "disk one\ndisk two\n");
+		const bridgeText = "\uFEFFone\r\ntwo\r\nthree\r\nfour\r\n";
+		const bridge: ClientBridge = {
+			capabilities: { readTextFile: true },
+			readTextFile: async () => bridgeText,
+		};
+		const tool = new ReadTool(createSession(tmpDir, bridge));
+
+		for (const selector of ["raw:2-2,-1", "2-2,-1:raw"]) {
+			const result = await tool.execute(`call-bridge-${selector}`, { path: `${filePath}:${selector}` });
+			expect(textOutput(result)).toBe("two\r\n\n…\n\nfour\r\n");
+			expect(result.details?.totalLines).toBe(4);
+		}
+		const tail = await tool.execute("call-bridge-raw-tail", { path: `${filePath}:raw:-2` });
+		expect(textOutput(tail)).toBe("three\r\nfour\r\n");
+		expect(tail.details?.totalLines).toBe(4);
+		expect(tail.details?.displayContent?.lineNumbers).toEqual([3, 4]);
+		const whole = await tool.execute("call-bridge-raw-bounded-eof", { path: `${filePath}:raw:1-25` });
+		expect(textOutput(whole)).toBe(bridgeText);
+		expect(whole.details?.totalLines).toBe(4);
+		expect(whole.details?.displayContent?.lineNumbers).toEqual([1, 2, 3, 4]);
+		const beyond = await tool.execute("call-bridge-raw-beyond", { path: `${filePath}:raw:5` });
+		expect(beyond.details?.totalLines).toBe(4);
+		expect(beyond.details?.displayContent).toBeUndefined();
+		expect(textOutput(beyond)).toBe(
+			textOutput(await tool.execute("call-bridge-numbered-beyond", { path: `${filePath}:5` })),
+		);
 	});
 
 	it("keeps ACP multi-range blanks editable without exposing the EOF sentinel", async () => {

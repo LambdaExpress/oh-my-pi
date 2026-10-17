@@ -80,6 +80,7 @@ const initializeRunnerForTest = (runner: ExtensionRunner | undefined): void => {
 
 describe("createAgentSession credential_disabled subscription", () => {
 	const tempDirs: string[] = [];
+	// Dispose sessions before closing their file-backed auth DBs and removing the temp trees.
 	const authStorages: AuthStorage[] = [];
 	const sessions: AgentSession[] = [];
 

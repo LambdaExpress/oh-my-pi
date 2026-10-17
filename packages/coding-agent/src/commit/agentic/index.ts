@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import { createInterface } from "node:readline/promises";
+import type { VcsGitRepo } from "@oh-my-pi/pi-natives";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { $env, getProjectDir, isEnoent, prompt } from "@oh-my-pi/pi-utils";
 import { applyChangelogProposals } from "../../commit/changelog";
@@ -30,22 +31,25 @@ interface CommitExecutionContext {
 
 export async function runAgenticCommit(args: CommitCommandArgs): Promise<{ usedFallback: boolean }> {
 	const cwd = getProjectDir();
+	const repo = vcs.requireGit(cwd);
 	const settings = await Settings.init({ cwd });
 	const authStorage = await discoverAuthStorage(undefined, { settings });
+	// Release the credential store once the command settles: the local store holds
+	// `agent.db` open and a broker-backed one runs a sync loop that pins the event loop.
 	try {
-		return await runAgenticCommitPipeline(args, cwd, settings, authStorage);
+		return await runAgenticCommitWithAuth(args, cwd, repo, settings, authStorage);
 	} finally {
 		authStorage.close();
 	}
 }
 
-async function runAgenticCommitPipeline(
+async function runAgenticCommitWithAuth(
 	args: CommitCommandArgs,
 	cwd: string,
+	repo: VcsGitRepo,
 	settings: Settings,
 	authStorage: AuthStorage,
 ): Promise<{ usedFallback: boolean }> {
-	const repo = vcs.requireGit(cwd);
 	process.stdout.write(`● ${t("Resolving model...")}\n`);
 	const modelRegistry = new ModelRegistry(authStorage);
 	await modelRegistry.refresh();

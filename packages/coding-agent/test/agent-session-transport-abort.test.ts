@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { streamOpenAICodexResponses } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -233,6 +234,56 @@ describe("AgentSession native transport abort recovery", () => {
 			expect.objectContaining({ type: "auto_retry_end", success: true }),
 		]);
 		expect(result.requests[1]?.filter(message => message.role === "assistant")).toEqual([]);
+	});
+
+	it("retries an unclassified thinking transport error without replaying its partial reasoning", async () => {
+		const tempDir = TempDir.createSync("@pi-thinking-transport-error-");
+		cleanups.push(() => tempDir.removeSync());
+		const storage = await AuthStorage.create(tempDir.join("auth.db"));
+		cleanups.push(() => storage.close());
+		const mock = createMockModel({
+			reasoning: true,
+			responses: [
+				{
+					content: [{ type: "thinking", thinking: "Checking the result." }],
+					stopReason: "error",
+					errorMessage: "The operation was aborted.",
+				},
+				{ content: [RECOVERED_TEXT] },
+			],
+		});
+		storage.keys.setRuntime(mock.model.provider, "test-key");
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.enabled": true,
+			"retry.baseDelayMs": 1,
+			"retry.maxDelayMs": 100,
+			"retry.maxRetries": 1,
+			"retry.modelFallback": false,
+			"features.unexpectedStopDetection": "none",
+		});
+		const session = new AgentSession({
+			agent: new Agent({
+				getApiKey: () => "test-key",
+				initialState: { model: mock.model, systemPrompt: ["Test"], tools: [], messages: [] },
+				streamFn: mock.stream,
+			}),
+			settings,
+			modelRegistry: new ModelRegistry(storage, tempDir.join("models.yml"), { settings }),
+			sessionManager: SessionManager.inMemory(),
+		});
+		cleanups.push(() => session.dispose());
+
+		await session.prompt("Exercise a transport interruption.");
+		await session.waitForIdle();
+
+		expect(mock.calls).toHaveLength(2);
+		expect(mock.calls[1]?.context.messages.filter(message => message.role === "assistant")).toEqual([]);
+		expect(session.getLastAssistantMessage()).toMatchObject({
+			stopReason: "stop",
+			content: [{ type: "text", text: RECOVERED_TEXT }],
+		});
+		expect(session.agent.state.messages.filter(message => message.role === "user")).toHaveLength(1);
 	});
 
 	it("preserves committed text in the next request instead of replaying it", async () => {

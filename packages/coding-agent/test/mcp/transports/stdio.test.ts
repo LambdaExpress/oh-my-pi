@@ -6,34 +6,6 @@ import * as path from "node:path";
 import { resolveStdioSpawnCommand, StdioTransport, terminateStdioProcess } from "../../../src/mcp/transports/stdio";
 
 describe("resolveStdioSpawnCommand", () => {
-	it("hides Windows executable MCP servers when the host has no console", async () => {
-		// Hidden so a console-app child does not allocate a visible window when
-		// OMP is launched without a terminal console (#3536).
-		await expect(
-			resolveStdioSpawnCommand(
-				{ command: "server.exe", args: ["--stdio"] },
-				{ cwd: process.cwd(), env: {}, platform: "win32", hostHasInheritableConsole: false },
-			),
-		).resolves.toEqual({
-			cmd: ["server.exe", "--stdio"],
-			windowsHide: true,
-			detached: false,
-		});
-	});
-
-	it("inherits an attached Windows console instead of forcing CREATE_NO_WINDOW", async () => {
-		await expect(
-			resolveStdioSpawnCommand(
-				{ command: "server.exe", args: ["--stdio"] },
-				{ cwd: process.cwd(), env: {}, platform: "win32", hostHasInheritableConsole: true },
-			),
-		).resolves.toEqual({
-			cmd: ["server.exe", "--stdio"],
-			windowsHide: false,
-			detached: false,
-		});
-	});
-
 	it("launches a cwd-resolved Windows .cmd through cmd.exe with argv preserved", async () => {
 		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-stdio-cwd-cmd-"));
 		try {
@@ -90,44 +62,6 @@ describe("resolveStdioSpawnCommand", () => {
 		}
 	});
 
-	it("lets cmd.exe do PATHEXT lookup for unresolved bare Windows commands while preserving argv", async () => {
-		await expect(
-			resolveStdioSpawnCommand(
-				{ command: "npx", args: ["--yes", "@modelcontextprotocol/server", "two words"] },
-				{
-					cwd: process.cwd(),
-					env: {},
-					platform: "win32",
-					hostHasInheritableConsole: false,
-				},
-			),
-		).resolves.toEqual({
-			cmd: ["cmd.exe", "/d", "/e:ON", "/v:OFF", "/c", '""npx" --yes @modelcontextprotocol/server "two words""'],
-			windowsHide: true,
-			detached: false,
-			windowsVerbatimArguments: true,
-		});
-	});
-
-	it("direct-spawns unresolved explicit Windows paths so the caller receives ENOENT", async () => {
-		const command = path.join(process.cwd(), "missing", "mcp-server");
-		await expect(
-			resolveStdioSpawnCommand(
-				{ command, args: ["--stdio"] },
-				{
-					cwd: process.cwd(),
-					env: {},
-					platform: "win32",
-					hostHasInheritableConsole: false,
-				},
-			),
-		).resolves.toEqual({
-			cmd: [command, "--stdio"],
-			windowsHide: true,
-			detached: false,
-		});
-	});
-
 	it("keeps Darwin stdio MCP servers attached so TCC Apple Events prompts can resolve", async () => {
 		await expect(
 			resolveStdioSpawnCommand(
@@ -138,62 +72,6 @@ describe("resolveStdioSpawnCommand", () => {
 			cmd: ["xcrun", "mcpbridge"],
 			detached: false,
 		});
-	});
-
-	it("detaches off-Windows MCP servers so terminal job-control signals cannot stop them", async () => {
-		await expect(
-			resolveStdioSpawnCommand(
-				{ command: "server.exe", args: ["--stdio"] },
-				{ cwd: process.cwd(), env: {}, platform: "linux" },
-			),
-		).resolves.toEqual({
-			cmd: ["server.exe", "--stdio"],
-			detached: true,
-		});
-	});
-});
-
-describe("StdioTransport.connect", () => {
-	it("passes argv as Bun.spawn's first argument and process options as the second", async () => {
-		const cwd = process.cwd();
-		const envValue = "stdio-spawn-shape";
-		const argv = [process.execPath, "-e", "process.exit(0)"];
-		const transport = new StdioTransport({
-			command: argv[0],
-			args: argv.slice(1),
-			cwd,
-			env: {
-				OMP_STDIO_SPAWN_SHAPE: envValue,
-			},
-		});
-		const spawnSpy = spyOn(Bun, "spawn");
-
-		try {
-			await transport.connect();
-
-			expect(spawnSpy).toHaveBeenCalledTimes(1);
-			const call = spawnSpy.mock.calls[0];
-			if (!call) throw new Error("expected StdioTransport.connect() to spawn exactly one subprocess");
-
-			const [spawnArgv, spawnOptions] = call;
-			expect(spawnArgv).toEqual(argv);
-			expect(spawnOptions).toEqual(
-				expect.objectContaining({
-					cwd,
-					detached: !(process.platform === "darwin" || process.platform === "win32"),
-					env: expect.objectContaining({
-						OMP_STDIO_SPAWN_SHAPE: envValue,
-					}),
-					stderr: "pipe",
-					stdin: "pipe",
-					stdout: "pipe",
-					windowsHide: process.platform === "win32" ? expect.any(Boolean) : undefined,
-				}),
-			);
-		} finally {
-			await transport.close();
-			spawnSpy.mockRestore();
-		}
 	});
 });
 

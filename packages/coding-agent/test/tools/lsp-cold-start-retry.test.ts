@@ -300,7 +300,7 @@ describe("lsp cold-start retries", () => {
 		try {
 			const sourcePath = path.join(tempDir.path(), "src", "main.ts");
 			const callerPath = path.join(tempDir.path(), "src", "caller.ts");
-			await Bun.write(sourcePath, "export function greet() {}\n");
+			await Bun.write(sourcePath, "export function greet() {}\ngreet();\n");
 			await Bun.write(callerPath, 'import { greet } from "./main";\ngreet();\n');
 
 			const selfUri = fileToUri(sourcePath);
@@ -344,9 +344,10 @@ describe("lsp cold-start retries", () => {
 			});
 			const output = textResult(result);
 
-			expect(referenceRequests).toBe(3);
 			expect(output).toContain("Found 3 reference(s)");
-			expect(output).toContain("caller.ts");
+			expect(output).toContain("main.ts:1:16");
+			expect(output).toContain("main.ts:2:1");
+			expect(output).toContain("caller.ts:2:1");
 		} finally {
 			vi.restoreAllMocks();
 			await lspClient.shutdownAll();

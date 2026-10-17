@@ -21,9 +21,14 @@ interface FakeWorkerOutbound {
 	id: string;
 }
 
-/** Build a spawn command that emits `stderr` verbatim then exits with `exitCode`. */
-function stderrExitCommand(stderr: string, exitCode: number): { cmd: string[] } {
-	const script = `process.stderr.write(${JSON.stringify(stderr)}); process.exit(${exitCode});`;
+/**
+ * Build a spawn command that writes `stderrExpr` (a JS expression evaluated in
+ * the child) to stderr, then exits with `exitCode`. Large payloads must be
+ * generated in the child, not inlined: Windows caps the whole command line at
+ * 32,767 chars and `uv_spawn` fails with ENAMETOOLONG past it.
+ */
+function stderrExitCommand(stderrExpr: string, exitCode: number): { cmd: string[] } {
+	const script = `process.stderr.write(${stderrExpr}); process.exit(${exitCode});`;
 	return { cmd: [process.execPath, "-e", script] };
 }
 
@@ -45,7 +50,7 @@ describe("issue #4324 — worker subprocess stderr survives to the exit error", 
 			"terminate called after throwing an instance of 'std::runtime_error'\n" +
 			"  what():  cudaMemcpy failed\n";
 		const sub = createWorkerSubprocess<FakeWorkerOutbound>({
-			spawnCommand: stderrExitCommand(stderr, 7),
+			spawnCommand: stderrExitCommand(JSON.stringify(stderr), 7),
 			env: {},
 			exitLabel: "tts subprocess",
 		});
@@ -62,15 +67,7 @@ describe("issue #4324 — worker subprocess stderr survives to the exit error", 
 		// still land at the end so the diagnostic tail is what survives.
 		const trailer = "FATAL: onnxruntime session run failed\n";
 		const sub = createWorkerSubprocess<FakeWorkerOutbound>({
-			// Generate the payload inside the child rather than exceeding Windows'
-			// command-line limit with a 64 KiB argument.
-			spawnCommand: {
-				cmd: [
-					process.execPath,
-					"-e",
-					`process.stderr.write("A".repeat(64 * 1024) + ${JSON.stringify(trailer)}); process.exit(7);`,
-				],
-			},
+			spawnCommand: stderrExitCommand(`"A".repeat(${64 * 1024}) + ${JSON.stringify(trailer)}`, 7),
 			env: {},
 			exitLabel: "tts subprocess",
 		});

@@ -2,6 +2,7 @@ import { untilAborted } from "@oh-my-pi/pi-utils";
 import type {
 	CustomQueryHandler,
 	ElementHandle,
+	Frame,
 	Page,
 	default as PuppeteerInstance,
 	Puppeteer as PuppeteerClass,
@@ -254,6 +255,7 @@ export function isObservationElementVisible(
 	if (options.interactive && style.pointerEvents === "none") return false;
 	const box = element.getBoundingClientRect();
 	if (box.width <= 0 || box.height <= 0) return false;
+	const checkable = element.matches('input[type="checkbox"], input[type="radio"]');
 	let left = Math.max(0, box.left);
 	let right = Math.min(innerWidth, box.right);
 	let top = Math.max(0, box.top);
@@ -264,7 +266,11 @@ export function isObservationElementVisible(
 			null) as Element | null;
 	for (let current: Element | null = element; current; current = parent(current)) {
 		const currentStyle = getComputedStyle(current);
-		if (currentStyle.display === "none" || Number(currentStyle.opacity) === 0 || current.hasAttribute("inert")) {
+		if (
+			currentStyle.display === "none" ||
+			(Number(currentStyle.opacity) === 0 && !(current === element && checkable)) ||
+			current.hasAttribute("inert")
+		) {
 			return false;
 		}
 		if (current === element) continue;
@@ -286,6 +292,11 @@ export function isObservationElementVisible(
 		}
 		return false;
 	};
+	const labels = checkable
+		? Array.from((element as Element & { labels?: ArrayLike<Element> | null }).labels ?? [])
+		: [];
+	const interactiveContent =
+		'a[href], area[href], button, details, embed, iframe, input:not([type="hidden"]), label, select, textarea, summary, audio[controls], video[controls], [contenteditable=""], [contenteditable="true"]';
 	const insetX = Math.min(1, (right - left) / 2);
 	const insetY = Math.min(1, (bottom - top) / 2);
 	for (const [x, y] of [
@@ -304,22 +315,34 @@ export function isObservationElementVisible(
 			hit = nested;
 		}
 		if (hit && contains(element, hit)) return true;
+		// A custom control may be transparent beneath the box its label draws.
+		// Links and other controls inside that label do not forward clicks to it.
+		for (let current = hit; current; current = parent(current)) {
+			if (labels.includes(current)) return true;
+			if (current.matches(interactiveContent)) break;
+		}
 	}
 	return false;
 }
 
-/** Supplement AX omissions with rendered DOM controls, preserving cached-handle ownership. */
+/** Supplement AX omissions with rendered DOM controls. The caller owns the returned handles. */
 export async function collectDomObservationCandidates(
-	root: Page | ElementHandle,
-	options: { viewportOnly: boolean; seenBackendNodeIds: Set<number>; signal?: AbortSignal },
-): Promise<Array<{ handle: ElementHandle; entry: Omit<ObservationEntry, "id"> }>> {
+	root: Page | Frame | ElementHandle,
+	options: {
+		viewportOnly: boolean;
+		seenBackendNodeIds: Set<number>;
+		/** Every examined control, including ones the visibility filter rejects. */
+		inspectedBackendNodeIds?: Set<number>;
+		signal?: AbortSignal;
+	},
+): Promise<Array<{ handle: ElementHandle; backendNodeId: number; entry: Omit<ObservationEntry, "id"> }>> {
 	const selector =
 		"button,a[href],input:not([type=hidden]),textarea,select,[contenteditable],[role=button],[role=link]," +
 		"[role=textbox],[role=combobox],[role=listbox],[role=option],[role=checkbox],[role=radio],[role=switch]," +
 		"[role=tab],[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio],[role=slider],[role=spinbutton]," +
 		"[role=searchbox],[role=treeitem]";
 	const handles = (await untilAborted(options.signal, () => root.$$(`pierce/${selector}`))) as ElementHandle[];
-	const candidates: Array<{ handle: ElementHandle; entry: Omit<ObservationEntry, "id"> }> = [];
+	const candidates: Array<{ handle: ElementHandle; backendNodeId: number; entry: Omit<ObservationEntry, "id"> }> = [];
 	const retained = new Set<ElementHandle>();
 	try {
 		if ("asElement" in root) {
@@ -334,6 +357,7 @@ export async function collectDomObservationCandidates(
 			throwIfAborted(options.signal);
 			try {
 				const backendNodeId = await untilAborted(options.signal, () => handle.backendNodeId());
+				options.inspectedBackendNodeIds?.add(backendNodeId);
 				if (options.seenBackendNodeIds.has(backendNodeId)) continue;
 				const visible = await untilAborted(options.signal, () =>
 					handle.evaluate(isObservationElementVisible, { viewportOnly: options.viewportOnly, interactive: true }),
@@ -431,7 +455,7 @@ export async function collectDomObservationCandidates(
 				);
 				if (!entry) continue;
 				options.seenBackendNodeIds.add(backendNodeId);
-				candidates.push({ handle, entry });
+				candidates.push({ handle, backendNodeId, entry });
 				retained.add(handle);
 			} catch (error) {
 				// DOM churn can invalidate a single candidate; cancellation still aborts the observation.

@@ -1,4 +1,5 @@
 {{#if budgetStop}}
+{{#if structured}}
 <system-reminder>
 Request budget crossed; in-flight turn stopped → forced wrap-up. MUST call `yield` NOW with best final report from completed work.
 
@@ -8,6 +9,13 @@ Request budget crossed; in-flight turn stopped → forced wrap-up. MUST call `yi
 - Constrained output schema → full terminal output object in `data`. Data-less `type: "result"` ONLY finalizes previously submitted sections; NEVER use prose instead of schema data.
 - Without an output-schema constraint, data-less `type: string` ONLY when that report is already written out as prose this turn.
 </system-reminder>
+{{else}}
+<system-reminder>
+Request budget crossed; in-flight turn stopped → forced wrap-up. Tools disabled. Reply NOW with best final report from completed work; this message is your result.
+
+- Consolidate all gathered value; mark remaining gaps incomplete, do not investigate further.
+</system-reminder>
+{{/if}}
 {{else}}
 <system-reminder>
 Last turn had no tool call → session idle. Reminder {{retryCount}} of {{maxRetries}}.

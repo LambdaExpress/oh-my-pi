@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import { type TerminalFramePlan, type TerminalFrameProvider, TUI, type ViewportSize } from "@oh-my-pi/pi-tui";
+import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 import { VirtualTerminal } from "./virtual-terminal";
 
 // Regression coverage for a resize on Warp under Windows ConPTY leaving the
@@ -27,24 +28,6 @@ const ALT_ENTER = "\x1b[?1049h";
 const ED3 = "\x1b[3J";
 const DSR = "\x1b[6n";
 const COMMITTED = ["committed-0", "committed-1", "committed-2"];
-
-// Herdr's pane identity vars are listed alongside HERDR_ENV because
-// `isInsideHerdr()` treats the pane id, tab id, and workspace id as
-// authoritative when an env-sanitizing launcher drops HERDR_ENV — and it is
-// checked before the ConPTY/multiplexer branches, so a pane running this suite
-// would otherwise take the in-place path these cases exist to rule out.
-const TERMINAL_ENV = [
-	"TERM",
-	"TERM_PROGRAM",
-	"PI_TUI_RESIZE_IN_PLACE",
-	"TMUX",
-	"STY",
-	"ZELLIJ",
-	"HERDR_ENV",
-	"HERDR_PANE_ID",
-	"HERDR_TAB_ID",
-	"HERDR_WORKSPACE_ID",
-] as const;
 
 /**
  * Windows ConPTY host: answers DSR from its own re-homed cursor (column 1
@@ -134,25 +117,12 @@ function startRig() {
 	return { terminal, tui, provider, renderScheduler, writes };
 }
 
-describe("resize on Warp hosted by Windows ConPTY", () => {
-	let saved: Record<string, string | undefined> = {};
+withoutTerminalMultiplexer();
 
+describe("resize on Warp hosted by Windows ConPTY", () => {
 	beforeEach(() => {
-		saved = {};
-		for (const key of TERMINAL_ENV) {
-			saved[key] = Bun.env[key];
-			delete Bun.env[key];
-		}
 		Bun.env.TERM = "xterm-256color";
 		Bun.env.TERM_PROGRAM = "WarpTerminal";
-	});
-
-	afterEach(() => {
-		for (const key of TERMINAL_ENV) {
-			if (saved[key] === undefined) delete Bun.env[key];
-			else Bun.env[key] = saved[key];
-		}
-		saved = {};
 	});
 
 	it("rebuilds the transcript instead of anchoring a repaint conhost already overwrote", async () => {
@@ -207,6 +177,9 @@ describe("resize on Warp hosted by Windows ConPTY", () => {
 		// from the grid it owns, so the reply carries the tag column after all.
 		Bun.env.TMUX = "/tmp/tmux-1000/default,1,0";
 		const { terminal, tui, renderScheduler, writes } = startRig();
+		// A rebuild settle repaints from row zero and needs no anchor; the probe
+		// serves every settle that repaints over retained history.
+		tui.setResizeScrollback("preserve");
 		try {
 			renderScheduler.settle();
 			writes.length = 0;

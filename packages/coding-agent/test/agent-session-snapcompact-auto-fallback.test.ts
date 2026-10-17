@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
 import type { Message } from "@oh-my-pi/pi-ai";
@@ -6,19 +6,19 @@ import { type GeneratedProvider, getBundledModel } from "@oh-my-pi/pi-catalog/mo
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session-events";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { CompactionMethod } from "@oh-my-pi/pi-coding-agent/session/compaction-methods";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { cfgCompaction } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 import * as snapcompact from "@oh-my-pi/snapcompact";
-import { setLocale } from "../src/i18n";
+import { mockSchedulerWaitWithClock } from "./helpers/mock-scheduler-clock";
 
 const UNRENDERABLE_SNAPCOMPACT_TEXT = "\uE000\uE001\uE002\uE003\uE004\uE005\uE006\uE007\uE008\uE009";
 
 interface Harness {
 	session: AgentSession;
 	sessionManager: SessionManager;
-	notices: string[];
 	failures: Array<{ action: string; errorMessage: string }>;
 	awaitCompactionEnd: () => Promise<{ action: string; errorMessage?: string }>;
 	triggerThreshold: () => void;
@@ -29,6 +29,8 @@ interface HarnessOptions {
 	seedMessages?: Message[];
 	/** Null leaves compaction.methodOrder at its schema default. */
 	methodOrder?: readonly CompactionMethod[] | null;
+	retryMaxDelayMs?: number;
+	waitForUsageReset?: boolean;
 }
 
 async function createHarness(modelRegistry: ModelRegistry, options: HarnessOptions): Promise<Harness> {
@@ -40,11 +42,11 @@ async function createHarness(modelRegistry: ModelRegistry, options: HarnessOptio
 	const sessionManager = SessionManager.inMemory();
 	const seed = options.seedMessages ?? [{ role: "user", content: "hello", timestamp: Date.now() }];
 	for (const message of seed) sessionManager.appendMessage(message);
-	const firstKeptEntryId = sessionManager.getBranch()[0]?.id;
-	if (!firstKeptEntryId) throw new Error("Expected seeded branch entry");
 
 	const methodOrder = options.methodOrder ?? ["snapcompact", "soft"];
 	const settings = Settings.isolated({
+		...(options.retryMaxDelayMs === undefined ? {} : { "retry.maxDelayMs": options.retryMaxDelayMs }),
+		...(options.waitForUsageReset === undefined ? {} : { "retry.waitForUsageReset": options.waitForUsageReset }),
 		// Assert the blocking threshold pass itself; keep the speculation grace
 		// band from deferring it.
 		"compaction.asyncEnabled": false,
@@ -62,18 +64,16 @@ async function createHarness(modelRegistry: ModelRegistry, options: HarnessOptio
 		settings,
 		modelRegistry,
 	});
-	vi.spyOn(compactionModule, "compact").mockResolvedValue({
+	vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
 		summary: "compacted",
 		shortSummary: undefined,
-		firstKeptEntryId,
-		tokensBefore: 123,
+		firstKeptEntryId: preparation.firstKeptEntryId,
+		tokensBefore: preparation.tokensBefore,
 		details: {},
-	});
+	}));
 	const end = Promise.withResolvers<{ action: string; errorMessage?: string }>();
-	const notices: string[] = [];
 	const failures: Array<{ action: string; errorMessage: string }> = [];
 	session.subscribe(event => {
-		if (event.type === "notice" && event.source === "compaction") notices.push(event.message);
 		if (event.type === "auto_compaction_end" && event.errorMessage) {
 			failures.push({ action: event.action, errorMessage: event.errorMessage });
 		}
@@ -118,7 +118,7 @@ async function createHarness(modelRegistry: ModelRegistry, options: HarnessOptio
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
 	};
 
-	return { session, sessionManager, notices, failures, awaitCompactionEnd: () => end.promise, triggerThreshold };
+	return { session, sessionManager, failures, awaitCompactionEnd: () => end.promise, triggerThreshold };
 }
 
 describe("AgentSession auto-snapcompact local-blocker fallback", () => {
@@ -129,19 +129,15 @@ describe("AgentSession auto-snapcompact local-blocker fallback", () => {
 	beforeAll(async () => {
 		authStorage = await AuthStorage.create(":memory:");
 		authStorage.keys.setRuntime("aimlapi", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		authStorage.keys.setRuntime("openai", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
-	});
-
-	beforeEach(() => {
-		setLocale("en");
 	});
 
 	afterEach(async () => {
 		try {
 			await session?.dispose();
 		} finally {
-			setLocale(null);
 			vi.restoreAllMocks();
 			session = undefined;
 		}
@@ -210,6 +206,140 @@ describe("AgentSession auto-snapcompact local-blocker fallback", () => {
 		expect(result).toEqual({ action: "snapcompact", errorMessage: undefined });
 		expect(compactionModule.compact).toHaveBeenCalledTimes(1);
 	});
+
+	it("recovers locally from a long Anthropic native retry-after instead of parking the turn", async () => {
+		const harness = await createHarness(modelRegistry, {
+			activeModel: { provider: "anthropic", id: "claude-sonnet-4-6" },
+			methodOrder: ["remote", "soft"],
+			retryMaxDelayMs: 100,
+		});
+		session = harness.session;
+		const waitSpy = mockSchedulerWaitWithClock();
+		let nativeAttempts = 0;
+		let localAttempts = 0;
+		vi.spyOn(compactionModule, "compact").mockImplementation(
+			async (preparation, _model, _key, _instructions, _signal, options) => {
+				if (!options?.forceLocal) {
+					nativeAttempts++;
+					throw new compactionModule.NativeCompactionError(
+						new Error("429 rate_limit_error retry-after-ms=60144000"),
+					);
+				}
+				localAttempts++;
+				return {
+					summary: "fallback summary",
+					firstKeptEntryId: preparation.firstKeptEntryId,
+					tokensBefore: preparation.tokensBefore,
+				};
+			},
+		);
+		harness.triggerThreshold();
+		const result = await harness.awaitCompactionEnd();
+		expect(result).toEqual({ action: "context-full", errorMessage: undefined });
+		expect(harness.failures).toEqual([]);
+		expect(nativeAttempts).toBe(1);
+		expect(localAttempts).toBe(1);
+		expect(waitSpy).not.toHaveBeenCalled();
+		expect(harness.sessionManager.getBranch().find(entry => entry.type === "compaction")).toMatchObject({
+			method: "soft",
+			summary: "fallback summary",
+		});
+		expect(session.agent.state.messages.findLast(message => message.role === "assistant")).toMatchObject({
+			content: [{ type: "text", text: "Done." }],
+		});
+	});
+
+	it("surfaces the Anthropic error when every local fallback also fails", async () => {
+		const harness = await createHarness(modelRegistry, {
+			activeModel: { provider: "anthropic", id: "claude-sonnet-4-6" },
+			methodOrder: ["remote"],
+		});
+		session = harness.session;
+		const waitSpy = mockSchedulerWaitWithClock();
+		const nativeError = new Error("429 rate_limit_error retry-after-ms=60144000");
+		let nativeAttempts = 0;
+		const localModels: Array<{ provider: string; id: string }> = [];
+		vi.spyOn(compactionModule, "compact").mockImplementation(
+			async (_preparation, model, _key, _instructions, _signal, options) => {
+				if (options?.forceLocal) {
+					localModels.push({ provider: model.provider, id: model.id });
+					throw new Error("Local summarization unavailable");
+				}
+				nativeAttempts++;
+				throw new compactionModule.NativeCompactionError(nativeError);
+			},
+		);
+		const end = Promise.withResolvers<Extract<AgentSessionEvent, { type: "auto_compaction_end" }>>();
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_end") end.resolve(event);
+		});
+		harness.triggerThreshold();
+		expect(await end.promise).toMatchObject({
+			action: "remote",
+			aborted: false,
+			willRetry: false,
+			result: undefined,
+			errorMessage: expect.stringContaining(nativeError.message),
+		});
+		expect(nativeAttempts).toBe(1);
+		expect(localModels[0]).toEqual({ provider: "anthropic", id: "claude-sonnet-4-6" });
+		expect(waitSpy).not.toHaveBeenCalled();
+		expect(harness.sessionManager.getBranch().find(entry => entry.type === "compaction")).toBeUndefined();
+	});
+
+	it("still waits out a retry-after within retry.maxDelayMs on the last candidate", async () => {
+		const harness = await createHarness(modelRegistry, {
+			activeModel: { provider: "anthropic", id: "claude-sonnet-4-6" },
+			methodOrder: ["remote"],
+		});
+		session = harness.session;
+		const waitSpy = mockSchedulerWaitWithClock();
+		let attempts = 0;
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => {
+			if (++attempts === 1) {
+				throw new compactionModule.NativeCompactionError(new Error("429 rate_limit_error retry-after-ms=45000"));
+			}
+			return {
+				summary: "retried summary",
+				firstKeptEntryId: preparation.firstKeptEntryId,
+				tokensBefore: preparation.tokensBefore,
+			};
+		});
+		harness.triggerThreshold();
+		const result = await harness.awaitCompactionEnd();
+		expect(result.errorMessage).toBeUndefined();
+		expect(compactSpy).toHaveBeenCalledTimes(2);
+		expect(waitSpy).toHaveBeenCalledWith(45_000, expect.anything());
+	});
+
+	it("waits through a provider-stated usage reset past retry.maxDelayMs when retry.waitForUsageReset is on", async () => {
+		const harness = await createHarness(modelRegistry, {
+			activeModel: { provider: "anthropic", id: "claude-sonnet-4-6" },
+			methodOrder: ["remote"],
+			waitForUsageReset: true,
+		});
+		session = harness.session;
+		const waitSpy = mockSchedulerWaitWithClock();
+		let attempts = 0;
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => {
+			if (++attempts === 1) {
+				throw new compactionModule.NativeCompactionError(
+					new Error("429 usage limit reached; quota exceeded retry-after-ms=7200000"),
+				);
+			}
+			return {
+				summary: "after reset",
+				firstKeptEntryId: preparation.firstKeptEntryId,
+				tokensBefore: preparation.tokensBefore,
+			};
+		});
+		harness.triggerThreshold();
+		const result = await harness.awaitCompactionEnd();
+		expect(result.errorMessage).toBeUndefined();
+		expect(compactSpy).toHaveBeenCalledTimes(2);
+		expect(waitSpy).toHaveBeenCalledWith(7_200_000, expect.anything());
+	});
+
 	it("downgrades to context-full when unsupported glyphs make snapcompact unsafe", async () => {
 		const harness = await createHarness(modelRegistry, {
 			activeModel: { provider: "aimlapi", id: "claude-sonnet-4-5-20250929" },
@@ -226,18 +356,17 @@ describe("AgentSession auto-snapcompact local-blocker fallback", () => {
 			isSafe: false,
 			unrenderableRatio: 1,
 		});
+		const renderSpy = vi.spyOn(snapcompact, "compact");
 		harness.triggerThreshold();
 
 		const result = await harness.awaitCompactionEnd();
-		expect(result.action).toBe("context-full");
-		expect(result.errorMessage).toBeUndefined();
+		expect(result).toEqual({ action: "context-full", errorMessage: undefined });
+		expect(renderSpy).not.toHaveBeenCalled();
 		expect(compactionModule.compact).toHaveBeenCalled();
-		const unsupportedGlyphNotice = harness.notices.find(message =>
-			message.startsWith("snapcompact disabled: unsupported characters for selected snapcompact font"),
-		);
-		expect(unsupportedGlyphNotice).toContain("trying the next preferred compaction method.");
+		expect(harness.failures.map(failure => failure.action)).toEqual(["snapcompact"]);
 		expect(harness.sessionManager.getBranch().find(entry => entry.type === "compaction")).toMatchObject({
 			type: "compaction",
+			method: "soft",
 			summary: "compacted",
 		});
 	});
@@ -257,11 +386,12 @@ describe("AgentSession auto-snapcompact local-blocker fallback", () => {
 		expect(harness.failures).toEqual([
 			{
 				action: "snapcompact",
-				errorMessage: "Auto-compaction failed: rasterizer exploded; trying the next preferred compaction method.",
+				errorMessage: expect.stringContaining("rasterizer exploded"),
 			},
 		]);
 		expect(harness.sessionManager.getBranch().find(entry => entry.type === "compaction")).toMatchObject({
 			type: "compaction",
+			method: "soft",
 			summary: "compacted",
 		});
 	});

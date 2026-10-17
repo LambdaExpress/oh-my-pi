@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { AsyncJobRegisterOptions } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import type { EffectiveExtensionRoots } from "@oh-my-pi/pi-coding-agent/capability/types";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { PreparedExtension } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { resolveLocalRoot } from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
-import type { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
+import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
 import { TanCommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/tan-command-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
@@ -26,6 +28,7 @@ interface CapturedJobRunContext {
 type CapturedJobRun = (ctx: CapturedJobRunContext) => Promise<string>;
 
 const model = { provider: "anthropic", id: "claude-sonnet-4-5" } as Model;
+const createAgentSession = sdkModule.createAgentSession;
 
 function assistantText(text: string): AssistantMessage {
 	return {
@@ -157,6 +160,7 @@ function createContext(overrides?: {
 	const getSessionId = vi.fn(() => "parent-local-session");
 	const materializeDeferredSession = vi.fn(async () => {});
 	const sessionManager = {
+		getHeader: vi.fn(() => undefined),
 		getSessionFile: vi.fn(() => parentFile),
 		getCwd: vi.fn(() => tempDir.path()),
 		getSessionDir: vi.fn(() => tempDir.path()),
@@ -199,6 +203,39 @@ function createContext(overrides?: {
 			return capturedOptions;
 		},
 	};
+}
+
+async function createHeadlessClone(
+	cwd: string,
+	toolNames: string[],
+	options: Pick<CreateAgentSessionOptions, "mcpTools" | "mountedToolNames" | "settings"> = {},
+) {
+	const fixtureModel = getBundledModel("openai", "gpt-4o-mini");
+	if (!fixtureModel) throw new Error("Expected bundled fixture model");
+	return createAgentSession({
+		cwd,
+		agentDir: cwd,
+		model: fixtureModel,
+		settings: Settings.isolated({ "tools.xdev": false, "marketplace.autoUpdate": "off" }),
+		sessionManager: SessionManager.inMemory(cwd),
+		agentRegistry: new AgentRegistry(),
+		parentTaskPrefix: "Tan-headless-fixture",
+		toolNames,
+		hasUI: false,
+		bindProcessState: false,
+		enableMCP: false,
+		enableLsp: false,
+		skipPythonPreflight: true,
+		disableExtensionDiscovery: true,
+		skills: [],
+		rules: [],
+		contextFiles: [],
+		promptTemplates: [],
+		slashCommands: [],
+		preloadedCustomToolPaths: [],
+		workspaceTree: { rootPath: cwd, rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] },
+		...options,
+	});
 }
 
 describe("TanCommandController", () => {
@@ -587,7 +624,7 @@ describe("TanCommandController", () => {
 
 		expect(result).toBe("done");
 		expect(appendSessionInit).toHaveBeenCalledWith({
-			systemPrompt: "system prompt",
+			systemPrompt: ["system prompt"],
 			task: "park me",
 			tools: ["read", "bash"],
 			mountedXdevTools: [],
@@ -632,28 +669,141 @@ describe("TanCommandController", () => {
 	});
 
 	it("dispatches when the parent enables a tool the headless clone cannot host", async () => {
-		// `ask` is built only for sessions that can prompt the user, so a headless
-		// tan never carries it. Demanding an exact match with the parent's full set
-		// failed every dispatch from a normal interactive session.
-		const harness = createContext({ enabledToolNames: ["ask", "read", "bash"] });
+		// A mounted ask has no top-level descriptor to preserve. The real factory
+		// omits it in a headless clone rather than installing a fake prompt tool.
+		const harness = createContext({
+			enabledToolNames: ["ask", "read", "bash"],
+			mountedXdevToolNames: ["ask"],
+		});
+		using tempDir = harness.tempDir;
 		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
-		const { clone } = createCloneStub({ enabledToolNames: ["read", "bash"] });
-		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
-			session: clone,
-		} as unknown as CreateAgentSessionResult);
-		const controller = new TanCommandController(harness.ctx);
+		const created = await createHeadlessClone(tempDir.path(), ["ask", "read", "bash"]);
+		const clone = created.session;
+		vi.spyOn(clone, "prompt").mockResolvedValue(true);
+		vi.spyOn(clone, "getLastAssistantMessage").mockReturnValue(assistantText("done"));
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(created);
+		try {
+			await new TanCommandController(harness.ctx).start("check the deploy");
+			const run = harness.capturedRun;
+			if (!run) throw new Error("run function was not captured");
+			const result = await run({
+				jobId: "job-123",
+				signal: new AbortController().signal,
+				reportProgress: async () => {},
+			});
 
-		await controller.start("check the deploy");
-		const run = harness.capturedRun;
-		if (!run) throw new Error("run function was not captured");
-		const result = await run({
-			jobId: "job-123",
-			signal: new AbortController().signal,
-			reportProgress: async () => {},
+			expect(result).toBe("done");
+			expect(clone.getEnabledToolNames()).toEqual(["read", "bash"]);
+			expect(clone.getMountedXdevToolNames()).toEqual([]);
+			expect(clone.getToolByName("ask")).toBeUndefined();
+		} finally {
+			if (!clone.isDisposed) await clone.dispose();
+		}
+	});
+
+	it("refuses a clone that loses custom or MCP capabilities instead of classifying them as headless tools", async () => {
+		const toolNames = ["read", "bash", "deployment_status", "mcp__deploy_status"];
+		const harness = createContext({
+			enabledToolNames: toolNames,
+			mountedXdevToolNames: ["mcp__deploy_status"],
+		});
+		using tempDir = harness.tempDir;
+		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
+		const created = await createHeadlessClone(tempDir.path(), toolNames);
+		const clone = created.session;
+		const promptSpy = vi.spyOn(clone, "prompt");
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(created);
+
+		try {
+			await new TanCommandController(harness.ctx).start("check the deploy");
+			const run = harness.capturedRun;
+			if (!run) throw new Error("run function was not captured");
+			await expect(
+				run({ jobId: "job-123", signal: new AbortController().signal, reportProgress: async () => {} }),
+			).rejects.toThrow(/deployment_status, mcp__deploy_status/);
+			expect(promptSpy).not.toHaveBeenCalled();
+			expect(harness.materializeDeferredSession).not.toHaveBeenCalled();
+		} finally {
+			if (!clone.isDisposed) await clone.dispose();
+		}
+	});
+
+	it("keeps MCP reloads within the inherited capability and mounted presentation", async () => {
+		using tempDir = TempDir.createSync("@omp-tan-mcp-");
+		const manager = new MCPManager(tempDir.path());
+		const mcpTool = (name: string): ReturnType<MCPManager["getTools"]>[number] => ({
+			name: `mcp__fixture_${name}`,
+			label: name,
+			description: name,
+			parameters: type({}),
+			mcpServerName: "fixture",
+			mcpToolName: name,
+			execute: async () => ({
+				content: [{ type: "text", text: name }],
+				details: { serverName: "fixture", mcpToolName: name },
+			}),
+		});
+		const inherited = mcpTool("status");
+		const ungranted = mcpTool("reset");
+		const discoveredLater = mcpTool("remove");
+		let sourceTools = [inherited, ungranted];
+		vi.spyOn(manager, "getTools").mockImplementation(() => sourceTools);
+		let toolsChanged: (() => void) | undefined;
+		const subscribe = manager.addToolsChangedListener.bind(manager);
+		vi.spyOn(manager, "addToolsChangedListener").mockImplementation(listener => {
+			toolsChanged = listener;
+			return subscribe(listener);
+		});
+		const toolNames = ["read", "write", "bash", inherited.name];
+		const harness = createContext({
+			mcpManager: manager,
+			enabledToolNames: toolNames,
+			mountedXdevToolNames: [inherited.name],
+		});
+		using _parentDir = harness.tempDir;
+		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
+		let created: CreateAgentSessionResult | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			created = await createHeadlessClone(tempDir.path(), options?.toolNames ?? [], {
+				mcpTools: options?.mcpTools,
+				mountedToolNames: options?.mountedToolNames,
+				settings: Settings.isolated({ "tools.xdev": true, "marketplace.autoUpdate": "off" }),
+			});
+			const clone = created.session;
+			const refreshed = Promise.withResolvers<void>();
+			const refresh = clone.refreshMCPTools.bind(clone);
+			vi.spyOn(clone, "refreshMCPTools").mockImplementation(tools => {
+				const pending = refresh(tools);
+				pending.then(refreshed.resolve, refreshed.reject);
+				return pending;
+			});
+			vi.spyOn(clone, "prompt").mockImplementation(async () => {
+				expect(clone.getAllToolNames()).not.toContain(ungranted.name);
+				sourceTools = [inherited, ungranted, discoveredLater];
+				if (!toolsChanged) throw new Error("MCP tools-change listener was not registered");
+				toolsChanged();
+				await refreshed.promise;
+				expect(clone.getEnabledToolNames()).toEqual(toolNames);
+				expect(clone.getMountedXdevToolNames()).toEqual([inherited.name]);
+				expect(clone.getAllToolNames()).not.toContain(ungranted.name);
+				expect(clone.getAllToolNames()).not.toContain(discoveredLater.name);
+				return true;
+			});
+			vi.spyOn(clone, "getLastAssistantMessage").mockReturnValue(assistantText("done"));
+			return created;
 		});
 
-		expect(result).toBe("done");
-		expect(clone.setActiveToolPresentation).toHaveBeenCalledWith(["read", "bash"], []);
+		try {
+			await new TanCommandController(harness.ctx).start("check the deploy");
+			const run = harness.capturedRun;
+			if (!run) throw new Error("run function was not captured");
+			expect(
+				await run({ jobId: "job-123", signal: new AbortController().signal, reportProgress: async () => {} }),
+			).toBe("done");
+		} finally {
+			if (created && !created.session.isDisposed) await created.session.dispose();
+			await manager.disconnectAll();
+		}
 	});
 
 	it("restores the request when compaction summarizes an already-dispatched turn", async () => {

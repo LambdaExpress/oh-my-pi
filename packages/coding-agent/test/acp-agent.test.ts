@@ -6,7 +6,10 @@ import { AgentBusyError } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import type { ExtensionUIContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
+import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import {
 	ACP_BOOTSTRAP_RACE_GUARD_MS,
@@ -20,8 +23,8 @@ import type {
 	UsageFallbackConfirmation,
 } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SILENT_ABORT_MARKER } from "@oh-my-pi/pi-coding-agent/session/messages";
-import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { resetSessionIndexForTests } from "@oh-my-pi/pi-coding-agent/session/session-index";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { getConfigRootDir, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
@@ -123,7 +126,7 @@ class FakeAgentSession {
 	model: Model | undefined;
 	thinkingLevel: string | undefined;
 	customCommands: [] = [];
-	extensionRunner = undefined;
+	extensionRunner: ExtensionRunner | undefined = undefined;
 	isStreaming = false;
 	queuedMessageCount = 0;
 	systemPrompt = "system";
@@ -180,6 +183,10 @@ class FakeAgentSession {
 
 	getAvailableModels(): Model[] {
 		return this.models;
+	}
+
+	getAvailableEffortSelectors(): ReadonlyArray<string> {
+		return ["off", "auto", ...this.getAvailableThinkingLevels()];
 	}
 
 	getAvailableThinkingLevels(): ReadonlyArray<string> {
@@ -468,6 +475,7 @@ function expectAcpNotifications(updates: SessionNotification[]): void {
 }
 
 const cleanupRoots: string[] = [];
+const cleanupAgents: AcpAgent[] = [];
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 
@@ -478,6 +486,9 @@ beforeEach(() => {
 afterEach(async () => {
 	vi.useRealTimers();
 	setLocale(null);
+	for (const agent of cleanupAgents.splice(0).reverse()) {
+		await agent.dispose();
+	}
 	if (originalAgentDir) {
 		setAgentDir(originalAgentDir);
 	} else {
@@ -488,7 +499,6 @@ afterEach(async () => {
 	// Session naming caches a process-wide history.db under the temp root; close it
 	// before deleting the roots or Windows reports EBUSY.
 	resetSessionIndexForTests();
-
 	for (const root of cleanupRoots.splice(0)) {
 		await removeWithRetries(root);
 	}
@@ -502,6 +512,8 @@ async function createHarness(
 		sessionUpdateHook?: (notification: SessionNotification) => Promise<void> | void;
 		/** Runs after a notification is recorded, so a test can await its delivery without polling. */
 		sessionUpdateObserver?: (notification: SessionNotification) => void;
+		/** Gives each session the factory creates a real extension runner with no extensions. */
+		extensionRunners?: boolean;
 	} = {},
 ): Promise<AgentHarness> {
 	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-acp-test-"));
@@ -539,6 +551,15 @@ async function createHarness(
 	sessions.push(initialSession);
 	const factory = async (cwd: string, factoryOptions?: { interactivePrompts?: boolean }) => {
 		const session = new FakeAgentSession(cwd);
+		if (options.extensionRunners) {
+			session.extensionRunner = new ExtensionRunner(
+				[],
+				new ExtensionRuntime(),
+				cwd,
+				session.sessionManager,
+				{} as ModelRegistry,
+			);
+		}
 		const setToolUIContext = vi.fn();
 		sessions.push(session);
 		setToolUIContextSpies.push(setToolUIContext);
@@ -547,6 +568,7 @@ async function createHarness(
 	};
 
 	const agent = new AcpAgent(connection, factory, initialSession as unknown as AgentSession);
+	cleanupAgents.push(agent);
 	const clientCapabilities =
 		options.clientCapabilities ?? (options.elicitationHandler ? { elicitation: { form: {} } } : undefined);
 	if (clientCapabilities) {
@@ -1041,6 +1063,146 @@ describe("ACP agent", () => {
 		await Bun.sleep(0);
 	});
 
+	it("emits a single config_option_update per /effort change", async () => {
+		// `/effort <level>` calls AgentSession.setThinkingLevel, which fires
+		// `thinking_level_changed`; the lifetime subscription turns that into a
+		// `config_option_update`. The command's explicit notifyConfigChanged
+		// must not add a second identical push, or clients redraw their config
+		// UI twice per change.
+		const harness = await createHarness();
+		vi.useFakeTimers();
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.findSession(created.sessionId)!;
+		await advanceBootstrapGuard();
+
+		const updatesBefore = harness.updates.length;
+		await harness.agent.prompt({
+			sessionId: created.sessionId,
+			prompt: [{ type: "text", text: "/effort high" }],
+		});
+
+		const configUpdates = harness.updates
+			.slice(updatesBefore)
+			.filter(
+				notification =>
+					notification.sessionId === created.sessionId &&
+					notification.update.sessionUpdate === "config_option_update",
+			);
+		expect(session.thinkingLevel).toBe("high");
+		expect(configUpdates.length).toBe(1);
+		expectAcpNotifications(configUpdates);
+		const update = configUpdates[0]!.update;
+		if (update.sessionUpdate !== "config_option_update") {
+			throw new Error("expected config_option_update");
+		}
+		const thinkingOption = update.configOptions.find(option => option.id === "thinking") as
+			| { currentValue?: unknown }
+			| undefined;
+		expect(thinkingOption?.currentValue).toBe("high");
+
+		vi.useRealTimers();
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("delivers the thinking config update before resolving the command", async () => {
+		const blocked = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const completionOrder: string[] = [];
+		let holdConfig = false;
+		const harness = await createHarness({
+			sessionUpdateHook: async notification => {
+				if (holdConfig && notification.update.sessionUpdate === "config_option_update") {
+					blocked.resolve();
+					await release.promise;
+					completionOrder.push("notification");
+				}
+			},
+		});
+		vi.useFakeTimers();
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		await advanceBootstrapGuard();
+		vi.useRealTimers();
+		holdConfig = true;
+		const baseline = harness.updates.length;
+		const prompt = harness.agent
+			.prompt({
+				sessionId: created.sessionId,
+				prompt: [{ type: "text", text: "/effort high" }],
+			})
+			.then(response => {
+				completionOrder.push("response");
+				return response;
+			});
+		await blocked.promise;
+		try {
+			release.resolve();
+			expect((await prompt).stopReason).toBe("end_turn");
+			expect(completionOrder).toEqual(["notification", "response"]);
+			const updates = harness.updates.slice(baseline).filter(n => n.update.sessionUpdate === "config_option_update");
+			expect(updates).toHaveLength(1);
+			const update = updates[0]!.update;
+			if (update.sessionUpdate !== "config_option_update") throw new Error("Expected config update");
+			expect(update.configOptions.find(option => option.id === "thinking")?.currentValue).toBe("high");
+		} finally {
+			release.resolve();
+			await prompt;
+			harness.abortController.abort();
+			await harness.agent.dispose();
+		}
+	});
+
+	it.each(["pending", "completed"] as const)(
+		"pushes /effort config changes with bootstrap %s at notification time",
+		async bootstrapAtNotification => {
+			// The event is emitted while lifetime config delivery is suppressed.
+			// Hold command output so the guard can also open before the explicit
+			// config notification: admission, not the later guard state, decides
+			// whether the lifetime subscription owes that notification.
+			const outputStarted = Promise.withResolvers<void>();
+			const releaseOutput = Promise.withResolvers<void>();
+			const harness = await createHarness({
+				sessionUpdateHook: async notification => {
+					if (notification.update.sessionUpdate === "agent_message_chunk") {
+						outputStarted.resolve();
+						await releaseOutput.promise;
+					}
+				},
+			});
+			vi.useFakeTimers();
+			const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+			const updatesBefore = harness.updates.length;
+			const prompt = harness.agent.prompt({
+				sessionId: created.sessionId,
+				prompt: [{ type: "text", text: "/effort high" }],
+			});
+			try {
+				await outputStarted.promise;
+				if (bootstrapAtNotification === "completed") await advanceBootstrapGuard();
+				releaseOutput.resolve();
+				expect((await prompt).stopReason).toBe("end_turn");
+
+				const configUpdates = harness.updates
+					.slice(updatesBefore)
+					.filter(
+						notification =>
+							notification.sessionId === created.sessionId &&
+							notification.update.sessionUpdate === "config_option_update",
+					);
+				expect(configUpdates).toHaveLength(1);
+				expectAcpNotifications(configUpdates);
+				const update = configUpdates[0]!.update;
+				if (update.sessionUpdate !== "config_option_update") throw new Error("expected config update");
+				expect(update.configOptions.find(option => option.id === "thinking")?.currentValue).toBe("high");
+			} finally {
+				releaseOutput.resolve();
+				await prompt;
+				harness.abortController.abort();
+				await harness.agent.dispose();
+			}
+		},
+	);
+
 	it("pushes config_option_update when the model changes internally", async () => {
 		// Internal callers (prewalk hand-offs, retry-fallback, model cycling)
 		// change AgentSession's model directly without going through the ACP
@@ -1127,7 +1289,11 @@ describe("ACP agent", () => {
 
 		const result = (await harness.agent.extMethod("speech.models.list", {})) as Record<string, unknown> & {
 			speechToText: { models: Array<{ value: string }> };
-			textToSpeech: { models: Array<{ value: string; voices: unknown[] }>; voices: unknown[] };
+			textToSpeech: {
+				models: Array<{ value: string; voices: unknown[] }>;
+				voices: unknown[];
+				speeds: Array<{ value: unknown }>;
+			};
 		};
 
 		expect(result).toMatchObject({
@@ -1136,11 +1302,14 @@ describe("ACP agent", () => {
 				textToSpeechModel: "modelRoles.speech",
 				textToSpeechVoice: "tts.localVoice",
 				speechVoice: "speech.voice",
+				textToSpeechSpeed: "tts.localSpeed",
+				speechSpeed: "speech.speed",
 			},
 			defaults: {
 				speechToTextModel: "local/parakeet-tdt-0.6b-v3",
 				textToSpeechModel: "local/kokoro",
 				voice: "af_heart",
+				speed: 1,
 			},
 			speechToText: {
 				setting: "modelRoles.dictation",
@@ -1150,18 +1319,21 @@ describe("ACP agent", () => {
 				modelSetting: "modelRoles.speech",
 				voiceSetting: "tts.localVoice",
 				speechVoiceSetting: "speech.voice",
+				speedSetting: "tts.localSpeed",
+				speechSpeedSetting: "speech.speed",
 				defaultModel: "local/kokoro",
 				defaultVoice: "af_heart",
+				defaultSpeed: 1,
+				speedRange: { min: 0.5, max: 2.5 },
 			},
 		});
-		expect(result.speechToText.models.map(model => model.value)).toEqual([
-			"local/whisper-base",
-			"local/whisper-small",
-			"local/whisper-large-v3-turbo",
-			"local/parakeet-tdt-0.6b-v3",
-		]);
+		expect(result.speechToText.models).toContainEqual(
+			expect.objectContaining({ value: "local/nemotron-streaming-en-0.6b" }),
+		);
 		expect(result.textToSpeech.models.map(model => model.value)).toEqual(["local/kokoro"]);
 		expect(result.textToSpeech.models[0]?.voices).toEqual(result.textToSpeech.voices);
+		// Speed presets are numbers so clients can write them straight into the numeric settings.
+		expect(result.textToSpeech.speeds.map(speed => speed.value)).toEqual([0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5]);
 
 		harness.abortController.abort();
 		await Bun.sleep(0);
@@ -2475,7 +2647,9 @@ describe("ACP agent", () => {
 			Object.assign(session, {
 				messages: session.sessionManager.buildSessionContext().messages,
 				titleGenerationSignal: new AbortController().signal,
-				generateTitle: (_context: string, _systemPrompt?: string, signal?: AbortSignal) => {
+				renameTitle: (_title?: string, signal?: AbortSignal) => {
+					// A generating rename reserves a title revision, as `AgentSession.renameTitle` does.
+					session.sessionManager.reserveTitleRevision();
 					const inference = inferences[inferenceIndex++];
 					titleSignals.push(signal);
 					inference.started.resolve();
@@ -2824,6 +2998,48 @@ describe("ACP agent", () => {
 		expect(harness.setToolUIContextSpies).toHaveLength(1);
 		expect(harness.setToolUIContextSpies[0]).not.toHaveBeenCalled();
 		expect(harness.findSession(session.sessionId)?.visionFallbackUIContext).toBeUndefined();
+
+		await harness.agent.dispose();
+	});
+
+	it("keeps the extension UI context without form elicitation, with prompts that answer nothing", async () => {
+		const messages: string[] = [];
+		const harness = await createHarness({
+			clientCapabilities: {},
+			extensionRunners: true,
+			elicitationHandler: async request => {
+				messages.push(request.message);
+				return { action: "accept", content: { value: "Yes" } };
+			},
+		});
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const runner = harness.findSession(created.sessionId)?.extensionRunner;
+
+		// Commands such as /review branch on hasUI and cancel when the selector answers nothing.
+		// Saved-reset consent reads the session's `interactivePrompts: false` instead.
+		expect(runner?.hasUI()).toBe(true);
+		expect(await runner?.getUIContext().select("Spend a saved reset?", ["Yes", "No"])).toBeUndefined();
+		expect(messages).toEqual([]);
+		expect(harness.sessionFactoryOptions).toEqual([{ interactivePrompts: false }]);
+
+		await harness.agent.dispose();
+	});
+
+	it("routes extension prompts to form elicitation when the client supports it", async () => {
+		const messages: string[] = [];
+		const harness = await createHarness({
+			extensionRunners: true,
+			elicitationHandler: async request => {
+				messages.push(request.message);
+				return { action: "accept", content: { value: "Yes" } };
+			},
+		});
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const runner = harness.findSession(created.sessionId)?.extensionRunner;
+
+		expect(runner?.hasUI()).toBe(true);
+		expect(await runner?.getUIContext().select("Spend a saved reset?", ["Yes", "No"])).toBe("Yes");
+		expect(messages).toEqual(["Spend a saved reset?"]);
 
 		await harness.agent.dispose();
 	});

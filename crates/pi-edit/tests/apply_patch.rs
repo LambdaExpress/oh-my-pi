@@ -48,6 +48,34 @@ async fn core_fixture_cases() {
 }
 
 #[tokio::test]
+async fn single_ambiguous_fuzzy_hunks_reject_without_writing() {
+	let cases = [
+		(
+			"const timeoutMs = 1000;\nother\nconst timeoutMs = 2000;\n",
+			"const timeoutMs = 3000;",
+			"const timeoutMs = 5000;",
+		),
+		(
+			"const requestTimeoutMilliseconds = 1200;\nother\nconst requestTimeoutMilliseconds = \
+			 3001;\n",
+			"const requestTimeoutMilliseconds = 3000;",
+			"const requestTimeoutMilliseconds = 5000;",
+		),
+	];
+	for (original, target, replacement) in cases {
+		let workspace = common::Workspace::new(EditMode::ApplyPatch);
+		workspace.write("a.txt", original);
+		let writer = common::DiskWriter::default();
+		let patch = format!(
+			"*** Begin Patch\n*** Update File: a.txt\n@@\n-{target}\n+{replacement}\n*** End Patch"
+		);
+		assert!(workspace.apply_raw(&patch, &writer).await.is_err());
+		assert!(writer.requests.lock().is_empty());
+		assert_eq!(std::fs::read(workspace.cwd().join("a.txt")).unwrap(), original.as_bytes());
+	}
+}
+
+#[tokio::test]
 async fn applies_all_21_portable_scenarios() {
 	let scenarios =
 		Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/apply_patch/scenarios");
@@ -463,39 +491,51 @@ async fn ambiguous_anchor_falls_back_to_the_unique_complete_hunk() {
 
 #[tokio::test]
 async fn identical_full_hunks_reject_the_entire_combined_patch() {
-	let workspace = common::Workspace::new(EditMode::ApplyPatch);
-	let duplicate = "var gogo = LoadMenu();\nvar goControl = WalkMenus(gogo);";
-	let ambiguous = format!("version = 1;\n{duplicate}\nseparator();\n{duplicate}\n");
-	let original_move = "\u{feff}keep\r\nthese bytes\n";
-	workspace.write("source.txt", original_move);
-	workspace.write("stable.txt", "old\n");
-	workspace.write("ambiguous.cs", &ambiguous);
-	let writer = common::DiskWriter::default();
-	let patch = [
-		"*** Begin Patch",
-		"*** Update File: source.txt",
-		"*** Move to: destination.txt",
-		"*** Update File: stable.txt",
-		"@@",
-		"-old",
-		"+new",
-		"*** Update File: ambiguous.cs",
-		"@@",
-		"-version = 1;",
-		"+version = 2;",
-		"@@",
-		"-var gogo = LoadMenu();",
-		"-var goControl = WalkMenus(gogo);",
-		"+var goControl = WalkMenus(mergedGoMenu);",
-		"*** End Patch",
-	]
-	.join("\n");
-	assert!(workspace.apply_raw(&patch, &writer).await.is_err());
-	assert!(writer.requests.lock().is_empty());
-	assert!(!workspace.cwd().join("destination.txt").exists());
-	assert_eq!(workspace.read("source.txt").as_deref(), Some(original_move));
-	assert_eq!(workspace.read("stable.txt").as_deref(), Some("old\n"));
-	assert_eq!(workspace.read("ambiguous.cs").as_deref(), Some(ambiguous.as_str()));
+	let cases = [
+		(
+			"var gogo = LoadMenu();\nvar goControl = WalkMenus(gogo);",
+			"-var gogo = LoadMenu();\n-var goControl = WalkMenus(gogo);",
+		),
+		(
+			"  var gogo = LoadMenu();\n  var goControl = WalkMenus(gogo);",
+			"-var gogo = LoadMenu();\n-var goControl = WalkMenus(gogo);",
+		),
+		(
+			"var gogo = LoadMenu(\"Go\u{2013}Go\");\nvar goControl = WalkMenus(gogo);",
+			"-var gogo = LoadMenu(\"Go-Go\");\n-var goControl = WalkMenus(gogo);",
+		),
+	];
+	for (duplicate, removed) in cases {
+		for separate_sections in [false, true] {
+			let workspace = common::Workspace::new(EditMode::ApplyPatch);
+			let ambiguous = format!("version = 1;\n{duplicate}\nseparator();\n{duplicate}\n");
+			let original_move = "\u{feff}keep\r\nthese bytes\n";
+			workspace.write("source.txt", original_move);
+			workspace.write("stable.txt", "old\n");
+			workspace.write("ambiguous.cs", &ambiguous);
+			let writer = common::DiskWriter::default();
+			let separator = if separate_sections {
+				"\n*** Update File: ambiguous.cs\n"
+			} else {
+				"\n"
+			};
+			let patch = format!(
+				"*** Begin Patch\n*** Update File: source.txt\n*** Move to: destination.txt\n*** \
+				 Update File: stable.txt\n@@\n-old\n+new\n*** Update File: ambiguous.cs\n@@\n-version \
+				 = 1;\n+version = 2;{separator}@@\n{removed}\n+var goControl = \
+				 WalkMenus(mergedGoMenu);\n*** End Patch"
+			);
+			assert!(workspace.apply_raw(&patch, &writer).await.is_err());
+			assert!(writer.requests.lock().is_empty());
+			assert!(!workspace.cwd().join("destination.txt").exists());
+			assert_eq!(
+				std::fs::read(workspace.cwd().join("source.txt")).unwrap(),
+				original_move.as_bytes()
+			);
+			assert_eq!(workspace.read("stable.txt").as_deref(), Some("old\n"));
+			assert_eq!(workspace.read("ambiguous.cs").as_deref(), Some(ambiguous.as_str()));
+		}
+	}
 }
 
 #[tokio::test]

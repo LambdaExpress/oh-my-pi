@@ -45,6 +45,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.acpHelp,
 	},
 	{
+		...commandIdentity("auth"),
+		load: () => import("./commands/auth").then(m => m.default),
+		help: commandHelp.authHelp,
+	},
+	{
 		...commandIdentity("auth-broker"),
 		load: () => import("./commands/auth-broker").then(m => m.default),
 		help: commandHelp.authBrokerHelp,
@@ -58,6 +63,11 @@ export const commands: CommandEntry[] = [
 		...commandIdentity("agents"),
 		load: () => import("./commands/agents").then(m => m.default),
 		help: commandHelp.agentsHelp,
+	},
+	{
+		...commandIdentity("anonymize"),
+		load: () => import("./commands/anonymize").then(m => m.default),
+		help: commandHelp.anonymizeHelp,
 	},
 	{
 		...commandIdentity("bench"),
@@ -75,7 +85,7 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.cleanseHelp,
 	},
 	{
-		name: "collab",
+		...commandIdentity("collab"),
 		// Keep implementation imports behind the command boundary: this table is
 		// also imported before profile bootstrap and by native-free worker entries.
 		load: () => import("./commands/collab").then(m => m.default),
@@ -208,6 +218,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.shareHelp,
 	},
 	{
+		...commandIdentity("session"),
+		load: () => import("./commands/session").then(m => m.default),
+		help: commandHelp.sessionHelp,
+	},
+	{
 		...commandIdentity("setup"),
 		load: () => import("./commands/setup").then(m => m.default),
 		help: commandHelp.setupHelp,
@@ -243,7 +258,7 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.statsHelp,
 	},
 	{
-		name: "stream",
+		...commandIdentity("stream"),
 		load: () => import("./commands/stream").then(m => m.default),
 		help: commandHelp.streamHelp,
 	},

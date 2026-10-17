@@ -53,6 +53,8 @@ Finalizing a later block never bypasses mutable content or an active predecessor
 
 An append-only head may emit a monotonically extending prefix of stable semantic rows under pressure, retaining its mutable suffix; final retirement emits only the remainder. Mutable blocks can expose an explicit settled prefix or retain a visual overflow snapshot without becoming logically committed. Same-width snapshot reconciliation compares visible text, so settlement styling and streamed argument growth do not replay an unchanged prefix; width changes require reflow. Ordinary retirement also bounds the number of live blocks; otherwise, while the screen has room nothing retires, so a submitted message is visible immediately and recent blocks keep reflowing on resize. `peekFlushBatch(width)` drains the whole eligible finalized prefix during graceful shutdown without the ordinary per-frame budget.
 
+Assistant snapshot publication retains source paragraph whitespace and applies the same prose styling as live rendering; viewport-edge blank trimming never mutates the semantic snapshot. Revisions that invalidate append-only assumptions remain mutable under pressure until finalization.
+
 The composer opens each frame with `beginFrame(frame)` before offering history. Until that frame's `renderViewport(width, rows, frame)` returns, every full-allocation measurement of a live block (retirement peek, `liveRowCount`, viewport layout) renders the block once and replays those rows; `renderViewport` closes the frame, so no measurement outlives the synchronous composition that took it. Allocation-constrained viewport renders are never shared.
 
 Display replay has an independent cursor over committed entries. It never changes

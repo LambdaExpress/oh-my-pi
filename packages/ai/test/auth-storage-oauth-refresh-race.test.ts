@@ -77,14 +77,13 @@ describe("AuthStorage OAuth refresh race", () => {
 
 		// Mock mirrors Anthropic: only the stale refresh token is rejected, because
 		// real rotation invalidates the previous refresh token on use.
-		vi.spyOn(oauthUtils, "getOAuthApiKey").mockImplementation(async (provider, creds) => {
-			const credential = creds[provider];
-			if (credential?.refresh === "stale-refresh") {
+		const refreshSpy = vi.spyOn(oauthUtils, "refreshOAuthToken").mockImplementation(async (_provider, credential) => {
+			if (credential.refresh === "stale-refresh") {
 				throw new Error(
 					'HTTP 400 invalid_grant {"error":"invalid_grant","error_description":"Refresh token not found or invalid"}',
 				);
 			}
-			return { newCredentials: credential!, apiKey: credential!.access };
+			return credential;
 		});
 
 		await withEnv(SUPPRESS_ANTHROPIC_ENV, async () => {
@@ -95,6 +94,7 @@ describe("AuthStorage OAuth refresh race", () => {
 			expect(apiKey).toBe("fresh-access-from-peer");
 			expect(events).toHaveLength(0);
 			expect(authStorage!.credentials.has("anthropic")).toBe(true);
+			expect(refreshSpy).not.toHaveBeenCalled();
 
 			// The row must still be active in storage; before the fix it would be
 			// soft-deleted with disabled_cause set to the invalid_grant error.
@@ -127,31 +127,33 @@ describe("AuthStorage OAuth refresh race", () => {
 		// refresh token to our snapshot will therefore see the SAME stale token
 		// and fall through to the disable. We then race a peer rotation into the
 		// window between the pre-check and the CAS, which the CAS must detect.
-		vi.spyOn(oauthUtils, "getOAuthApiKey").mockImplementation(async (provider, creds) => {
-			const credential = creds[provider];
-			if (credential?.refresh === "stale-refresh") {
+		// Refresh happens before getOAuthApiKey, which only formats a fresh token.
+		// Intercept the token exchange so this race never calls the real endpoint.
+		const refreshSpy = vi.spyOn(oauthUtils, "refreshOAuthToken").mockImplementation(async (_provider, credential) => {
+			if (credential.refresh === "stale-refresh") {
 				throw new Error(
 					'HTTP 400 invalid_grant {"error":"invalid_grant","error_description":"Refresh token not found or invalid"}',
 				);
 			}
-			return { newCredentials: credential!, apiKey: credential!.access };
+			return credential;
 		});
 
 		const sharedStore = store;
+		const peerCredential = {
+			type: "oauth" as const,
+			access: "fresh-access-from-peer",
+			refresh: "fresh-refresh-from-peer",
+			expires: Date.now() + 60 * 60_000,
+		};
 		const originalTryDisable = sharedStore.tryDisableAuthCredentialIfMatches.bind(sharedStore);
 		const tryDisableSpy = vi
 			.spyOn(sharedStore, "tryDisableAuthCredentialIfMatches")
-			.mockImplementation((id, expectedData, disabledCause) => {
+			.mockImplementation((id, expectedData, disabledCause, lease) => {
 				// Simulate the peer's successful rotation landing in the window
 				// between the pre-check (which saw the stale token) and the CAS
 				// disable. The CAS predicate `data = expectedData` must now miss.
-				sharedStore.updateAuthCredential(id, {
-					type: "oauth",
-					access: "fresh-access-from-peer",
-					refresh: "fresh-refresh-from-peer",
-					expires: Date.now() + 60 * 60_000,
-				});
-				return originalTryDisable(id, expectedData, disabledCause);
+				sharedStore.updateAuthCredential(id, peerCredential);
+				return originalTryDisable(id, expectedData, disabledCause, lease);
 			});
 
 		await withEnv(SUPPRESS_ANTHROPIC_ENV, async () => {
@@ -160,17 +162,16 @@ describe("AuthStorage OAuth refresh race", () => {
 			// CAS lost → reload → pick up the peer-rotated credential.
 			expect(apiKey).toBe("fresh-access-from-peer");
 			expect(events).toHaveLength(0);
-			expect(tryDisableSpy).toHaveBeenCalled();
+			expect(authStorage!.credentials.has("anthropic")).toBe(true);
+			expect(refreshSpy).toHaveBeenCalledTimes(1);
+			expect(tryDisableSpy).toHaveBeenCalledTimes(1);
 
 			// Row must still be active, with the peer's rotated tokens.
 			const stored = sharedStore.listAuthCredentials("anthropic");
 			expect(stored).toHaveLength(1);
 			expect(stored[0]?.id).toBe(credentialId);
-			expect(stored[0]?.credential.type).toBe("oauth");
-			if (stored[0]?.credential.type === "oauth") {
-				expect(stored[0].credential.refresh).toBe("fresh-refresh-from-peer");
-				expect(stored[0].credential.access).toBe("fresh-access-from-peer");
-			}
+			expect(stored[0]?.credential).toEqual(peerCredential);
+			expect(stored[0]?.disabledCause).toBeNull();
 		});
 	});
 
@@ -188,7 +189,7 @@ describe("AuthStorage OAuth refresh race", () => {
 			},
 		]);
 
-		vi.spyOn(oauthUtils, "getOAuthApiKey").mockImplementation(async () => {
+		vi.spyOn(oauthUtils, "refreshOAuthToken").mockImplementation(async () => {
 			throw new Error('invalid_grant {"error":"invalid_grant"}');
 		});
 

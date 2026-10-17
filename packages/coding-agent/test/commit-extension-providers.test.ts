@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as path from "node:path";
-import { closeModelCacheSharedDb } from "@oh-my-pi/pi-catalog/model-cache";
+import { closeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { runCommitCommand } from "@oh-my-pi/pi-coding-agent/commit";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { getProjectAgentDir, setAgentDir, setProjectDir, TempDir } from "@oh-my-pi/pi-utils";
@@ -62,11 +62,10 @@ beforeEach(async () => {
 afterEach(async () => {
 	restoreSettingsTestState(settingsState);
 	settingsState = undefined;
-	// The commit pipeline opens agent.db through the AgentStorage singleton and
-	// the shared model cache at the redirected agent dir; release both SQLite
-	// handles before removing the temp trees (EBUSY on Windows).
+	// The command opened `agent.db` (settings) and the shared `models.db` cache under
+	// agentTmp; Windows cannot delete open databases.
 	AgentStorage.close();
-	closeModelCacheSharedDb();
+	closeModelCache();
 	await tmp.remove();
 	await agentTmp.remove();
 });

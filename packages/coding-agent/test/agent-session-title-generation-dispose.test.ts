@@ -4,6 +4,7 @@ import { scheduler } from "node:timers/promises";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import * as ai from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -15,8 +16,8 @@ import { createAssistantMessage } from "./helpers/agent-session-setup";
 let session: AgentSession | undefined;
 let authStorage: AuthStorage | undefined;
 // Earlier full-suite files that boot main() in ACP/RPC mode set PI_NO_TITLE=1
-// process-wide (main.ts) and never restore it; maybeStartTitleGeneration gates
-// on it, so these tests would silently skip titling and time out.
+// process-wide (main.ts) and never restore it; automatic titling gates on it,
+// so these tests would silently skip titling and time out.
 let previousNoTitle: string | undefined;
 
 beforeEach(() => {
@@ -33,6 +34,16 @@ afterEach(async () => {
 	session = undefined;
 	authStorage = undefined;
 });
+
+/**
+ * Side turns decline: a first message's title fork answers `<title/>`, so the
+ * title model takes over (the path these tests cover).
+ */
+const declineTitleFork = createMockModel({ handler: { content: ["<title/>"] } }).stream;
+
+/** Assistant reply long enough (>= 40 words) to trigger a deferred retitle. */
+const TOKENIZER_REPLY =
+	"The screenshot shows a TypeError thrown by the tokenizer. It happens because the input stream is read after it was already closed, so the next token lookup dereferences an undefined buffer. Guarding the read and resetting the cursor when the stream closes should fix it without changing the public API.";
 
 describe("AgentSession title generation disposal", () => {
 	it("isolates the title provider session without changing credentials and aborts it during disposal", async () => {
@@ -65,7 +76,7 @@ describe("AgentSession title generation disposal", () => {
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
-			streamFn: createMockModel({ responses: [{ content: ["Done"] }] }).stream,
+			streamFn: createMockModel({ handler: { content: ["Done"] } }).stream,
 		});
 		const pinnedAccount = storage.oauth.accounts("anthropic").find(account => account.accountId === "account-b");
 		if (!pinnedAccount) throw new Error("Expected account-b credential");
@@ -127,13 +138,15 @@ describe("AgentSession title generation disposal", () => {
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
-			streamFn: createMockModel({ responses: [{ content: ["Done"] }] }).stream,
+			streamFn: createMockModel({ handler: { content: ["Done"] } }).stream,
 		});
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
 			settings,
 			modelRegistry: new ModelRegistry(authStorage),
+			sideStreamFn: declineTitleFork,
+			autoTitle: true,
 		});
 		const started = Promise.withResolvers<void>();
 		const response = Promise.withResolvers<ai.AssistantMessage>();
@@ -142,9 +155,9 @@ describe("AgentSession title generation disposal", () => {
 			return response.promise;
 		});
 
-		session.maybeStartTitleGeneration("/skill:implement issues/07-manual-llm.md");
+		await session.prompt("implement issues/07-manual-llm.md");
 		await started.promise;
-		session.maybeStartTitleGeneration("/skill:implement issues/08-app-settings.md");
+		await session.prompt("implement issues/08-app-settings.md");
 		expect(completeSimple).toHaveBeenCalledTimes(1);
 
 		response.resolve(createAssistantMessage("<title>manual llm</title>"));
@@ -164,13 +177,15 @@ describe("AgentSession title generation disposal", () => {
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
-			streamFn: createMockModel({ responses: [{ content: ["Done"] }] }).stream,
+			streamFn: createMockModel({ handler: { content: ["Done"] } }).stream,
 		});
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
 			settings,
 			modelRegistry: new ModelRegistry(authStorage),
+			sideStreamFn: declineTitleFork,
+			autoTitle: true,
 		});
 		const firstStarted = Promise.withResolvers<void>();
 		const secondStarted = Promise.withResolvers<void>();
@@ -190,12 +205,12 @@ describe("AgentSession title generation disposal", () => {
 		const setSessionName = vi.spyOn(session.sessionManager, "setSessionName");
 		const firstSessionId = session.sessionManager.getSessionId();
 
-		session.maybeStartTitleGeneration("/skill:implement issues/07-manual-llm.md");
+		await session.prompt("implement issues/07-manual-llm.md");
 		await firstStarted.promise;
 		expect(await session.newSession()).toBe(true);
 		expect(session.sessionManager.getSessionId()).not.toBe(firstSessionId);
 
-		session.maybeStartTitleGeneration("name the replacement session");
+		await session.prompt("name the replacement session");
 		await secondStarted.promise;
 		expect(completeSimple).toHaveBeenCalledTimes(2);
 
@@ -221,20 +236,29 @@ describe("AgentSession title generation disposal", () => {
 
 			const settings = Settings.isolated({
 				"compaction.enabled": false,
+				"title.generator": "tiny",
+				"title.icons": "boring",
 				modelRoles: { tiny: `${model.provider}/${model.id}` },
 			});
+			// Automatic titling starts at text_start. Hold the body and terminal
+			// event so the title can deterministically decline before or after
+			// the reply is persisted, without relying on wall-clock delays.
+			const reply = new AssistantMessageEventStream();
+			const replyMessage = createAssistantMessage("");
+			replyMessage.content = [{ type: "text", text: "" }];
+			reply.push({ type: "start", partial: replyMessage });
+			reply.push({ type: "text_start", contentIndex: 0, partial: replyMessage });
 			const agent = new Agent({
 				getApiKey: () => "test-key",
 				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
-				streamFn: createMockModel({
-					responses: [{ content: ["The screenshot shows a TypeError thrown by the tokenizer."] }],
-				}).stream,
+				streamFn: () => reply,
 			});
 			session = new AgentSession({
 				agent,
 				sessionManager: SessionManager.inMemory(),
 				settings,
 				modelRegistry: new ModelRegistry(authStorage),
+				autoTitle: true,
 			});
 			const titleInputs: string[] = [];
 			const firstRequested = Promise.withResolvers<void>();
@@ -257,7 +281,7 @@ describe("AgentSession title generation disposal", () => {
 			const named = Promise.withResolvers<void>();
 			session.sessionManager.onSessionNameChanged(() => named.resolve());
 
-			session.maybeStartTitleGeneration("help");
+			const prompted = session.prompt("help");
 			await firstRequested.promise;
 			if (declineOrder === "before") {
 				firstResponse.resolve(createAssistantMessage("<title/>"));
@@ -266,7 +290,11 @@ describe("AgentSession title generation disposal", () => {
 				expect(titleInputs).toHaveLength(1);
 				expect(session.sessionName).toBeUndefined();
 			}
-			await session.prompt("help");
+			replyMessage.content = [{ type: "text", text: TOKENIZER_REPLY }];
+			reply.push({ type: "text_delta", contentIndex: 0, delta: TOKENIZER_REPLY, partial: replyMessage });
+			reply.push({ type: "text_end", contentIndex: 0, content: TOKENIZER_REPLY, partial: replyMessage });
+			reply.push({ type: "done", reason: "stop", message: replyMessage });
+			await prompted;
 			if (declineOrder === "after") {
 				expect(titleInputs).toHaveLength(1);
 				expect(session.sessionName).toBeUndefined();
@@ -293,18 +321,19 @@ describe("AgentSession title generation disposal", () => {
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
-			streamFn: createMockModel({
-				responses: [{ content: ["The screenshot shows a TypeError thrown by the tokenizer."] }],
-			}).stream,
+			streamFn: createMockModel({ handler: { content: [TOKENIZER_REPLY] } }).stream,
 		});
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
 			settings: Settings.isolated({
 				"compaction.enabled": false,
+				"title.generator": "tiny",
+				"title.icons": "boring",
 				modelRoles: { tiny: `${model.provider}/${model.id}` },
 			}),
 			modelRegistry: new ModelRegistry(authStorage),
+			autoTitle: true,
 		});
 		const firstRequested = Promise.withResolvers<void>();
 		const replacementRequested = Promise.withResolvers<void>();
@@ -330,23 +359,26 @@ describe("AgentSession title generation disposal", () => {
 			);
 		});
 		const generateTitle = vi.spyOn(session, "generateTitle");
+		const named = Promise.withResolvers<void>();
+		session.sessionManager.onSessionNameChanged(() => named.resolve());
 
-		session.maybeStartTitleGeneration("Inspect the previous screenshot");
+		await session.prompt("Inspect the previous screenshot");
 		await firstRequested.promise;
 		expect(await session.newSession()).toBe(true);
-		session.maybeStartTitleGeneration("help");
+		await session.prompt("help");
 		await replacementRequested.promise;
 		firstResponse.resolve(createAssistantMessage("<title>Previous screenshot</title>"));
 		expect(await generateTitle.mock.results[0]?.value).toBeNull();
 		await scheduler.yield();
+		expect(titleInputs).toHaveLength(2);
 
-		await session.prompt("help");
 		replacementResponse.resolve(createAssistantMessage("<title/>"));
 		expect(await generateTitle.mock.results[1]?.value).toBeNull();
 		await scheduler.yield();
 
 		expect(titleInputs).toHaveLength(3);
 		expect(titleInputs[2]).toContain("TypeError thrown by the tokenizer");
+		await named.promise;
 		expect(session.sessionName).toBe("Tokenizer TypeError");
 	});
 
@@ -360,7 +392,7 @@ describe("AgentSession title generation disposal", () => {
 			getApiKey: () => "test-key",
 			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
 			streamFn: createMockModel({
-				responses: [{ content: ["The screenshot shows a TypeError thrown by the tokenizer."] }],
+				responses: [{ content: [TOKENIZER_REPLY] }],
 			}).stream,
 		});
 		session = new AgentSession({
@@ -368,9 +400,12 @@ describe("AgentSession title generation disposal", () => {
 			sessionManager: SessionManager.inMemory(),
 			settings: Settings.isolated({
 				"compaction.enabled": false,
+				"title.generator": "tiny",
+				"title.icons": "boring",
 				modelRoles: { tiny: `${model.provider}/${model.id}` },
 			}),
 			modelRegistry: new ModelRegistry(authStorage),
+			autoTitle: true,
 		});
 		const retitleRequested = Promise.withResolvers<void>();
 		const retitleResponse = Promise.withResolvers<ai.AssistantMessage>();
@@ -385,9 +420,6 @@ describe("AgentSession title generation disposal", () => {
 		});
 		const generateTitle = vi.spyOn(session, "generateTitle");
 
-		session.maybeStartTitleGeneration("help");
-		expect(await generateTitle.mock.results[0]?.value).toBeNull();
-		await scheduler.yield();
 		await session.prompt("help");
 		await retitleRequested.promise;
 
@@ -408,5 +440,45 @@ describe("AgentSession title generation disposal", () => {
 			expect(session.sessionName).toBe("Manual tokenizer investigation");
 			expect(session.sessionManager.titleSource).toBe("user");
 		}
+	});
+
+	it("skips the title model for attachment-only requests and titles from the assistant reply", async () => {
+		authStorage = await AuthStorage.create(":memory:");
+		authStorage.keys.setRuntime("anthropic", "test-key");
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
+
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			modelRoles: { tiny: `${model.provider}/${model.id}` },
+		});
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: createMockModel({ responses: [{ content: [TOKENIZER_REPLY] }] }).stream,
+		});
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry: new ModelRegistry(authStorage),
+			sideStreamFn: declineTitleFork,
+			autoTitle: true,
+		});
+		const titleInputs: string[] = [];
+		vi.spyOn(ai, "completeSimple").mockImplementation(async (_model, context) => {
+			const content = context.messages[0]?.content;
+			titleInputs.push(typeof content === "string" ? content : "");
+			return createAssistantMessage("<title>Tokenizer TypeError</title>");
+		});
+		const named = Promise.withResolvers<void>();
+		session.sessionManager.onSessionNameChanged(() => named.resolve());
+
+		await session.prompt("fix [Image #1, 640x200]");
+		await named.promise;
+
+		expect(session.sessionName).toBe("Tokenizer TypeError");
+		expect(titleInputs).toHaveLength(1);
+		expect(titleInputs[0]).toContain("TypeError thrown by the tokenizer");
 	});
 });

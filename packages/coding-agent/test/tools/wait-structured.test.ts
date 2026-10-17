@@ -1,5 +1,5 @@
 /**
- * `buildJobResult` structured-output rendering for a settled wait.
+ * `buildJobResult` output rendering for settled background jobs.
  * Regression coverage: valid results must not inline a truncated JSON
  * block (breaks async-result.md's contract of pointing to `agent://<id>`
  * instead, and can emit invalid JSON once truncated at 4k), and any result
@@ -13,6 +13,10 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import type { StructuredSubagentOutput } from "@oh-my-pi/pi-tui/tools/task";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { buildJobResult } from "@oh-my-pi/pi-coding-agent/async/job-control";
+import { outputMeta } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
+import { formatArtifactErrorNotice, formatOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
+import { OutputSink, type OutputSummary } from "@oh-my-pi/pi-tui/tools/streaming-output";
+import { TempDir } from "@oh-my-pi/pi-utils";
 
 const SELF_ID = "Main";
 
@@ -118,6 +122,67 @@ describe("wait structured output rendering", () => {
 		expect(text).not.toContain("schema unavailable");
 		expect(text).not.toContain("full payload at");
 		expect(text).not.toContain("```json");
+	});
+
+	test.each([
+		{ op: "wait", appendedNotice: false },
+		{ op: "cancel", appendedNotice: false },
+		{ op: "wait", appendedNotice: true },
+	] as const)("retains a real failed capture without duplicating its notice (%j)", async ({ op, appendedNotice }) => {
+		await using temp = await TempDir.create("@wait-capture-");
+		const manager = new AsyncJobManager({ onJobComplete: () => {} });
+		const start = Promise.withResolvers<void>();
+		const preview = "visible preview\n";
+		const capture: { summary?: OutputSummary } = {};
+		try {
+			const jobId = manager.register(
+				"bash",
+				"failed artifact capture",
+				async ({ reportProgress }) => {
+					await start.promise;
+					// A directory cannot be opened as the capture file. Keep the
+					// actual sink failure and bounded preview, without I/O mocks.
+					const sink = new OutputSink({
+						artifactPath: temp.path(),
+						artifactId: "incomplete",
+						spillThreshold: 16,
+					});
+					try {
+						sink.push("raw prefix that must spill\n" + preview);
+						const summary = await sink.dump();
+						capture.summary = summary;
+						const meta = outputMeta().truncationFromSummary(summary, { direction: "tail" }).get();
+						const text = summary.output + (appendedNotice ? formatOutputNotice(meta) : "");
+						await reportProgress(text, { meta });
+						return text;
+					} finally {
+						await sink.dispose();
+					}
+				},
+				{ ownerId: SELF_ID, toolCallId: "capture-call" },
+			);
+			manager.watchJobs([jobId]);
+			start.resolve();
+			const job = manager.getJob(jobId);
+			if (!job) throw new Error("Expected the registered capture job");
+			await job.promise;
+
+			expect(job.status).toBe("completed");
+			const summary = capture.summary;
+			expect(summary?.output).toBe(preview);
+			if (!summary?.artifactError) throw new Error("Expected a real artifact capture failure");
+			expect(summary.artifactId).toBeUndefined();
+			const result = buildJobResult(makeSession(manager), manager, op, [job], []);
+			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+			const warning = formatArtifactErrorNotice(summary.artifactError);
+			expect(text).toContain(preview.trimEnd());
+			expect(text.split(warning).length - 1).toBe(1);
+			expect(text).not.toContain("artifact://");
+			expect(manager.isJobResultConsumed(jobId)).toBe(true);
+		} finally {
+			start.resolve();
+			await manager.dispose();
+		}
 	});
 
 	test("advertises the disambiguated agentId, not the collision-suffixed job id", async () => {

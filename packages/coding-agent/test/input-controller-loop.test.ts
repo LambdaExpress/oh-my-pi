@@ -50,7 +50,6 @@ function createLoopContext(options: {
 			promptTemplates: [],
 			prompt,
 			previewPromptExpansion: (text: string) => text,
-			maybeStartTitleGeneration: vi.fn(),
 		},
 		sessionManager: { putBlob: vi.fn() },
 		loopModeEnabled: true,

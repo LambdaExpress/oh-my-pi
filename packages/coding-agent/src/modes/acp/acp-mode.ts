@@ -1,6 +1,6 @@
 import * as stream from "node:stream";
 import { inspect } from "node:util";
-import { postmortem } from "@oh-my-pi/pi-utils";
+import { getLogsDir, postmortem } from "@oh-my-pi/pi-utils";
 import { AgentSideConnection, ndJsonStream, type Stream } from "@oh-my-pi/pi-utils/acp";
 import type { ExtensionUIContext } from "../../extensibility/extensions/types";
 import { t } from "../../i18n";
@@ -83,7 +83,7 @@ export async function runAcpMode(createSession: AcpSessionFactory, initialSessio
 				t(
 					'This command is meant to be spawned by an ACP client (e.g. Zed\'s "agent_servers" config), not run directly.\n',
 				) +
-				t("Waiting for protocol frames on stdin; logs: ~/.omp/logs/\n"),
+				t("Waiting for protocol frames on stdin; logs: {path}\n", { path: getLogsDir() }),
 		);
 	}
 	let agent: AcpAgent | undefined;

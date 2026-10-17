@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolCall } from "@oh-my-pi/pi-ai";
+import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
@@ -265,11 +266,13 @@ describe("issue #6879 — tool output appears twice after a superseded turn", ()
 			enableTtsrRewind(true);
 			const ec = mode.eventController;
 			const requestComponentRender = vi.spyOn(mode.ui, "requestComponentRender");
+			const partialJson = '{"path":"out.txt","content":"pending content';
 			const writeCall: ToolCall = {
 				type: "toolCall",
 				id: "write-rewound",
 				name: "write",
 				arguments: { path: "out.txt", content: "pending content", i: "Write output" },
+				[kStreamingPartialJson]: partialJson,
 			};
 			await ec.handleEvent({ type: "agent_start" } as Extract<AgentSessionEvent, { type: "agent_start" }>);
 			await ec.handleEvent({ type: "message_start", message: assistantMessage([], "toolUse") } as Extract<
@@ -280,9 +283,9 @@ describe("issue #6879 — tool output appears twice after a superseded turn", ()
 				type: "message_update",
 				message: assistantMessage([writeCall], "toolUse"),
 				assistantMessageEvent: {
-					type: "toolcall_end",
+					type: "toolcall_delta",
 					contentIndex: 0,
-					toolCall: writeCall,
+					delta: partialJson,
 					partial: assistantMessage([writeCall], "toolUse"),
 				},
 			} as Extract<AgentSessionEvent, { type: "message_update" }>);

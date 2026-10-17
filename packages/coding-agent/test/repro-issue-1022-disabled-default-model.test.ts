@@ -41,8 +41,7 @@ describe("issue #1022 — path-scoped enabledModels respected by default fallbac
 
 	afterEach(() => {
 		resetSettingsForTest();
-		// Settings.init opens agent.db through the AgentStorage singleton; release
-		// the SQLite handle before removing the temp tree (EBUSY on Windows).
+		// `Settings.init` opened `<agentDir>/agent.db`; Windows cannot delete it while open.
 		AgentStorage.close();
 		if (fs.existsSync(testDir)) removeSyncWithRetries(testDir);
 	});

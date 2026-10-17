@@ -150,12 +150,18 @@ test("the model hub describes a data-first picker when the terminal has the kind
 		["provider:demo", 1, "Providers"],
 		["provider:openai", 2, "Providers"],
 	]);
-	expect(p.scopes?.find(scope => scope.id === "provider:anthropic")?.mark).toEqual({ text: "An", seed: "anthropic" });
+	expect(p.scopes?.find(scope => scope.id === "provider:anthropic")?.mark).toEqual({
+		text: "An",
+		seed: "anthropic",
+		icon: "provider:anthropic",
+	});
 	// The recent/role block, then one group per provider.
 	expect(groups(p)).toEqual(["Recent", "anthropic", "openai"]);
 	expect(p.current).toEqual(["demo/demo"]);
 	expect(p.total).toBe(5);
 	const demo = p.items?.find(entry => entry.id === "demo/demo");
+	// Model rows lead with their provider's mark too.
+	expect(demo?.mark).toEqual({ text: "De", seed: "demo", icon: "provider:demo" });
 	// The default role runs with thinking off (`defaultThinkingLevel`): its chip carries that level's dot.
 	expect(demo?.chips).toEqual([{ text: "default", on: true, dot: "thinkingOff" }]);
 	expect(p.items?.find(entry => entry.id === "anthropic/claude-sonnet-5-5")?.facts?.int).toBe("60");
@@ -287,6 +293,42 @@ test("pointer events drive the hub through the same paths as its keys", () => {
 	expect(calls.cancel).toBe(1);
 });
 
+test("the Roles view picker names the active preset and ctrl+←/→ switches it", () => {
+	const presets = { names: ["fast", "slow"], active: "fast" as string | undefined };
+	let revision = 0;
+	const switched: string[] = [];
+	const base = source({ default: "demo/demo" }, []);
+	const hub = new ModelHubComponent(
+		ui,
+		Object.defineProperty({ ...base, getModelPresets: () => presets }, "revision", { get: () => revision }),
+		registry(MODELS),
+		MODELS.map(entry => ({ model: entry })),
+		{
+			onAssign: () => {},
+			onUnassign: () => {},
+			onCancel: () => {},
+			onSwitchPreset: name => {
+				switched.push(name);
+				presets.active = name;
+				revision++;
+			},
+		},
+	);
+	hubs.push(hub);
+	const subtitleText = () => {
+		const subtitle = props(hub.describe(withPicker)).subtitle;
+		return Array.isArray(subtitle) ? subtitle.map(part => part.t).join("") : subtitle;
+	};
+
+	hub.handleInput("\x1b[A"); // All models → Roles
+	expect(subtitleText()).toStartWith("Preset fast");
+	hub.handleInput("\x1b[1;5C");
+	expect(switched).toEqual(["slow"]);
+	expect(subtitleText()).toStartWith("Preset slow");
+	hub.handleInput("\x1b[1;5D");
+	expect(switched).toEqual(["slow", "fast"]);
+});
+
 test("the quick picker is an md sheet with the summary below and a task-model toggle", () => {
 	const picked: string[] = [];
 	const picker = new ModelPickerComponent(
@@ -316,4 +358,34 @@ test("the quick picker is an md sheet with the summary below and a task-model to
 	expect(p.actions?.find(action => action.id === "task")?.on).toBe(true);
 	picker.handleNativeEvent({ type: "activate", key: "", item: "openai/gpt-5.6" });
 	expect(picked).toEqual(["task:openai/gpt-5.6"]);
+});
+
+test("shows a non-default service tier's own speed aggregate", () => {
+	const perf = new Map([
+		["openai/gpt-5.6", { samples: 4, tps: 25, ttftMs: 500 }],
+		["openai/gpt-5.6@ultrafast", { samples: 2, tps: 300, ttftMs: 120 }],
+		["anthropic/claude-opus-5", { samples: 3, tps: 40, ttftMs: 300 }],
+		["openai/gpt-5.6-mini@priority", { samples: 1, tps: 90, ttftMs: 200 }],
+	]);
+	const hub = new ModelHubComponent(
+		ui,
+		{
+			...source({ default: "demo/demo" }, ["demo/demo"]),
+			modelPerf: perf,
+			serviceTierFor: model => (model.provider === "openai" ? "ultrafast" : undefined),
+		},
+		registry(MODELS),
+		MODELS.map(entry => ({ model: entry })),
+		{ onAssign: () => {}, onUnassign: () => {}, onCancel: () => {} },
+		{ currentSelector: "demo/demo" },
+	);
+	hubs.push(hub);
+	const items = props(hub.describe(withPicker)).items ?? [];
+	const speed = (id: string) => items.find(entry => entry.id === id)?.facts?.speed;
+	// The tier the host would send wins over the standard aggregate.
+	expect(speed("openai/gpt-5.6")).toBe("300 ultrafast");
+	// No tier configured for the family: the standard aggregate, unlabeled.
+	expect(speed("anthropic/claude-opus-5")).toBe("40");
+	// Only a tier aggregate exists: show it rather than nothing.
+	expect(speed("openai/gpt-5.6-mini")).toBe("90 priority");
 });

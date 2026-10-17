@@ -36,9 +36,13 @@ function snapshot(): GuestSnapshot {
 
 describe("HeaderBar participants", () => {
 	it("does not render participant initials in the session toolbar", () => {
+		const snap = snapshot();
 		const html = renderToStaticMarkup(
 			<HeaderBar
-				snapshot={snapshot()}
+				header={snap.header}
+				state={snap.state}
+				phase={snap.phase}
+				readOnly={snap.readOnly}
 				subCount={0}
 				railOpen={false}
 				onToggleRail={() => {}}

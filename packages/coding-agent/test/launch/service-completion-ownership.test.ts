@@ -451,16 +451,22 @@ console.log(JSON.stringify({ before: started.daemon, after: detached.daemon, sta
 			broker = await startBroker(projectDir, runtimeDir);
 			const running = await listServices(makeSession("later-session", laterCompletions));
 			expect(running.find(daemon => daemon.name === "detached-service")?.pid).toBe(daemonPid);
-			let rejected = false;
-			try {
-				await client.request({ op: "mode", name: "detached-service", mode: "session" });
-			} catch (error) {
-				rejected = error instanceof brokerClients.DaemonBrokerRejectedError;
+			// Retention changes do not relaunch the recovered process or transfer
+			// completion ownership to the session that changes its mode.
+			for (const mode of ["session", "persist", "detached"] as const) {
+				const changed = await client.request({ op: "mode", name: "detached-service", mode });
+				if (changed.op !== "mode") throw new Error("Expected service retention change");
+				expect(changed.daemon).toMatchObject({
+					id: started.daemon.id,
+					pid: daemonPid,
+					owner: "original-session",
+					startedAt: started.daemon.startedAt,
+					readyAt: started.daemon.readyAt,
+					restartCount: started.daemon.restartCount,
+					persist: mode !== "session",
+					detached: mode === "detached",
+				});
 			}
-			expect(rejected).toBeTrue();
-			const stillDetached = await client.request({ op: "describe", name: "detached-service" });
-			if (stillDetached.op !== "describe") throw new Error("Expected detached service description");
-			expect(stillDetached.daemon).toMatchObject({ pid: daemonPid, detached: true, persist: true });
 			const processRef = Process.fromPid(daemonPid);
 			if (!processRef) throw new Error("Recovered detached daemon disappeared");
 			await processRef.terminate({ group: true, gracefulMs: 0, timeoutMs: 2_000 });
@@ -473,6 +479,7 @@ console.log(JSON.stringify({ before: started.daemon, after: detached.daemon, sta
 			const completion = await resumedDelivery.promise;
 			expect(completion.owner).toBe("original-session");
 			expect(completion.daemon.name).toBe("detached-service");
+			expect(resumedCompletions).toEqual([completion]);
 			await client.request({ op: "shutdown" });
 			// Closed before the broker drops its socket, so no completion reconnect spawns a
 			// broker process that recovers and rewrites the metadata read below.

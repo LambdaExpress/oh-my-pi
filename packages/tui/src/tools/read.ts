@@ -15,7 +15,7 @@ import type {
 	ToolRenderer,
 } from "./renderer";
 import { ansi, compact, md } from "../native/describe";
-import { base64ImageNode } from "../native/blobs";
+import { base64ImageNode, nativeMediaNode } from "../native/blobs";
 import type { NativeChild, NativeNode } from "../native/node";
 import { fileHref, footnoteText, inlineErrorView, resultText } from "./native-view";
 import { numberedCode } from "./grouped-file-output";
@@ -63,6 +63,12 @@ export interface ReadToolDetails {
 	truncation?: ReadTruncationStats;
 	isDirectory?: boolean;
 	resolvedPath?: string;
+	/**
+	 * Absolute path of the disk file whose image this read returned. A native TSP host that
+	 * supports `media` shows the file by path instead of the uploaded image bytes. Unset for
+	 * screenshots, URL reads and other images not backed by a file. Display-only.
+	 */
+	mediaPath?: string;
 	suffixResolution?: { from: string; to: string };
 	url?: string;
 	finalUrl?: string;
@@ -339,6 +345,18 @@ function readRawPath(args: ReadRenderArgs | undefined): string {
 }
 
 /**
+ * Whether a read result renders as a Markdown preview rather than numbered source:
+ * the read tool tagged it `text/markdown` (`read.renderMarkdown`, or a protocol
+ * resource) and the call did not ask for `:raw` source. Shared by the standalone
+ * read card and the read group's content previews so both honor the setting.
+ */
+export function readResultIsMarkdown(details: ReadToolDetails | undefined, args: ReadRenderArgs | undefined): boolean {
+	if (details?.contentType !== "text/markdown" || args?.raw === true) return false;
+	const sel = splitReadRenderPath(readRawPath(args)).sel;
+	return sel?.split(":").some(chunk => chunk.toLowerCase() === "raw") !== true;
+}
+
+/**
  * Native read head (§7.3 read): `Read path:13-36` with the path as the
  * target (shortened, plus the selector / legacy offset range), a `file://`
  * link when the fs path is known, and a suffix correction as meta.
@@ -387,10 +405,11 @@ function readRangeStart(rawPath: string, args: ReadRenderArgs | undefined): numb
 }
 
 /**
- * Read content as numbered `code` (no path header: the head names the file).
- * Numbers come from `lineNumbers` (`displayContent`'s per-line numbers,
- * `null` for an elided block; runs split with `…` between) when they cover
- * every line, else count up from `start`.
+ * Read content as numbered, wrapped `code` (no path header: the head names
+ * the file), matching the ANSI preview's hanging wrap. Numbers come from
+ * `lineNumbers` (`displayContent`'s per-line numbers, `null` for an elided
+ * block; runs split with `…` between) when they cover every line, else count
+ * up from `start`.
  */
 export function readContentCode(
 	content: string,
@@ -404,7 +423,7 @@ export function readContentCode(
 			n: numbers && numbers.length === lines.length ? numbers[i]! : start + i,
 			text: plainText(text),
 		})),
-		{ lang },
+		{ lang, wrap: true },
 	);
 }
 
@@ -642,12 +661,15 @@ export const readToolRenderer = {
 			const n = details.conflictCount;
 			title += ` ${uiTheme.fg("warning", t("(⚠ {count} conflict{s})", { count: n, s: n === 1 ? "" : "s" }))}`;
 		}
-		const rawRequested =
-			args?.raw === true || renderPath.sel?.split(":").some(chunk => chunk.toLowerCase() === "raw") === true;
-		const isMarkdown = details?.contentType === "text/markdown" && !rawRequested;
+		const isMarkdown = readResultIsMarkdown(details, args);
 		let cachedWidth: number | undefined;
 		let cachedExpanded: boolean | undefined;
 		let cachedLines: string[] | undefined;
+		const dropCache = () => {
+			cachedWidth = undefined;
+			cachedExpanded = undefined;
+			cachedLines = undefined;
+		};
 		return markFramedBlockComponent({
 			render: (width: number) => {
 				const expanded = options.expanded;
@@ -683,11 +705,8 @@ export const readToolRenderer = {
 				cachedExpanded = expanded;
 				return cachedLines;
 			},
-			invalidate: () => {
-				cachedWidth = undefined;
-				cachedExpanded = undefined;
-				cachedLines = undefined;
-			},
+			invalidate: dropCache,
+			releaseRenderCaches: dropCache,
 		});
 	},
 	describeCall(args: ReadRenderArgs): NativeToolView {
@@ -706,7 +725,7 @@ export const readToolRenderer = {
 	 */
 	describeResult(
 		result: { content: Array<{ type: string; text?: string }>; details?: ReadToolDetails; isError?: boolean },
-		_options: RenderResultOptions,
+		options: RenderResultOptions,
 		args?: ReadRenderArgs,
 	): NativeToolView {
 		const details = result.details;
@@ -744,6 +763,8 @@ export const readToolRenderer = {
 		const contentText = plainText(
 			details?.displayContent?.text ?? stripOutputNotice(resultText(result), details?.meta),
 		);
+		// A file Tern's media viewer shows (image, model, PDF, video, audio): the host loads it by path.
+		const media = options.media && details?.mediaPath ? nativeMediaNode(details.mediaPath, "media") : undefined;
 		const imageBlock = result.content?.find(isImageBlock);
 		if (imageBlock) {
 			const detailText = contentText.trim();
@@ -752,7 +773,7 @@ export const readToolRenderer = {
 				tone: suffix ? "warning" : undefined,
 				inline: true,
 				body: compact<NativeChild>([
-					describeReadImage(imageBlock, shortenPath(suffix?.to ?? splitReadRenderPath(rawPath).path)),
+					media ?? describeReadImage(imageBlock, shortenPath(suffix?.to ?? splitReadRenderPath(rawPath).path)),
 					detailText.length > 0 && ansi(detailText),
 					foot,
 				]),
@@ -760,18 +781,15 @@ export const readToolRenderer = {
 		}
 
 		const renderPath = splitReadRenderPath(rawPath);
-		const rawRequested =
-			args?.raw === true || renderPath.sel?.split(":").some(chunk => chunk.toLowerCase() === "raw") === true;
-		const content: NativeChild[] =
-			details?.contentType === "text/markdown" && !rawRequested
-				? [md(contentText)]
-				: readContentCode(
-						contentText,
-						details?.displayContent?.startLine ?? readRangeStart(rawPath, args),
-						details?.displayContent?.lineNumbers,
-						getLanguageFromPath(renderPath.path),
-					);
-		return { tool: head, inline: true, body: compact<NativeChild>([...content, foot]) };
+		const content: NativeChild[] = readResultIsMarkdown(details, args)
+			? [md(contentText)]
+			: readContentCode(
+					contentText,
+					details?.displayContent?.startLine ?? readRangeStart(rawPath, args),
+					details?.displayContent?.lineNumbers,
+					getLanguageFromPath(renderPath.path),
+				);
+		return { tool: head, inline: true, body: compact<NativeChild>([media, ...content, foot]) };
 	},
 	mergeCallAndResult: true,
 } satisfies ToolRenderer<ReadRenderArgs, ReadToolDetails>;

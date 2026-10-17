@@ -155,14 +155,12 @@ describe("fileHyperlink", () => {
 
 	it("uses the vscode://file form on the VS Code family, with the location after the path", () => {
 		const filePath = path.resolve("/Users/foo/bar.ts");
-		// A vscode://file link carries the URL pathname of the file's file:// URL:
-		// `/Users/foo/bar.ts` on POSIX, `/D:/Users/foo/bar.ts` on Windows — the drive
-		// path supplies no leading slash of its own, so the URI form adds one.
-		const uriPath = new URL(url.pathToFileURL(filePath).href).pathname;
-		expect(fileUriForTerminal(filePath, { line: 42, col: 7 }, "vscode")).toBe(`vscode://file${uriPath}:42:7`);
-		expect(fileUriForTerminal(filePath, { line: 42 }, "vscode")).toBe(`vscode://file${uriPath}:42`);
+		// vscode://file takes the forward-slash path: `/Users/foo/bar.ts`, or `/C:/Users/foo/bar.ts` on Windows.
+		const vscodePath = url.pathToFileURL(filePath).pathname;
+		expect(fileUriForTerminal(filePath, { line: 42, col: 7 }, "vscode")).toBe(`vscode://file${vscodePath}:42:7`);
+		expect(fileUriForTerminal(filePath, { line: 42 }, "vscode")).toBe(`vscode://file${vscodePath}:42`);
 		// Without a line there is nothing to navigate to, so the bare path stands.
-		expect(fileUriForTerminal(filePath, undefined, "vscode")).toBe(`vscode://file${uriPath}`);
+		expect(fileUriForTerminal(filePath, undefined, "vscode")).toBe(`vscode://file${vscodePath}`);
 	});
 
 	it("encodes reserved path bytes in vscode://file targets without hiding the location", () => {

@@ -1498,6 +1498,8 @@ export const zhCN: Record<string, string> = {
 	"Checkpoint history/model database WAL files": "检查点历史/模型数据库 WAL 文件",
 	"Checkpoint/Rewind": "检查点/回退",
 	"Cherry-picked high-quality providers (only defined for select models)": "精选的高质量提供商（仅针对特定模型定义）",
+	"Choose an account with `{command} <provider>/<credential id>`.":
+		"使用 `{command} <provider>/<credential id>` 选择账户。",
 	"Choose another provider or press {key} to continue.": "选择其他提供商，或按 {key} 继续。",
 	"Choose composer shape": "选择输入框形态",
 	"Choose either --user or --project, not both.": "请选择 --user 或 --project，不可同时选择。",
@@ -1682,6 +1684,8 @@ export const zhCN: Record<string, string> = {
 	"Compaction Token Limit": "压缩 token 限制",
 	"Compaction already in progress": "压缩已在进行中",
 	"Compaction cancelled": "压缩已取消",
+	"Compaction cannot create headroom — pausing automatic maintenance. The system prompt and always-sent tool schemas alone exceed the recovery band; reduce fixed context or adjust compaction.modelThresholds.":
+		"压缩无法腾出空间，已暂停自动维护。仅系统提示词与每次请求都会发送的工具定义就已超过恢复阈值；请缩减固定上下文，或调整 compaction.modelThresholds。",
 	"Compaction complete.": "压缩完成。",
 	"Compaction complete. Tokens: {before} -> {after} (saved {saved}).":
 		"压缩完成。token：{before} -> {after}（节省 {saved}）。",
@@ -2225,8 +2229,8 @@ export const zhCN: Record<string, string> = {
 	"Enable plan mode for read-only exploration and planning before execution":
 		"启用计划模式，以便在执行前进行只读探索和规划",
 	"Enable speech-to-text input via microphone": "通过麦克风启用语音转文字输入",
-	"Enable speech-to-text via stt.enabled, then hold {key} to talk (or bind app.stt.toggle); enable the speech-generation tool via speechgen.enabled; speak replies aloud via speech.enabled.":
-		"通过 stt.enabled 启用语音转文字，然后按住 {key} 说话（或绑定 app.stt.toggle）；通过 speechgen.enabled 启用语音生成工具；通过 speech.enabled 朗读回复。",
+	"Enable speech-to-text via stt.enabled, then hold {key} by default to talk (remap or disable it with app.stt.pushToTalk, or bind app.stt.toggle separately); enable the speech-generation tool via speechgen.enabled; speak replies aloud via speech.enabled.":
+		"通过 stt.enabled 启用语音转文字，默认按住 {key} 说话（可通过 app.stt.pushToTalk 更改或禁用此按键，或单独绑定 app.stt.toggle）；通过 speechgen.enabled 启用语音生成工具；通过 speech.enabled 朗读回复。",
 	"Enable the Exa researcher tool for AI-powered deep research": "启用 Exa 研究员工具，用于 AI 驱动的深度研究",
 	"Enable the Exa web search provider": "启用 Exa 网络搜索提供商",
 	"Enable the advisor": "启用顾问",
@@ -4038,6 +4042,8 @@ export const zhCN: Record<string, string> = {
 	"No stored OAuth accounts for {provider}. Use /login to add one.":
 		"没有为 {provider} 存储的 OAuth 账户。请使用 /login 添加一个。",
 	'No stored OAuth auth to remove for "{name}".': "没有为“{name}”存储的 OAuth 认证可移除。",
+	'No stored account matches "{name}". List choices with `{command}`.':
+		"没有与“{name}”匹配的已存储账户。使用 `{command}` 列出可选账户。",
 	"No stored accounts to log out": "没有可退出登录的已存储账户",
 	"No stored provider credentials to log out": "没有可退出登录的已存储提供商凭据",
 	"No stored provider credentials to log out. Remove env or config auth at its source.":
@@ -4344,6 +4350,7 @@ export const zhCN: Record<string, string> = {
 	Parallel: "并行",
 	"Pass at least one model selector, e.g. `omp bench opus gpt-5.2`":
 		"至少传入一个模型选择器，例如 `omp bench opus gpt-5.2`",
+	"Past auto-compaction at {percent}": "已超过 {percent} 的自动压缩阈值",
 	"Past the soft TTL the cached row is returned and refreshed in the background; past the hard TTL it is dropped (seconds; default 7 days)":
 		"超过软 TTL 后返回缓存行并在后台刷新；超过硬 TTL 后则被丢弃（秒；默认 7 天）",
 	"Paste clipboard as a literal path or text reference": "将剪贴板内容粘贴为原样路径或文本引用",
@@ -4606,7 +4613,7 @@ export const zhCN: Record<string, string> = {
 	Program: "程序",
 	ProjFS: "ProjFS",
 	Project: "项目",
-	"Project SSH Hosts (.omp/ssh.json):": "项目 SSH 主机（.omp/ssh.json）：",
+	"Project SSH Hosts ({path}):": "项目 SSH 主机（{path}）：",
 	"Project directory (default: current directory)": "项目目录（默认：当前目录）",
 	"Project level": "项目级别",
 	"Project level ({path})": "项目级别（{path}）",
@@ -4784,6 +4791,8 @@ export const zhCN: Record<string, string> = {
 		"立即兑换，并记住未来符合条件的 Codex 重置一律选择“是”。",
 	"Redeem now and remember yes for future eligible {provider} resets.":
 		"立即兑换，并记住未来符合条件的 {provider} 重置一律选择“是”。",
+	"Reduce or remove oversized media from the live request, shrink older history, or raise the provider/proxy body limit.":
+		"请缩小或移除当前请求中过大的媒体内容、压缩较早的历史，或提高提供商及代理的请求体大小限制。",
 	References: "引用",
 	"Refine plan": "优化计划",
 	"Refine plan: enter a follow-up prompt.": "优化计划：输入后续提示。",
@@ -4991,6 +5000,7 @@ export const zhCN: Record<string, string> = {
 	"Resumed after {duration} — agents are running again.": "在 {duration} 后恢复 — 代理已重新运行。",
 	"Resumed session": "已恢复会话",
 	"Resumed session in {path}": "已在 {path} 中恢复会话",
+	"Resumed session, moved here from removed worktree {path}": "已恢复会话，并从已移除的工作树 {path} 迁移至此处",
 	Retain: "保留记忆",
 	"Retain completed conversation turns into local Mnemopi memory": "将完成的对话轮次保留到本地 Mnemopi 记忆中",
 	"Retain failed": "保留记忆失败",
@@ -5958,10 +5968,10 @@ export const zhCN: Record<string, string> = {
 		"原始的 SnapCompact 形状（pre-shape-table 会话呈现的即为此形状）。",
 	"The pinned security OAuth credential could not be resolved": "固定的安全 OAuth 凭据无法解析",
 	"The pinned security OAuth credential is unavailable": "固定的安全 OAuth 凭据不可用",
-	"The provider rejected the request size or media budget (HTTP 413), and this model has no known context window to compare against — this is NOT a token-context problem.":
-		"提供商拒绝了请求大小或媒体预算（HTTP 413），而该模型没有已知的上下文窗口可供比较——这**不是** token 上下文问题。",
-	"The provider rejected the request size or media budget (HTTP 413), but ~{headroom} tokens of headroom remain locally — this is NOT a token-context problem.":
-		"提供商拒绝了请求大小或媒体预算（HTTP 413），但本地仍剩余约 {headroom} tokens 余量——这**不是** token 上下文问题。",
+	"The provider rejected the request size or media budget (HTTP 413), and this model has no known context window to compare against — this is NOT necessarily a token-context problem.":
+		"提供商拒绝了请求大小或媒体预算（HTTP 413），该模型也没有已知的上下文窗口可供比较；此错误未必由 token 上下文超限导致。",
+	"The provider rejected the request size or media budget (HTTP 413), but ~{headroom} tokens of headroom remain locally — this is NOT necessarily a token-context problem.":
+		"提供商拒绝了请求大小或媒体预算（HTTP 413），本地仍剩余约 {headroom} tokens 余量；此错误未必由 token 上下文超限导致。",
 	"The provider reports ~{tokens} input tokens against a {window}-token context window — this IS a token-context problem, but automatic compaction is unavailable to shrink it.":
 		"提供商报告约 {tokens} 输入 tokens，而上下文窗口为 {window} tokens——这**确实**是 token 上下文问题，但没有可用的自动压缩来缩小它。",
 	"The public API is deprecated; a replacement endpoint is required.": "该公共 API 已弃用，需要提供替代端点。",
@@ -6389,9 +6399,8 @@ export const zhCN: Record<string, string> = {
 	"Usage: /omfg <complaint>": "用法：/omfg <complaint>",
 	"Usage: /open [link]  (pick a specific link: /copy, {right} blocks, {open})":
 		"用法：/open [link]  （指定链接：/copy、{right} 区块、{open}）",
-	"Usage: /plugins {verb} [--scope user|project] <name@marketplace>":
-		"用法：/plugins {verb} [--scope user|project] <name@marketplace>",
-	"Usage: /prewalk [restart]": "用法：/prewalk [restart]",
+	"Usage: /plugins {verb} [--scope user|project] <plugin>": "用法：/plugins {verb} [--scope user|project] <plugin>",
+	"Usage: /prewalk [restart|off]": "用法：/prewalk [restart|off]",
 	"Usage: /queue <message> (or start a prompt with -> / =>)": "用法：/queue <message>（或用 -> / => 开头发送提示词）",
 	"Usage: /remove-dir <path>": "用法：/remove-dir <path>",
 	"Usage: /rename <title>": "用法：/rename <title>",
@@ -6505,7 +6514,7 @@ export const zhCN: Record<string, string> = {
 	"Used: {count}": "已用：{count}",
 	"Useful Commands:": "常用命令：",
 	User: "用户",
-	"User SSH Hosts (~/.omp/agent/ssh.json):": "用户 SSH 主机（~/.omp/agent/ssh.json）：",
+	"User SSH Hosts ({path}):": "用户 SSH 主机（{path}）：",
 	"User level": "用户级别",
 	"User level ({path})": "用户级别（{path}）",
 	"User only": "仅用户",
@@ -6610,7 +6619,7 @@ export const zhCN: Record<string, string> = {
 	"Waiting for candidate rule…": "正在等待候选规则…",
 	"Waiting for input": "等待输入",
 	"Waiting for output…": "正在等待输出…",
-	"Waiting for protocol frames on stdin; logs: ~/.omp/logs/\n": "正在等待 stdin 上的协议帧；日志：~/.omp/logs/",
+	"Waiting for protocol frames on stdin; logs: {path}\n": "正在等待 stdin 上的协议帧；日志：{path}\n",
 	"Waiting for response…": "正在等待响应…",
 	"Waiting for the OMP Browser Relay extension to connect (omp browser-relay install)...":
 		"正在等待 OMP 浏览器中继扩展连接（omp browser-relay install）...",
@@ -7414,6 +7423,7 @@ export const zhCN: Record<string, string> = {
 	object: "对象",
 	"object-storage": "对象存储",
 	"of {parent}": "属于 {parent}",
+	"of {tokens} tokens": "/ {tokens} tokens",
 	off: "禁用",
 	ok: "确定",
 	"omitted from the system-prompt skill list": "已从系统提示词技能列表中省略",
@@ -8225,6 +8235,8 @@ export const zhCN: Record<string, string> = {
 	"{header}: {pct}% used": "{header}: 已用 {pct}%",
 	"{hunkKey} hunk · {fileKey} file · {selectKey} select · {stageKey} stage · {discardKey} discard · {viewKey} view · {commitKey} commit · {helpKey} keys · {quitKey} quit":
 		"{hunkKey} 切换 hunk · {fileKey} 切换文件 · {selectKey} 选择 · {stageKey} 暂存 · {discardKey} 放弃 · {viewKey} 视图 · {commitKey} 提交 · {helpKey} 快捷键 · {quitKey} 退出",
+	"{hunkKey} hunk · {fileKey} file · {viewKey} view · {helpKey} keys · {quitKey} quit":
+		"{hunkKey} 切换 hunk · {fileKey} 切换文件 · {viewKey} 视图 · {helpKey} 快捷键 · {quitKey} 退出",
 	"{hunks} of {total} hunks": "{total} 个 hunk 中的 {hunks} 个",
 	"{id} {status} {findingCount} finding(s) {producer}": "{id} {status} {findingCount} 个发现 {producer}",
 	"{id} · cleanup in progress": "{id} · 清理中",
@@ -8300,6 +8312,8 @@ export const zhCN: Record<string, string> = {
 	"{model}: {requests} reqs, {cost}, {cacheRate} cache rate, {cacheSavings} cache savings":
 		"{model}：{requests} 次请求，{cost}，缓存命中率 {cacheRate}，缓存节省 {cacheSavings}",
 	"{modifier}+click to open": "{modifier}+点击打开",
+	"{moveKey} move · {foldKey} fold · {openKey} open · {hunkKey} hunk · {treeKey} tree · {helpKey} keys · {quitKey} quit":
+		"{moveKey} 移动 · {foldKey} 折叠 · {openKey} 打开 · {hunkKey} 切换 hunk · {treeKey} 树形 · {helpKey} 快捷键 · {quitKey} 退出",
 	"{moveKey} move · {foldKey} fold · {stageKey} stage · {discardKey} discard · {openKey} open · {hunkKey} hunk · {commitKey} commit · {treeKey} tree · {helpKey} keys · {quitKey} quit":
 		"{moveKey} 移动 · {foldKey} 折叠 · {stageKey} 暂存 · {discardKey} 放弃 · {openKey} 打开 · {hunkKey} 切换 hunk · {commitKey} 提交 · {treeKey} 树形 · {helpKey} 快捷键 · {quitKey} 退出",
 	"{move} move · {confirm} / click select · scroll preview on the right · {cancel} close":
@@ -8377,6 +8391,8 @@ export const zhCN: Record<string, string> = {
 	"{tab}:roster  {scroll}:scroll  {enter}:open  {toggle}:{view}  {close}:roster":
 		"{tab}:名册  {scroll}:滚动  {enter}:打开  {toggle}:{view}  {close}:名册",
 	"{time} elapsed": "耗时 {time}",
+	"{tokens} free": "剩余 {tokens}",
+	"{tokens} left before auto-compaction at {percent}": "距 {percent} 的自动压缩阈值还剩 {tokens}",
 	"{totals} · last {weeks} weeks": "{totals} · 最近 {weeks} 周",
 	"{upDown} models · {enter} use for Task subagents · type to search · {cancel} close":
 		"{upDown} 模型 · {enter} 用于任务子代理 · 输入搜索 · {cancel} 关闭",

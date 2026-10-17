@@ -57,14 +57,9 @@ if (
 }
 const transformersVersion = transformersManifest.version;
 
-async function runCommand(
-	command: string[],
-	env: NodeJS.ProcessEnv = Bun.env,
-	cwd: string = packageDir,
-): Promise<void> {
+async function runCommand(command: string[]): Promise<void> {
 	const proc = Bun.spawn(command, {
-		cwd,
-		env,
+		cwd: packageDir,
 		stdout: "inherit",
 		stderr: "inherit",
 	});
@@ -126,38 +121,31 @@ async function main(): Promise<void> {
 		// Rebuild it before compilation so clean checkouts that skipped install
 		// hooks still contain that generated bundle.
 		await runCommand(["bun", "--cwd=../collab-web", "run", "gen:tool-views"]);
-		await runCommand(
-			["bun", "--cwd=../natives", "run", "gen:native"],
-			crossBuild ? { ...Bun.env, TARGET_PLATFORM: crossBuild.platform, TARGET_ARCH: crossBuild.arch } : Bun.env,
-		);
-		try {
-			const compiledPath = await compileCodingAgent({
-				repoRoot,
-				entrypoint: path.join(packageDir, "src", "cli.ts"),
-				outfile: outputPath,
-				transformersVersion,
-				releaseCode,
-				target: crossBuild?.target,
-				executablePath: Bun.env.BUN_COMPILE_EXECUTABLE_PATH || undefined,
-				skipBuiltinCodesign: shouldAdhocSign,
-			});
+		const compiledPath = await compileCodingAgent({
+			repoRoot,
+			entrypoint: path.join(packageDir, "src", "cli.ts"),
+			outfile: outputPath,
+			transformersVersion,
+			releaseCode,
+			native: crossBuild ?? { platform: process.platform, arch: process.arch },
+			target: crossBuild?.target,
+			executablePath: Bun.env.BUN_COMPILE_EXECUTABLE_PATH || undefined,
+			skipBuiltinCodesign: shouldAdhocSign,
+		});
 
-			if (shouldAdhocSign) {
-				await runCommand([
-					"codesign",
-					"--force",
-					"--sign",
-					"-",
-					"--entitlements",
-					path.join(repoRoot, "scripts", "macos-entitlements.plist"),
-					outputPath,
-				]);
-			}
-			if (!crossBuild) {
-				await verifyBinaryBoots(compiledPath);
-			}
-		} finally {
-			await runCommand(["bun", "--cwd=../natives", "run", "gen:native:reset"]);
+		if (shouldAdhocSign) {
+			await runCommand([
+				"codesign",
+				"--force",
+				"--sign",
+				"-",
+				"--entitlements",
+				path.join(repoRoot, "scripts", "macos-entitlements.plist"),
+				outputPath,
+			]);
+		}
+		if (!crossBuild) {
+			await verifyBinaryBoots(compiledPath);
 		}
 	} finally {
 		await runCommand(["bun", "--cwd=../stats", "run", "gen:stats:reset"]);

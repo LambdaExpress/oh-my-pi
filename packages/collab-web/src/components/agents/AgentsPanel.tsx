@@ -5,7 +5,7 @@ import type {
 	SubagentProgressPayload,
 } from "@oh-my-pi/pi-wire";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { fmtCost, fmtDuration, fmtTokens, relTime } from "../../lib/format";
 import "./agents.css";
 
@@ -59,7 +59,7 @@ function visualStatus(
 	return agent.status;
 }
 
-function AgentRow(props: {
+const AgentRow = memo(function AgentRow(props: {
 	agent: AgentSnapshot;
 	payload: SubagentProgressPayload | undefined;
 	lifecycle: SubagentLifecyclePayload | undefined;
@@ -94,9 +94,10 @@ function AgentRow(props: {
 			</span>
 		</button>
 	);
-}
+});
 
-export function AgentsPanel(props: {
+/** Memoized: the client replaces `progress`/`lifecycle` only when they change. */
+export const AgentsPanel = memo(function AgentsPanel(props: {
 	agents: readonly AgentSnapshot[];
 	progress: ReadonlyMap<string, SubagentProgressPayload>;
 	lifecycle: ReadonlyMap<string, SubagentLifecyclePayload>;
@@ -164,4 +165,4 @@ export function AgentsPanel(props: {
 			) : null}
 		</section>
 	);
-}
+});

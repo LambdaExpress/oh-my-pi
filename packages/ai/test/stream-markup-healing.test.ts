@@ -11,6 +11,8 @@ import { stream } from "@oh-my-pi/pi-ai/stream";
 import type { Context, FetchImpl, Model, TextContent, ThinkingContent, Tool, ToolCall } from "@oh-my-pi/pi-ai/types";
 import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { getStreamMarkupHealingPattern, StreamMarkupHealing } from "@oh-my-pi/pi-ai/utils/stream-markup-healing";
+import { stripDsmlToolMarkup } from "@oh-my-pi/pi-ai/utils/dsml-leak";
+import { validateToolArguments } from "@oh-my-pi/pi-ai/utils/validation";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
@@ -76,6 +78,26 @@ function chunk(model: string, delta: SseChoiceDelta, finish: SseChunk["choices"]
 		choices: [{ index: 0, delta, finish_reason: finish }],
 	};
 }
+
+it("preserves a parse-error sentinel through Kimi markup healing", async () => {
+	const model = kimiModel();
+	const raw = '{"path":"repaired.txt","content":"hello';
+	const text =
+		"<|tool_calls_section_begin|><|tool_call_begin|>functions.write:0<|tool_call_argument_begin|>" +
+		raw +
+		"<|tool_call_end|><|tool_calls_section_end|>";
+	const result = await streamOpenAICompletions(model, baseContext(), {
+		apiKey: "test-key",
+		fetch: mockFetch([chunk(model.id, { content: text }), chunk(model.id, {}, "stop"), "[DONE]"]),
+	}).result();
+	expect(result.stopReason).toBe("toolUse");
+	const call = result.content.find(block => block.type === "toolCall");
+	if (!call) throw new Error("Expected tool call");
+	expect(call.arguments).toEqual({ __parseError: expect.any(String), __rawJson: raw });
+	expect(() =>
+		validateToolArguments({ name: "write", description: "", parameters: { type: "object" } }, call),
+	).toThrow("Tool call arguments are not valid JSON");
+});
 
 const REPORTED_DSML_LEAK =
 	"<｜DSML｜tool_calls>\n" +
@@ -413,6 +435,38 @@ describe("StreamMarkupHealing DSML envelope pattern", () => {
 		expect(trailingText).toBe("\nAfter");
 	});
 
+	it("keeps quoted prose after an unclosed wrapper with no invoke", () => {
+		const input =
+			"之前这些源的完整 `<｜DSML｜tool_calls>` 信封显示为纯文本，工具从不执行。\n\n## Next section\nmore text";
+		const healing = new StreamMarkupHealing({ pattern: "dsml" });
+		let visible = "";
+		for (let i = 0; i < input.length; i += 7) visible += healing.feed(input.slice(i, i + 7));
+		visible += healing.flushPending();
+		expect(visible).toBe(input);
+		expect(stripDsmlToolMarkup(visible)).toBeUndefined();
+		expect(healing.drainCompleted()).toEqual([]);
+	});
+
+	it("passes an unclosed, unquoted wrapper to leak recovery without losing later prose", () => {
+		const input = "Intro. <|DSML|tool_calls>broken call\n\nThe build passed.";
+		const healing = new StreamMarkupHealing({ pattern: "dsml" });
+		let visible = "";
+		for (let i = 0; i < input.length; i += 5) visible += healing.feed(input.slice(i, i + 5));
+		visible += healing.flushPending();
+		expect(stripDsmlToolMarkup(visible)).toBe("Intro.\n\nThe build passed.");
+		expect(healing.drainCompleted()).toEqual([]);
+	});
+
+	it("passes a closed wrapper without an invoke to leak recovery", () => {
+		const input = "Intro.<|DSML|tool_calls>broken</|DSML|tool_calls>Outro.";
+		const healing = new StreamMarkupHealing({ pattern: "dsml" });
+		let visible = "";
+		for (let i = 0; i < input.length; i += 6) visible += healing.feed(input.slice(i, i + 6));
+		visible += healing.flushPending();
+		expect(stripDsmlToolMarkup(visible)).toBe("Intro.\n\nOutro.");
+		expect(healing.drainCompleted()).toEqual([]);
+	});
+
 	it("drops partial calls when the stream ends mid-envelope", () => {
 		const healing = new StreamMarkupHealing({ pattern: "dsml" });
 		const truncated = REPORTED_DSML_LEAK.slice(0, REPORTED_DSML_LEAK.length - 30);
@@ -464,6 +518,21 @@ describe("StreamMarkupHealing DSML envelope pattern", () => {
 		const visible = healing.feed(leaked) + healing.flushPending();
 		expect(visible).toBe("分析文本。\n\n\n\n");
 		expect(healing.drainCompleted()).toHaveLength(0);
+	});
+
+	it("keeps a malformed call's closers so its removal stops before following prose", () => {
+		// A bare parameter opener (no tool_calls/invoke wrapper) cannot be healed.
+		// Its closers must survive as the call's end marker; stripping them as
+		// orphans would leave no boundary and the prose after would be lost.
+		const leaked =
+			'Intro.\nbash\n<｜DSML｜parameter name="command" string="true">echo hi</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>\nThe build passed.';
+		const healing = new StreamMarkupHealing({ pattern: "dsml" });
+		let visible = "";
+		for (let i = 0; i < leaked.length; i += 6) visible += healing.feed(leaked.slice(i, i + 6));
+		visible += healing.flushPending();
+		expect(visible).toBe(leaked);
+		expect(healing.drainCompleted()).toHaveLength(0);
+		expect(stripDsmlToolMarkup(visible)).toBe("Intro.\n\nThe build passed.");
 	});
 
 	it("preserves whitespace after orphan DSML closers split across chunk boundaries", () => {
@@ -1100,7 +1169,7 @@ describe("OpenAI completions MiniMax thinking healing", () => {
 
 		expect(result.content).toEqual([
 			{ type: "text", text: "visible " },
-			{ type: "thinking", thinking: "hidden reasoning", thinkingSignature: undefined },
+			{ type: "thinking", thinking: "hidden reasoning", thinkingSignature: undefined, summary: false },
 			{ type: "text", text: " answer" },
 		]);
 	});
@@ -1298,9 +1367,13 @@ describe("OpenAI completions provider DSML envelope healing", () => {
 			}
 		}
 
-		// More than the single final frame: the path lands before content, and
-		// content grows line by line — exactly what the TUI reveal needs.
-		expect(frames.length).toBeGreaterThan(1);
+		// The path and first line must be available before the final line,
+		// so the TUI can reveal the destination and in-progress content.
+		expect(
+			frames.some(
+				frame => frame.includes('"path":"src/demo.ts') && frame.includes("line 01") && !frame.includes("line 03"),
+			),
+		).toBe(true);
 		expect(frames[0]!).toContain('"path":"src/demo.ts');
 		for (let index = 1; index < frames.length; index++) {
 			expect(frames[index]!.startsWith(frames[index - 1]!)).toBe(true);
@@ -1308,5 +1381,96 @@ describe("OpenAI completions provider DSML envelope healing", () => {
 		const last = frames.at(-1) ?? "";
 		expect(last).toContain("line 01");
 		expect(last).toContain("line 03");
+	});
+
+	it("keeps parallel tool calls isolated when separate chunks reuse index 0 with distinct IDs", async () => {
+		const model = getBundledModel<"openai-completions">("nanogpt", "deepseek/deepseek-v4-pro");
+		const fetchMock = mockFetch([
+			chunk(model.id, {
+				tool_calls: [
+					{ index: 0, id: "call_a", type: "function", function: { name: "read", arguments: '{"path":"a.ts"}' } },
+				],
+			}),
+			chunk(model.id, {
+				tool_calls: [
+					{ index: 0, id: "call_b", type: "function", function: { name: "read", arguments: '{"path":' } },
+				],
+			}),
+			chunk(model.id, {
+				tool_calls: [{ index: 0, function: { arguments: '"b.ts"}' } }],
+			}),
+			chunk(model.id, {}, "tool_calls"),
+			"[DONE]",
+		]);
+
+		const result = await streamOpenAICompletions(
+			model,
+			{ messages: [{ role: "user", content: "Read a.ts and b.ts", timestamp: Date.now() }], tools: [readTool] },
+			{ apiKey: "test-key", reasoning: "high", fetch: fetchMock },
+		).result();
+
+		const toolCalls = result.content.filter((b): b is ToolCall => b.type === "toolCall");
+		expect(toolCalls).toHaveLength(2);
+		expect(toolCalls.map(call => call.id)).toEqual(["call_a", "call_b"]);
+		expect(toolCalls.map(call => call.name)).toEqual(["read", "read"]);
+		expect(toolCalls.map(call => call.arguments)).toEqual([{ path: "a.ts" }, { path: "b.ts" }]);
+		expect(result.stopReason).toBe("toolUse");
+	});
+
+	it("keeps one tool call whole when a gateway mints a new id for each argument fragment at index 0", async () => {
+		const model = getBundledModel<"openai-completions">("nanogpt", "deepseek/deepseek-v4-pro");
+		const fetchMock = mockFetch([
+			chunk(model.id, {
+				tool_calls: [
+					{ index: 0, id: "call_1", type: "function", function: { name: "read", arguments: '{"path":' } },
+				],
+			}),
+			chunk(model.id, { tool_calls: [{ index: 0, id: "call_2", function: { arguments: '"a.ts"}' } }] }),
+			chunk(model.id, {}, "tool_calls"),
+			"[DONE]",
+		]);
+
+		const result = await streamOpenAICompletions(
+			model,
+			{ messages: [{ role: "user", content: "Read a.ts", timestamp: Date.now() }], tools: [readTool] },
+			{ apiKey: "test-key", fetch: fetchMock },
+		).result();
+
+		const toolCalls = result.content.filter((b): b is ToolCall => b.type === "toolCall");
+		expect(toolCalls.map(call => ({ name: call.name, arguments: call.arguments }))).toEqual([
+			{ name: "read", arguments: { path: "a.ts" } },
+		]);
+	});
+
+	it("routes id-less continuations at a reused index to the call that resumed by id", async () => {
+		const model = getBundledModel<"openai-completions">("nanogpt", "deepseek/deepseek-v4-pro");
+		const fetchMock = mockFetch([
+			chunk(model.id, {
+				tool_calls: [
+					{ index: 0, id: "call_a", type: "function", function: { name: "read", arguments: '{"path":' } },
+				],
+			}),
+			chunk(model.id, {
+				tool_calls: [
+					{ index: 0, id: "call_b", type: "function", function: { name: "read", arguments: '{"path":"b.ts"}' } },
+				],
+			}),
+			chunk(model.id, { tool_calls: [{ index: 0, id: "call_a", function: { arguments: '"a' } }] }),
+			chunk(model.id, { tool_calls: [{ index: 0, function: { arguments: '.ts"}' } }] }),
+			chunk(model.id, {}, "tool_calls"),
+			"[DONE]",
+		]);
+
+		const result = await streamOpenAICompletions(
+			model,
+			{ messages: [{ role: "user", content: "Read a.ts and b.ts", timestamp: Date.now() }], tools: [readTool] },
+			{ apiKey: "test-key", fetch: fetchMock },
+		).result();
+
+		const toolCalls = result.content.filter((b): b is ToolCall => b.type === "toolCall");
+		expect(toolCalls.map(call => ({ id: call.id, arguments: call.arguments }))).toEqual([
+			{ id: "call_a", arguments: { path: "a.ts" } },
+			{ id: "call_b", arguments: { path: "b.ts" } },
+		]);
 	});
 });

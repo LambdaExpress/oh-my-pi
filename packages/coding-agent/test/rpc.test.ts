@@ -13,6 +13,7 @@ import {
 import { RpcClient } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-client";
 import type { BashExecutionMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import { rejectionOf } from "./helpers/rejection";
 import { e2eApiKey } from "./utilities";
 
 type MessageEndEvent = Extract<AgentEvent, { type: "message_end" }>;
@@ -311,4 +312,46 @@ describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))("RPC mode", () => {
 		text = await client.getLastAssistantText();
 		expect(text).toContain("test123");
 	}, 90000);
+});
+
+describe("RPC fast mode with unsupported Fireworks model and priority tier", () => {
+	let client: RpcClient;
+	let sessionDir: string;
+
+	beforeEach(async () => {
+		sessionDir = path.join(os.tmpdir(), `omp-rpc-fast-mode-test-${Snowflake.next()}`);
+		await Bun.write(path.join(sessionDir, "config.yml"), ["providers:", "  fireworksTier: priority", ""].join("\n"));
+		client = new RpcClient({
+			cliPath: path.join(import.meta.dir, "..", "src", "cli.ts"),
+			cwd: path.join(import.meta.dir, ".."),
+			env: {
+				PI_CODING_AGENT_DIR: sessionDir,
+				FIREWORKS_API_KEY: "test-fireworks-key",
+			},
+			provider: "fireworks",
+			model: "deepseek-v4-flash",
+		});
+	});
+
+	afterEach(async () => {
+		await client.stop();
+		if (sessionDir && fs.existsSync(sessionDir)) {
+			removeSyncWithRetries(sessionDir);
+		}
+	});
+
+	test("rejects enable but disable preserves Fireworks priority activity", async () => {
+		await client.start();
+
+		expect(await rejectionOf(client.setFastMode(true))).toMatchObject({
+			command: "set_fast_mode",
+		});
+
+		const disabled = await client.setFastMode(false);
+		expect(disabled).toEqual({ enabled: false, active: true });
+
+		const state = await client.getState();
+		expect(state.fastModeEnabled).toBe(false);
+		expect(state.fastModeActive).toBe(true);
+	}, 30000);
 });

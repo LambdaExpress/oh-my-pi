@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
 import {
 	TranscriptContainer,
 	type TranscriptStableRow,
@@ -225,6 +226,125 @@ const finalAnswer: AssistantMessage = {
 
 const frame = { tick: 0, now: 0 };
 
+/** Greedy word wrap, so the same content takes a different row count at each width. */
+function wrapWords(words: readonly string[], width: number): string[] {
+	const rows: string[] = [];
+	let row = "";
+	for (const word of words) {
+		if (row.length > 0 && row.length + 1 + word.length > width) {
+			rows.push(row);
+			row = word;
+		} else {
+			row = row.length > 0 ? `${row} ${word}` : word;
+		}
+	}
+	if (row.length > 0) rows.push(row);
+	return rows;
+}
+
+describe("TranscriptContainer row split", () => {
+	const words = Array.from({ length: 120 }, (_, i) => `w${i}${"x".repeat(i % 5)}`);
+	const prose: Component = { render: width => wrapWords(words, width) };
+
+	it("commits only the rows of a straddling block that left the screen", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(prose);
+		transcript.addChild(new Block(["tail"], true));
+		const rows = wrapWords(words, 40);
+		// Room 10: the tail and its separator leave 8 rows of the prose live.
+		const batch = transcript.peekFinalizedBatch(40, 10)!;
+		expect(batch.rows).toEqual(rows.slice(0, rows.length - 8));
+		transcript.acknowledgeFinalizedBatch(batch.id);
+		expect(transcript.renderViewport(40, 10, frame)).toEqual([...rows.slice(rows.length - 8), "", "tail"]);
+		expect(transcript.blockStates()).toEqual(["settled", "settled"]);
+	});
+
+	it("resumes a split block at the same content after a width change, repeating at most one row", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(prose);
+		transcript.addChild(new Block(["tail"], true));
+		const head = transcript.peekFinalizedBatch(40, 10)!;
+		transcript.acknowledgeFinalizedBatch(head.id);
+		const committed = head.rows.join(" ").split(" ");
+		// A preserve-mode resize keeps the 40-column rows in scrollback; the rest
+		// retires at 25 columns.
+		const rest = transcript.peekFlushBatch(25)!.rows.filter(row => row !== "");
+		const resumed = rest.join(" ").split(" ");
+		expect(resumed.at(-1)).toBe("tail");
+		const restart = words.indexOf(resumed[0]!);
+		// No word is lost, and only the seam row's committed words repeat.
+		expect(restart).toBeLessThanOrEqual(committed.length);
+		expect(resumed.slice(0, -1)).toEqual(words.slice(restart));
+		expect(committed.length - restart).toBeLessThan(wrapWords(words, 25)[0]!.split(" ").length);
+		expect(committed).toEqual(words.slice(0, committed.length));
+	});
+
+	it("loses no text of a split block whose wrapped rows carry a per-row prefix", () => {
+		// Every wrapped row starts with a quote bar, so a narrower width spends
+		// more cells on decoration per character of content.
+		const content = "abcdefghij".repeat(5);
+		const quoted: Component = {
+			render: width => {
+				const step = width - 1;
+				return Array.from(
+					{ length: Math.ceil(content.length / step) },
+					(_, i) => `#${content.slice(i * step, (i + 1) * step)}`,
+				);
+			},
+		};
+		const transcript = new TranscriptContainer();
+		transcript.addChild(quoted);
+		transcript.addChild(new Block(["tail"], true));
+		const head = transcript.peekFinalizedBatch(6, 3)!;
+		transcript.acknowledgeFinalizedBatch(head.id);
+		const committed = head.rows.map(row => row.slice(1)).join("");
+		expect(content.startsWith(committed)).toBe(true);
+		const rest = transcript.peekFlushBatch(9)!.rows.filter(row => row.startsWith("#"));
+		const resumed = rest.map(row => row.slice(1)).join("");
+		// The rest resumes at or before the committed end and runs to the end.
+		expect(content.endsWith(resumed)).toBe(true);
+		expect(content.length - resumed.length).toBeLessThanOrEqual(committed.length);
+	});
+
+	it("keeps rows a split block reveals at the same width, such as an expanded tool pane", () => {
+		// A settled output pane shows its tail behind a summary until expanded.
+		const lines = Array.from({ length: 30 }, (_, i) => `out${i}`);
+		let expanded = false;
+		const pane: Component = {
+			render: () => (expanded ? lines : ["… 20 earlier lines", ...lines.slice(20)]),
+		};
+		const transcript = new TranscriptContainer();
+		transcript.addChild(pane);
+		transcript.addChild(new Block(["tail"], true));
+		const head = transcript.peekFinalizedBatch(80, 6)!;
+		transcript.acknowledgeFinalizedBatch(head.id);
+		expect(head.rows).toEqual(["… 20 earlier lines", "out20", "out21", "out22", "out23", "out24", "out25"]);
+		// Ctrl+O: the pane re-renders with head rows that history never received.
+		expanded = true;
+		const rest = transcript.peekFlushBatch(80)!.rows;
+		expect(rest.filter(row => row.startsWith("out"))).toEqual(lines);
+	});
+	it("stops a relocated split before punctuation-only rows a split block reveals", () => {
+		// Expanding the pane reveals a rule row above the committed head rows;
+		// the hash rejects the stale bytes, and the empty-content row must not
+		// count as matched content on the relocation walk.
+		let expanded = false;
+		const pane: Component = {
+			render: () => (expanded ? ["---", "AAA", "BBB"] : ["AAA", "BBB"]),
+		};
+		const transcript = new TranscriptContainer();
+		transcript.addChild(pane);
+		transcript.addChild(new Block(["tail"], true));
+		const head = transcript.peekFinalizedBatch(80, 3)!;
+		transcript.acknowledgeFinalizedBatch(head.id);
+		expect(head.rows).toEqual(["AAA"]);
+		expanded = true;
+		const rest = transcript.peekFlushBatch(80)!.rows;
+		expect(rest).toContain("---");
+		expect(rest.filter(row => row === "AAA" || row === "BBB")).toEqual(["AAA", "BBB"]);
+	});
+});
+
 describe("TranscriptContainer", () => {
 	it("preserves retirement while externally reordered and replaced live children settle", () => {
 		const transcript = new TranscriptContainer();
@@ -403,7 +523,11 @@ describe("TranscriptContainer", () => {
 		const block = new ReflowingAppendBlock();
 		transcript.addChild(block);
 
-		const emitted = transcript.peekFinalizedBatch(4, 2)!;
+		// Room 2: "efgh" is still on screen, so its stable prefix stays live —
+		// committing it would strand that row above the live tail.
+		expect(transcript.peekFinalizedBatch(4, 2)).toBeUndefined();
+		// Room 1: the whole two-row stable prefix has left the screen.
+		const emitted = transcript.peekFinalizedBatch(4, 1)!;
 		expect(emitted.rows).toEqual(["abcd", "efgh"]);
 		transcript.acknowledgeFinalizedBatch(emitted.id);
 		expect(transcript.renderViewport(8, 1, frame)).toEqual(["partial"]);
@@ -708,6 +832,58 @@ describe("TranscriptContainer", () => {
 		expect(out).toEqual(["", "B1", "B2", "B3", "B4", "", "C1", "C2", "C3", "C4"]);
 	});
 
+	it("keeps the newest prompt text while cropping its padding without orphan OSC 133 markers (issue 13835)", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["stuck tool"], false)); // pins retirement
+		for (let i = 0; i < 6; i++) transcript.addChild(new Block([`settled ${i}`], true));
+		const userMsg = new UserMessageComponent("is there a reason we haven't tested against the real device yet?");
+		transcript.addChild(userMsg);
+		transcript.addChild(new Block(["next tool"], false));
+
+		const rendered = transcript.renderViewport(80, 4, frame);
+		expect(rendered).toHaveLength(4);
+		const output = rendered.join("\n");
+		expect(output).toContain("is there a reason we haven't tested against the real device yet?");
+		expect(rendered.at(-1)).toBe("next tool");
+		expect(output).not.toContain("\x1b]133;A");
+		expect(output).not.toContain("\x1b]133;B");
+	});
+
+	it("does not replace the newest tail with an older user prompt behind the viewport", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["stuck tool"], false)); // pins retirement
+		const userMsg = new UserMessageComponent("first prompt behind viewport");
+		transcript.addChild(userMsg);
+		for (let i = 0; i < 10; i++) transcript.addChild(new Block([`settled ${i}`], true));
+
+		const rendered = transcript.renderViewport(80, 2, frame);
+		expect(rendered).toEqual(["", "settled 9"]);
+	});
+
+	it("renders the first user content line without shell integration under a one-row allocation", () => {
+		const userMsg = new UserMessageComponent("first line\nsecond line");
+		const row = userMsg.renderTranscriptBlockEmergencyRow(80);
+		expect(row).toBeDefined();
+		expect(row).toContain("first line");
+		expect(row).not.toContain("second line");
+		expect(row).not.toContain("\x1b]133;A");
+		expect(row).not.toContain("\x1b]133;B");
+		userMsg.setTranscriptAllocation(1);
+		expect(userMsg.render(80)).toEqual([row!]);
+	});
+
+	it("does not replace the newest active tail with an older completed assistant answer", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["stale active"], false));
+		transcript.addChild(new AssistantMessageComponent(finalAnswer));
+		transcript.addChild(new Block(["continued turn"], false));
+		transcript.addChild(new Block(["task running"], false));
+
+		expect(transcript.peekFinalizedBatch(80, 3)).toBeUndefined();
+		const rows = transcript.renderViewport(80, 3, frame);
+		expect(rows).toEqual(["continued turn", "", "task running"]);
+	});
+
 	it("keeps a completed tool full before the next user message moves its predecessor into history", () => {
 		const transcript = new TranscriptContainer();
 		const assistant = new Block(["A1", "A2", "A3", "A4"], false);
@@ -762,6 +938,68 @@ describe("TranscriptContainer", () => {
 		expect(transcript.canRemoveBlock(settled)).toBe(false);
 		transcript.removeChild(settled);
 		expect(transcript.blockStates()).toEqual(["committed", "active"]);
+	});
+
+	it("removes live blocks behind a settled one without disturbing committed or settled bookkeeping", () => {
+		const transcript = new TranscriptContainer();
+		const committedA = new Block(["committed a"], true);
+		const committedB = new Block(["committed b"], true);
+		transcript.addChild(committedA);
+		transcript.addChild(committedB);
+		const commit = transcript.peekFinalizedBatch(80, 0);
+		expect(commit?.rows).toEqual(["committed a", "", "committed b", ""]);
+		transcript.acknowledgeFinalizedBatch(commit!.id);
+
+		const settled = new Block(["settled"], true);
+		const live = [1, 2, 3, 4, 5].map(n => new Block([`live ${n}`], false));
+		transcript.addChild(settled);
+		for (const block of live) transcript.addChild(block);
+		// Room for every live row: the finalized block settles and nothing is offered.
+		expect(transcript.peekFinalizedBatch(80, 20)).toBeUndefined();
+		expect(transcript.blockStates()).toEqual([
+			"committed",
+			"committed",
+			"settled",
+			"active",
+			"active",
+			"active",
+			"active",
+			"active",
+		]);
+
+		transcript.removeChild(live[0]!);
+		transcript.removeChild(live[4]!);
+
+		expect(transcript.blockStates()).toEqual(["committed", "committed", "settled", "active", "active", "active"]);
+		const expected = [committedA, committedB, settled, live[1]!, live[2]!, live[3]!];
+		expect(transcript.children).toHaveLength(expected.length);
+		expected.forEach((component, index) => expect(transcript.children[index]).toBe(component));
+
+		// Pressure retires the settled block next; committed rows are never offered again.
+		const retire = transcript.peekFinalizedBatch(80, 5);
+		expect(retire?.rows).toEqual(["settled", ""]);
+	});
+
+	it("refuses to remove an append-only block once its stable rows are offered or emitted", () => {
+		const transcript = new TranscriptContainer();
+		const block = new AppendBlock(["one", "two"], ["one"]);
+		transcript.addChild(block);
+
+		// Offered: the stable row is mid-write to native scrollback.
+		const append = transcript.peekFinalizedBatch(80, 0)!;
+		expect(append.rows).toEqual(["one"]);
+		transcript.removeChild(block);
+		expect(transcript.children).toHaveLength(1);
+		expect(transcript.children[0]).toBe(block);
+		expect(transcript.blockStates()).toEqual(["active"]);
+
+		// Emitted: the row is in scrollback, so the block can no longer be retracted.
+		transcript.acknowledgeFinalizedBatch(append.id);
+		expect(transcript.emittedStableRows()).toEqual([1]);
+		transcript.removeChild(block);
+		expect(transcript.children).toHaveLength(1);
+		expect(transcript.children[0]).toBe(block);
+		expect(transcript.blockStates()).toEqual(["active"]);
 	});
 
 	it("replays committed history without rewinding lifecycle state", () => {
@@ -846,7 +1084,11 @@ describe("TranscriptContainer", () => {
 		expect(transcript.blockStates()).toEqual(["committed", "active"]);
 
 		active.finalize(["T0", "T1", "T2", "T3"]);
-		const second = transcript.peekFinalizedBatch(80, 3);
+		// Settlement does not evict a tail that still fits. Graceful flush owns
+		// the remaining suffix, with the same logical prefix excluded.
+		expect(transcript.peekFinalizedBatch(80, 3)).toBeUndefined();
+		expect(transcript.renderViewport(80, 3)).toEqual(["T1", "T2", "T3"]);
+		const second = transcript.peekFlushBatch(80);
 		expect(second?.rows).toEqual(["T1", "T2", "T3", ""]);
 
 		const tape = [...first.rows, ...(second?.rows ?? [])];
@@ -872,7 +1114,9 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderViewport(40, 10)).toEqual(["tail"]);
 
 		active.finalize();
-		expect(transcript.peekFinalizedBatch(40, 10)?.rows).toEqual(["tail", ""]);
+		expect(transcript.peekFinalizedBatch(40, 10)).toBeUndefined();
+		expect(transcript.renderViewport(40, 10)).toEqual(["tail"]);
+		expect(transcript.peekFlushBatch(40)?.rows).toEqual(["tail", ""]);
 	});
 
 	it("does not reuse a visual snapshot row count after width reflow", () => {
@@ -937,6 +1181,31 @@ describe("TranscriptContainer", () => {
 		if (!snapshot) throw new Error("expected unique active overflow snapshot");
 		transcript.acknowledgeFinalizedBatch(snapshot.id);
 		expect(transcript.renderViewport(80, 1)).toEqual(["P2"]);
+	});
+
+	it("keeps a visual seam when semantic rows publish after the first overflow snapshot", () => {
+		const transcript = new TranscriptContainer();
+		const active = new AppendBlock(["P0", "P1", "P2", "tail"], []);
+		transcript.addChild(active);
+
+		const first = transcript.peekFinalizedBatch(80, 2);
+		if (!first) throw new Error("expected initial visual snapshot");
+		expect(first.rows).toEqual(["P0", "P1"]);
+		transcript.acknowledgeFinalizedBatch(first.id);
+
+		active.publish(["P0", "P1", "P2"]);
+		const second = transcript.peekFinalizedBatch(80, 1);
+		if (!second) throw new Error("expected further visual retirement");
+		expect(second.rows).toEqual(["P2"]);
+		transcript.acknowledgeFinalizedBatch(second.id);
+		expect(transcript.renderViewport(80, 10)).toEqual(["tail"]);
+
+		active.finalize(["P0", "P1", "P2", "tail"]);
+		const final = transcript.peekFlushBatch(80);
+		if (!final) throw new Error("expected finalized suffix");
+		expect([...first.rows, ...second.rows, ...final.rows]).toEqual(["P0", "P1", "P2", "tail", ""]);
+		transcript.acknowledgeFinalizedBatch(final.id);
+		expect(transcript.peekFlushBatch(80)).toBeUndefined();
 	});
 
 	it("snapshots an overflowing tool past a transparent active gate without expanding at the next boundary", () => {
@@ -1149,5 +1418,83 @@ describe("TranscriptContainer viewport click spans", () => {
 		transcript.renderViewport(80, 10, frame);
 		transcript.clear();
 		expect(transcript.getLastViewportSpans()).toEqual([]);
+	});
+});
+
+describe("TranscriptContainer insertChildAt", () => {
+	beforeAll(async () => {
+		await initTheme(false);
+	});
+
+	it("renders a tail insertion without scanning committed history", () => {
+		const transcript = new TranscriptContainer();
+		const history = Array.from({ length: 64 }, (_, index) => new Block([`history ${index}`], true));
+		for (const block of history) transcript.addChild(block);
+		const committed = transcript.peekFlushBatch(80);
+		if (!committed) throw new Error("Expected history batch");
+		transcript.acknowledgeFinalizedBatch(committed.id);
+		transcript.addChild(new Block(["anchor"], false));
+		expect(transcript.renderViewport(80, 10, frame)).toEqual(["anchor"]);
+
+		let historyReads = 0;
+		for (const [index, block] of history.entries()) {
+			Object.defineProperty(transcript.children, index, {
+				get: () => {
+					historyReads++;
+					return block;
+				},
+				configurable: true,
+			});
+		}
+
+		transcript.insertChildAt(new Block(["inserted"], false), transcript.children.length);
+
+		expect(transcript.renderViewport(80, 10, frame)).toEqual(["anchor", "", "inserted"]);
+		expect(historyReads).toBe(0);
+	});
+
+	it("renders a middle insertion without scanning committed history", () => {
+		const transcript = new TranscriptContainer();
+		const history = Array.from({ length: 64 }, (_, index) => new Block([`history ${index}`], true));
+		for (const block of history) transcript.addChild(block);
+		const committed = transcript.peekFlushBatch(80);
+		if (!committed) throw new Error("Expected history batch");
+		transcript.acknowledgeFinalizedBatch(committed.id);
+		transcript.addChild(new Block(["anchor"], false));
+		transcript.addChild(new Block(["tail"], false));
+		expect(transcript.renderViewport(80, 10, frame)).toEqual(["anchor", "", "tail"]);
+
+		let historyReads = 0;
+		for (const [index, block] of history.entries()) {
+			Object.defineProperty(transcript.children, index, {
+				get: () => {
+					historyReads++;
+					return block;
+				},
+				configurable: true,
+			});
+		}
+
+		transcript.insertChildAt(new Block(["inserted"], false), transcript.children.length - 1);
+
+		expect(transcript.renderViewport(80, 10, frame)).toEqual(["anchor", "", "inserted", "", "tail"]);
+		expect(historyReads).toBe(0);
+	});
+
+	it("keeps inserted blocks ordered and removable across repeated inserts", () => {
+		const transcript = new TranscriptContainer();
+		const first = new Block(["first"], false);
+		const last = new Block(["last"], false);
+		transcript.addChild(first);
+		transcript.addChild(last);
+
+		const insertedA = new Block(["inserted-a"], false);
+		const insertedB = new Block(["inserted-b"], false);
+		transcript.insertChildAt(insertedA, 1);
+		transcript.insertChildAt(insertedB, 1);
+
+		expect(transcript.children).toEqual([first, insertedB, insertedA, last]);
+		expect(transcript.canRemoveBlock(insertedA)).toBe(true);
+		expect(transcript.canRemoveBlock(insertedB)).toBe(true);
 	});
 });

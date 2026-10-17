@@ -8,6 +8,7 @@ import { styledSpans } from "../native/spans";
 import { code, md, span } from "../native/describe";
 import type { NativeNode } from "../native/node";
 import { getMarkdownTheme, highlightCode, type Theme } from "../theme/theme";
+import { wrapPrefixedLine } from "./hanging-wrap";
 import {
 	describeOutputBlock,
 	type NativeOutputBlockSection,
@@ -186,20 +187,23 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 		? resolveLineNumberWidth(visualHead ? 0 : startIndex, visualHead ? rawCodeLines.length : endIndex)
 		: 0;
 
-	const rawLineWithGutter = (lineIndex: number): string => {
-		if (lineNumberWidth === 0) return rawCodeLines[lineIndex] ?? "";
+	const rawGutterPrefix = (lineIndex: number): string => {
 		const lineNum = lineNumberAt(lineIndex);
 		const gutter =
 			lineNum !== null && lineNum !== undefined
 				? String(lineNum).padStart(lineNumberWidth, " ")
 				: " ".repeat(lineNumberWidth);
-		return `${gutter} ${rawCodeLines[lineIndex] ?? ""}`;
+		return `${gutter} `;
 	};
 	const contentWidth = outputBlockContentWidth(width);
 	const measureVisualRows = (from: number, to: number): number => {
 		let rows = 0;
 		for (let i = from; i < to; i++) {
-			rows += wrapTextWithAnsi(rawLineWithGutter(i).trimEnd(), contentWidth).length;
+			const line = (rawCodeLines[i] ?? "").trimEnd();
+			rows +=
+				lineNumberWidth > 0
+					? wrapPrefixedLine(rawGutterPrefix(i), " ".repeat(lineNumberWidth + 1), line, contentWidth).length
+					: wrapTextWithAnsi(line, contentWidth).length;
 		}
 		return rows;
 	};
@@ -222,7 +226,7 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 
 	const visibleCode = rawCodeLines.slice(startIndex, endIndex).join("\n");
 	const codeLines = endIndex > startIndex ? highlightCode(visibleCode, language) : [];
-
+	const numberedCodeLines: string[] = [];
 	if (lineNumberWidth > 0 && visibleLineNumbers) {
 		for (let i = 0; i < codeLines.length; i++) {
 			const lineNum = visibleLineNumbers[i];
@@ -230,20 +234,24 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 				lineNum !== null && lineNum !== undefined
 					? String(lineNum).padStart(lineNumberWidth, " ")
 					: " ".repeat(lineNumberWidth);
-			codeLines[i] = theme.fg("dim", `${gutter} `) + codeLines[i];
+			const prefix = theme.fg("dim", `${gutter} `);
+			numberedCodeLines.push(
+				...wrapPrefixedLine(prefix, " ".repeat(lineNumberWidth + 1), codeLines[i]!, outputBlockContentWidth(width)),
+			);
 		}
 	}
 
+	const displayCodeLines = lineNumberWidth > 0 ? numberedCodeLines : codeLines;
 	if (!tail && !visualHead && hiddenCodeRows > 0) {
 		const hint = formatExpandHint(theme, expanded, hiddenCodeRows > 0);
 		const gutterPad = lineNumberWidth > 0 ? " ".repeat(lineNumberWidth + 1) : "";
 		const moreLine = `${formatMoreItems(hiddenCodeRows, "line")}${hint ? ` ${hint}` : ""}`;
-		codeLines.push(theme.fg("dim", gutterPad + moreLine));
+		displayCodeLines.push(theme.fg("dim", gutterPad + moreLine));
 	}
 
 	const outputLines = renderCellOutput(output, expanded, outputMaxLines, theme);
 
-	const codeSection: OutputBlockSection = { lines: codeLines };
+	const codeSection: OutputBlockSection = { lines: displayCodeLines };
 	const gutterPad = lineNumberWidth > 0 ? " ".repeat(lineNumberWidth + 1) : "";
 	if (tail) {
 		codeSection.visualWindow = createEarlierLinesTailWindow(theme, {
@@ -320,7 +328,14 @@ export function describeCodeCell(options: Omit<CodeCellOptions, "width">, theme:
 	const sections: NativeOutputBlockSection[] = [
 		{
 			key: "code",
-			body: [code(options.code ?? "", { lang: options.language, start, numbers: start !== undefined || undefined })],
+			body: [
+				code(options.code ?? "", {
+					lang: options.language,
+					start,
+					numbers: start !== undefined || undefined,
+					wrap: true,
+				}),
+			],
 		},
 	];
 	const output = describeCellOutput(options.output, expanded, outputMaxLines);

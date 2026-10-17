@@ -22,6 +22,7 @@ import type {
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { Text, type Component } from "@oh-my-pi/pi-tui";
 import { TempDir, withTimeout } from "@oh-my-pi/pi-utils";
+import { VirtualRenderScheduler } from "../../tui/test/virtual-render-scheduler";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { setLocale } from "../src/i18n";
 
@@ -52,13 +53,16 @@ describe("libkitty end-to-end", () => {
 	let authStorage: AuthStorage;
 	let session: AgentSession;
 	let mode: InteractiveMode;
+	let ownedMode: InteractiveMode | undefined;
 	let term: VirtualTerminal;
+	let resizeListenersBefore: ReturnType<typeof process.stdout.listeners>;
 
 	beforeAll(() => {
 		initTheme();
 	});
 
 	beforeEach(async () => {
+		resizeListenersBefore = process.stdout.listeners("resize");
 		setLocale("en");
 		resetSettingsForTest();
 		tempDir = TempDir.createSync("@pi-libkitty-e2e-");
@@ -75,17 +79,46 @@ describe("libkitty end-to-end", () => {
 		});
 		term = new VirtualTerminal(120, 32);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		replaceMode(composer);
 	});
 
 	afterEach(async () => {
-		mode?.stop();
+		ownedMode?.stop();
+		ownedMode = undefined;
 		await session?.dispose();
 		authStorage?.close();
 		resetSettingsForTest();
 		tempDir?.removeSync();
 		setLocale(null);
+		expect(process.stdout.listeners("resize")).toEqual(resizeListenersBefore);
 	});
+
+	function replaceMode(composer: Composer): void {
+		// The constructor owns listeners and subscriptions even before init().
+		// Release the default fixture before a case adopts a different terminal.
+		ownedMode?.stop();
+		ownedMode = undefined;
+		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		ownedMode = mode;
+	}
+
+	async function reserveTranscriptRows(
+		composer: Composer,
+		renderScheduler: VirtualRenderScheduler,
+		rows: number,
+	): Promise<void> {
+		composer.setPreferences({ quiet: true });
+		composer.setHeaderExtras([], []);
+		await renderScheduler.settle(term);
+		// A frame includes native-history slack, not just chrome. Measure the
+		// real below-transcript roots and size the terminal around them instead
+		// of adding transient padding, which intentionally cannot force retirement.
+		const belowPending = composer.rowsBelow(mode.pendingMessagesContainer);
+		if (belowPending === undefined) throw new Error("Expected the interactive chrome to be laid out");
+		const chromeRows = mode.pendingMessagesContainer.render(term.columns).length + belowPending;
+		term.resize(term.columns, chromeRows + rows);
+		await renderScheduler.advance(term, 160);
+	}
 
 	async function startLiveSteeredRun() {
 		const started = Promise.withResolvers<void>();
@@ -154,7 +187,7 @@ describe("libkitty end-to-end", () => {
 				message => message.role === "user" && JSON.stringify(message.content).includes("Change direction"),
 			),
 		).toHaveLength(1);
-		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [] });
+		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [], liveSteered: 0 });
 		expect(run.mock.calls).toHaveLength(1);
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("Redirected answer")));
 	});
@@ -177,7 +210,7 @@ describe("libkitty end-to-end", () => {
 		await withTimeout(run.aborted, 2_000, "Restoring live steering did not cancel its provider response");
 		await run.running;
 		await session.waitForIdle();
-		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [] });
+		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [], liveSteered: 0 });
 		expect(
 			session.messages.filter(
 				message => message.role === "user" && JSON.stringify(message.content).includes("Change direction"),
@@ -345,7 +378,7 @@ describe("libkitty end-to-end", () => {
 		const drafts = buffer.filter(row => row.includes("MARKER_DRAFT"));
 		if (drafts.length !== 1) dump("scroll buffer after resizes", buffer);
 		expect(drafts.length).toBe(1);
-		const welcomes = buffer.filter(row => row.includes("Welcome back!"));
+		const welcomes = buffer.filter(row => row.includes("vtest"));
 		expect(welcomes.length).toBe(1);
 	});
 
@@ -368,7 +401,7 @@ describe("libkitty end-to-end", () => {
 		const editors = viewport.filter(row => row.includes("MARKER_DRAFT"));
 		if (editors.length !== 1) dump("viewport after overflowing shrink", viewport);
 		expect(editors.length).toBe(1);
-		expect(viewport.filter(row => row.includes("Welcome back!")).length).toBeLessThanOrEqual(1);
+		expect(viewport.filter(row => row.includes("vtest")).length).toBeLessThanOrEqual(1);
 		const buffer = plainRows(term.getScrollBuffer());
 		expect(buffer.filter(row => row.includes("MARKER_DRAFT")).length).toBe(1);
 	});
@@ -380,6 +413,7 @@ describe("libkitty end-to-end", () => {
 		term.sendInput("MARKER_DRAFT");
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("MARKER_DRAFT")));
 
+		mode.ui.setResizeScrollback("rebuild");
 		// Drag storm: several unsettled steps inside one settle window.
 		term.resize(112, 30);
 		await Bun.sleep(30);
@@ -392,45 +426,50 @@ describe("libkitty end-to-end", () => {
 		term.resize(96, 18);
 		await Bun.sleep(300);
 		await term.waitForRender();
-		term.resize(120, 32);
-		await Bun.sleep(300);
-		await term.waitForRender();
 
-		const buffer = plainRows(term.getScrollBuffer());
-		const drafts = buffer.filter(row => row.includes("MARKER_DRAFT"));
-		if (drafts.length !== 1) dump("scroll buffer after drag storm", buffer);
-		expect(drafts.length).toBe(1);
-		const viewport = plainRows(term.getViewport());
-		expect(viewport.filter(row => row.includes("Welcome back!")).length).toBeLessThanOrEqual(1);
+		// Observe only paints after the final resize begins: the initial frame
+		// used this same size and must not satisfy the completion condition.
+		let rebuiltSize: string | undefined;
+		const removePaintListener = mode.ui.addPaintListener(paint => {
+			if (paint.reset && !paint.alt) rebuiltSize = `${paint.columns}x${paint.rows}`;
+		});
+		try {
+			term.resize(120, 32);
+			await term.waitForRender(() => rebuiltSize === "120x32");
+			// The polling helper times out without throwing. Require the actual
+			// normal-buffer replay before checking for duplicate transcript rows.
+			expect(rebuiltSize).toBe("120x32");
 
-		// The editor is still live: typing paints into the one surviving editor.
-		term.sendInput("X");
-		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("MARKER_DRAFTX")));
-		expect(plainRows(term.getViewport()).filter(row => row.includes("MARKER_DRAFTX")).length).toBe(1);
+			const buffer = plainRows(term.getScrollBuffer());
+			const drafts = buffer.filter(row => row.includes("MARKER_DRAFT"));
+			if (drafts.length !== 1) dump("scroll buffer after drag storm", buffer);
+			expect(drafts.length).toBe(1);
+			const viewport = plainRows(term.getViewport());
+			expect(viewport.filter(row => row.includes("vtest")).length).toBeLessThanOrEqual(1);
+
+			// The editor is still live: typing paints into the one surviving editor.
+			term.sendInput("X");
+			await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("MARKER_DRAFTX")));
+			expect(plainRows(term.getViewport()).filter(row => row.includes("MARKER_DRAFTX")).length).toBe(1);
+		} finally {
+			removePaintListener();
+		}
 	});
 
 	it("keeps an active block's provider-settled prefix exact across native history", async () => {
 		const width = 120;
 		term = new VirtualTerminal(width, 12);
-		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		const renderScheduler = new VirtualRenderScheduler();
+		const composer = new Composer({ terminal: term, tuiOptions: { renderScheduler } });
+		replaceMode(composer);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
-		await term.waitForRender();
+		await renderScheduler.settle(term);
 
 		// Keep the real InteractiveMode layout, but reserve exactly three rows
 		// for transcript content. The active four-row block must therefore move
 		// its declared T0 prefix to native history instead of merely clipping it.
-		composer.setPreferences({ quiet: true });
-		composer.setHeaderExtras([], []);
-		const chromeRows = composer.renderFrame({ columns: width, rows: 1_000 }).viewport.length;
-		const paddingRows = term.rows - chromeRows - 3;
-		expect(paddingRows).toBeGreaterThanOrEqual(0);
-		const paddingRender = Array.from({ length: paddingRows }, () => "");
-		const padding: Component = {
-			render: () => paddingRender,
-		};
-		mode.pendingMessagesContainer.addChild(padding);
+		await reserveTranscriptRows(composer, renderScheduler, 3);
 
 		const markers = [
 			"TRANSCRIPT_SEAM_S",
@@ -463,7 +502,7 @@ describe("libkitty end-to-end", () => {
 		mode.chatContainer.addChild(activeBlock);
 
 		// History transport is synchronous; force enough discrete frames to
-		// acknowledge the empty header, S, and the partial T0 offer.
+		// acknowledge S and the partial T0 offer before reading native history.
 		for (let frame = 0; frame < 4; frame++) mode.ui.renderNow();
 		await term.flush();
 		const markerTape = () =>
@@ -471,6 +510,7 @@ describe("libkitty end-to-end", () => {
 				.filter(row => markers.some(marker => row.includes(marker)))
 				.map(row => markers.find(marker => row.includes(marker))!);
 		expect(markerTape()).toEqual([...markers]);
+		expect(plainRows(term.getScrollBuffer()).slice(0, term.getBufferPosition().baseY)).toContain(T0);
 
 		// Final retirement must append only the uncommitted suffix. T0 is already
 		// immutable native history and must neither disappear nor be replayed.
@@ -483,7 +523,7 @@ describe("libkitty end-to-end", () => {
 	it("keeps every line of an overflowing multiline tool call reachable", async () => {
 		term = new VirtualTerminal(100, 14);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		replaceMode(composer);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
@@ -530,7 +570,7 @@ describe("libkitty end-to-end", () => {
 	it("does not append the committed transcript again when compaction adds a summary", async () => {
 		term = new VirtualTerminal(80, 12);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		replaceMode(composer);
 		session.settings.set("display.collapseCompacted", false);
 		mode.toolOutputExpanded = true;
 
@@ -627,7 +667,7 @@ describe("libkitty end-to-end", () => {
 		term = new VirtualTerminal(80, 12);
 		session.settings.set("display.collapseCompletedRuns", true);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		replaceMode(composer);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
@@ -683,20 +723,13 @@ describe("libkitty end-to-end", () => {
 	it("keeps a completed tool fully expanded across the next-user boundary", async () => {
 		const width = 120;
 		term = new VirtualTerminal(width, 12);
-		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		const renderScheduler = new VirtualRenderScheduler();
+		const composer = new Composer({ terminal: term, tuiOptions: { renderScheduler } });
+		replaceMode(composer);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
-		await term.waitForRender();
-
-		composer.setPreferences({ quiet: true });
-		composer.setHeaderExtras([], []);
-		const chromeRows = composer.renderFrame({ columns: width, rows: 1_000 }).viewport.length;
-		const paddingRows = term.rows - chromeRows - 5;
-		expect(paddingRows).toBeGreaterThanOrEqual(0);
-		mode.pendingMessagesContainer.addChild({
-			render: () => Array.from({ length: paddingRows }, () => ""),
-		});
+		await renderScheduler.settle(term);
+		await reserveTranscriptRows(composer, renderScheduler, 5);
 
 		const assistantRows = ["BOUNDARY-A1", "BOUNDARY-A2", "BOUNDARY-A3", "BOUNDARY-A4"] as const;
 		const markers = ["FULL-TOOL-T1", "FULL-TOOL-T2", "FULL-TOOL-T3"] as const;
@@ -768,7 +801,7 @@ describe("libkitty end-to-end", () => {
 		const width = 80;
 		term = new VirtualTerminal(width, 10);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		replaceMode(composer);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
@@ -828,7 +861,7 @@ describe("libkitty end-to-end", () => {
 		const width = 80;
 		term = new VirtualTerminal(width, 12);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		replaceMode(composer);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
@@ -912,7 +945,7 @@ describe("libkitty end-to-end", () => {
 		const width = 80;
 		term = new VirtualTerminal(width, 10);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		replaceMode(composer);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
@@ -992,7 +1025,7 @@ describe("libkitty end-to-end", () => {
 		// repaint leaves retired rows untouched).
 		term = new VirtualTerminal(120, 10);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		replaceMode(composer);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
@@ -1033,7 +1066,7 @@ describe("libkitty end-to-end", () => {
 	it("collapses tool output that expansion retired to native scrollback", async () => {
 		term = new VirtualTerminal(120, 32);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		replaceMode(composer);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
@@ -1076,7 +1109,7 @@ describe("libkitty end-to-end", () => {
 	it("preserves the advisor handoff order when Alt+O rebuilds retired history", async () => {
 		term = new VirtualTerminal(120, 12);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		replaceMode(composer);
 		session.settings.set("display.collapseCompletedRuns", true);
 
 		const usage: Usage = {
@@ -1279,7 +1312,7 @@ describe("libkitty end-to-end", () => {
 
 		term = new VirtualTerminal(120, 10);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		replaceMode(composer);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
@@ -1349,7 +1382,7 @@ describe("libkitty end-to-end", () => {
 		Settings.instance.set("display.foldToolRows", true);
 		term = new VirtualTerminal(120, 12);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		replaceMode(composer);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
@@ -1413,7 +1446,7 @@ describe("libkitty end-to-end", () => {
 		const secondMarker = "SECOND_TOOL_MARKER";
 		term = new VirtualTerminal(120, 12);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		replaceMode(composer);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
@@ -1459,5 +1492,89 @@ describe("libkitty end-to-end", () => {
 		expect(buffer[bashRow + 1]).toContain(secondMarker);
 		expect(buffer[bashRow + 2]).toBe("");
 		expect(buffer[bashRow + 3]).toContain("assistant reply");
+	});
+
+	it("replaces retired history after /shake without obscuring a long reply beside the Todo HUD", async () => {
+		const usage: Usage = {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const answer = Array.from({ length: 35 }, (_, index) => `Answer marker ${index + 1}`);
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "SHAKE_RETIRED_REASONING" },
+				{ type: "text", text: answer.join("\n") },
+			],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet",
+			usage,
+			stopReason: "stop",
+			timestamp: 1,
+		};
+		term = new VirtualTerminal(120, 16);
+		replaceMode(new Composer({ terminal: term }));
+		session.sessionManager.appendMessage({ role: "user", content: "Show the answer", timestamp: 0 });
+		session.sessionManager.appendMessage(message);
+		await mode.init({ suppressWelcomeIntro: true });
+		mode.noteDisplayableThinkingContent(message);
+		mode.setTodos([{ content: "Review answer", status: "in_progress" }]);
+		await mode.renderInitialMessages({ clearTerminalHistory: true });
+		await term.waitForRender(() =>
+			plainRows(term.getScrollBuffer()).some(row => row.includes("SHAKE_RETIRED_REASONING")),
+		);
+
+		const buffer = () => plainRows(term.getScrollBuffer());
+		const answerAndHudVisible = () => {
+			const rows = buffer();
+			return (
+				rows.some(row => row.trim() === "Answer marker 1") &&
+				rows.some(row => row.trim() === "Answer marker 35") &&
+				plainRows(term.getViewport()).some(row => row.includes("Review answer"))
+			);
+		};
+		expect(buffer().some(row => row.includes("SHAKE_RETIRED_REASONING"))).toBe(true);
+		let replacementPainted = false;
+		const removePaintListener = mode.ui.addPaintListener(paint => {
+			if (paint.reset && !paint.alt) replacementPainted = true;
+		});
+		try {
+			await mode.handleShakeCommand("thinking");
+			// Replacing the tape replays its header before the rebuilt transcript
+			// retires. Await that follow-up paint, not just one render interval.
+			await term.waitForRender(() => replacementPainted && answerAndHudVisible());
+			expect(replacementPainted).toBe(true);
+
+			const rows = buffer();
+			expect(rows.some(row => row.includes("SHAKE_RETIRED_REASONING"))).toBe(false);
+			expect(rows.filter(row => row.trim() === "Answer marker 1")).toHaveLength(1);
+			expect(rows.filter(row => row.trim() === "Answer marker 35")).toHaveLength(1);
+			expect(plainRows(term.getViewport()).some(row => row.includes("Review answer"))).toBe(true);
+
+			for (const errorMessage of [undefined, "Auto-shake only partially reclaimed context"]) {
+				replacementPainted = false;
+				await mode.eventController.handleEvent({
+					type: "auto_compaction_end",
+					action: "shake",
+					result: undefined,
+					aborted: false,
+					willRetry: true,
+					skipped: false,
+					...(errorMessage ? { errorMessage } : {}),
+				});
+				await term.waitForRender(() => replacementPainted && answerAndHudVisible());
+				expect(replacementPainted).toBe(true);
+				expect(buffer().filter(row => row.trim() === "Answer marker 1")).toHaveLength(1);
+				expect(buffer().filter(row => row.trim() === "Answer marker 35")).toHaveLength(1);
+				expect(plainRows(term.getViewport()).some(row => row.includes("Review answer"))).toBe(true);
+			}
+		} finally {
+			removePaintListener();
+		}
 	});
 });

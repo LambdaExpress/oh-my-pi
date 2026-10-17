@@ -1008,7 +1008,7 @@ export class Sidebar {
 	 * text field being edited. False when not the sidebar's event.
 	 */
 	handleNativeEvent(event: NativeUiEvent): boolean {
-		if (event.type === "edit") {
+		if (event.type === "edit" || event.type === "undo") {
 			const editing = this.editing ? this.selected?.kind : undefined;
 			const field =
 				editing === "summary"
@@ -1018,7 +1018,7 @@ export class Sidebar {
 						: editing === "description"
 							? this.description
 							: undefined;
-			field?.applyHostEdit(event);
+			field?.handleNativeEvent(event);
 			return field !== undefined;
 		}
 		if (event.type === "select" || event.type === "activate") {
@@ -1314,7 +1314,7 @@ export class Sidebar {
 	#describeHead(selectedKey: string | undefined): NativeChild[] {
 		const head = this.#model.headCommit;
 		if (!head) {
-			return [keyed(text([span("No commits yet", "muted")], { role: "omp.app.git.empty" }), "empty")];
+			return [keyed(text([span(t("No commits yet"), "muted")], { role: "omp.app.git.empty" }), "empty")];
 		}
 		const when = head.authorDate ? new Date(head.authorDate) : null;
 		const initials = head.authorName
@@ -1342,10 +1342,10 @@ export class Sidebar {
 				),
 				node("kv", {
 					items: compact([
-						when && !Number.isNaN(when.getTime()) ? { k: "authored", v: when.toLocaleString() } : undefined,
+						when && !Number.isNaN(when.getTime()) ? { k: t("authored"), v: when.toLocaleString() } : undefined,
 						head.parents.length > 0
 							? {
-									k: head.parents.length === 1 ? "parent" : "parents",
+									k: t(head.parents.length === 1 ? "parent" : "parents"),
 									v: [span(head.parents.map(sha => sha.slice(0, 8)).join(" "), "mono accent")],
 								}
 							: undefined,
@@ -1357,7 +1357,7 @@ export class Sidebar {
 		);
 		const out: NativeChild[] = [keyed(commit, "head")];
 		if (!head.filesLoaded) {
-			out.push(keyed(text([span("Loading changed files…", "muted")]), "loading"));
+			out.push(keyed(text([span(t(" Loading changed files…").trim(), "muted")]), "loading"));
 			return out;
 		}
 		const additions = head.files.reduce((sum, file) => sum + (file.additions ?? 0), 0);
@@ -1367,7 +1367,10 @@ export class Sidebar {
 				row(
 					[
 						text([
-							span(`${head.files.length} file${head.files.length === 1 ? "" : "s"}`, "strong"),
+							span(
+								t("{count} file{s}", { count: head.files.length, s: head.files.length === 1 ? "" : "s" }),
+								"strong",
+							),
 							span("  "),
 							span(`+${additions}`, "ins num"),
 							span(" "),
@@ -1678,6 +1681,11 @@ export class Sidebar {
 				text: ` ${theme.fg("dim", t("parent:"))} ${theme.fg("accent", head.parents.map(sha => sha.slice(0, 8)).join(" "))}`,
 			});
 		}
+		// This view only appears when there is nothing to stage or discard, so say so
+		// rather than letting the file list read as pending work.
+		rows.push({
+			text: theme.fg("success", t(" Working tree clean — showing committed {sha}", { sha: head.shortSha })),
+		});
 		rows.push({ text: theme.fg("borderMuted", "─".repeat(Math.max(0, width))) });
 		if (!head.filesLoaded) {
 			rows.push({ text: theme.fg("dim", t(" Loading changed files…")) });
@@ -1686,8 +1694,9 @@ export class Sidebar {
 
 		const additions = head.files.reduce((sum, file) => sum + (file.additions ?? 0), 0);
 		const deletions = head.files.reduce((sum, file) => sum + (file.deletions ?? 0), 0);
+		const count = t("{count} file{s}", { count: head.files.length, s: head.files.length === 1 ? "" : "s" });
 		rows.push({
-			text: ` ${theme.bold(t("{count} modified", { count: head.files.length }))}  ${theme.fg("success", `+${additions}`)} ${theme.fg("error", `−${deletions}`)} ${theme.fg("dim", `· ${head.shortSha}`)}`,
+			text: ` ${theme.bold(count)} ${theme.fg("dim", t("in {sha}", { sha: head.shortSha }))}  ${theme.fg("success", `+${additions}`)} ${theme.fg("error", `−${deletions}`)}`,
 		});
 		rows.push(this.#viewToggleRow(width));
 		rows.push(...this.#entryRows(head.files, "commit"));
@@ -1710,7 +1719,12 @@ export class Sidebar {
 					png,
 					"image/png",
 					{ fallbackColor: text => theme.fg("dim", text) },
-					{ maxHeightCells: 3, budget: this.#imageBudget, imageKey: `git-avatar:${email}` },
+					{
+						maxHeightCells: 3,
+						budget: this.#imageBudget,
+						imageKey: `git-avatar:${email}`,
+						requestRender: this.#requestRender,
+					},
 				),
 			};
 		}

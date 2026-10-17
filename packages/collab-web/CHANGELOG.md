@@ -17,6 +17,20 @@
 - Completed turns now collapse intermediate thinking, tool calls, and progress text behind one expandable process summary while keeping the user prompt and final answer visible; abnormal runs stay expanded. Added motion-token-based transitions for transcript rows, process disclosure, session views, sidebars, Composer cards, model/thinking menus, and agent rails with reduced-motion support.
 - Added working keyboard shortcuts for new session, open project, project-sidebar toggle, Composer focus, and settings, with a reference panel in Settings. Settings now close when the desktop backdrop is clicked while preserving clicks inside the dialog.
 - Added Tauri-only custom window chrome with a unified draggable title bar and minimize, maximize/restore, and close-to-tray controls; ordinary browser sessions remain frameless.
+## [18.8.0] - 2026-10-07
+
+### Changed
+
+- Improved streaming transcript performance by reducing unnecessary guest updates and Markdown re-rendering, including faster rendering for transcripts with many unclosed LaTeX delimiters.
+- Stopped tracking finished or no-longer-listed subagents, reducing unnecessary polling and memory usage in the agent drawer.
+
+## [18.4.10] - 2026-10-02
+
+### Fixed
+
+- Fixed long transcript paragraphs slowing Markdown rendering: a 44 KB paragraph with no blank line now parses in about 3 ms instead of 100 ms ([#13961](https://github.com/can1357/oh-my-pi/pull/13961) by [@sjawhar](https://github.com/sjawhar)).
+- Fixed transcript paragraphs with many unclosed `$`, `\(` or `\[`, slowing Markdown rendering for seconds ([#13961](https://github.com/can1357/oh-my-pi/pull/13961) by [@sjawhar](https://github.com/sjawhar)).
+
 ## [18.4.1] - 2026-09-28
 
 ### Fixed

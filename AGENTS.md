@@ -97,6 +97,7 @@ cli.ts → cli-commands.ts / commands/ → main.ts::runRootCommand
 ### Prompts 与 Worker scripts
 
 - Prompts MUST 位于静态 `.md` 文件，动态内容使用 Handlebars，以 `import content from "./prompt.md" with { type: "text" }` 导入；NEVER 在代码中拼接 prompt 或运行时读取文件代替导入。
+- Judge 问题 MUST 按功能存入 `src/prompts/judge/<feature>.json`，以问题 ID 映射 `{ instructions, criteria? }`；使用 `@oh-my-pi/pi-ai` 的 `judgeQuestions(file)` 加载，以 `renderQuestion(question, context)` 填充 Handlebars。`criteria` 为级别列表时评分，省略或仅含 `true`/`false` 键时判断是非，其余标签表示选择（调用方提供标签时使用 `{}`）；选择标签与答案类型来自 JSON 键。
 - CLI worker MUST 经 `workerHostEntry()` 重新进入 `cli.ts`，使用 `__omp_worker_*` selector；SDK、测试和独立包入口 MUST 保留 direct-module fallback。新增 worker MUST 更新 CLI dispatcher，并在异步导入前同步安装 inbox，避免丢失首条消息。
 
 ```ts

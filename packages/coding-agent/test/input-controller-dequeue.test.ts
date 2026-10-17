@@ -1,19 +1,6 @@
 /**
- * Regression (#11402): the Alt+Up dequeue key must pop only the single
- * most-recently-queued message back into the composer, leaving the rest queued.
- *
- * Before the fix `handleDequeue()` called `restoreQueuedMessagesToEditor()`,
- * which drains the entire queue via `clearQueue()` — pressing Alt+Up with two
- * messages queued dropped both into the editor and destroyed any composer draft
- * ordering. The session already exposed `popLastQueuedMessage()` ("restore
- * messages to editor one at a time") but nothing wired it to the key.
- *
- * Contracts defended here:
- *   - one Alt+Up restores exactly the last queued message and leaves the others
- *     in the queue (does not call `clearQueue`);
- *   - the restored text is merged ahead of the existing draft;
- *   - when the agent queues are empty, the compaction queue is the fallback and
- *     only its last entry is popped.
+ * Alt+Up restores one queued message into the current composer. A focused view
+ * must leave the main session's steering and compaction queues untouched.
  */
 import { beforeAll, describe, expect, mock, test } from "bun:test";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
@@ -25,10 +12,16 @@ beforeAll(() => {
 	initTheme();
 });
 
-function makeCtx(
-	opts: { queue?: RestoredQueuedMessage[]; compaction?: CompactionQueuedMessage[]; draft?: string } = {},
-) {
+type QueueContextOptions = {
+	queue?: RestoredQueuedMessage[];
+	focusedQueue?: RestoredQueuedMessage[];
+	compaction?: CompactionQueuedMessage[];
+	draft?: string;
+};
+
+function makeCtx(opts: QueueContextOptions = {}) {
 	const queue = [...(opts.queue ?? [])];
+	const focusedQueue = [...(opts.focusedQueue ?? [])];
 	let editorText = opts.draft ?? "";
 
 	// Faithful stub of AgentSession.popLastQueuedMessage: removes and returns the
@@ -39,9 +32,12 @@ function makeCtx(
 		popLastQueuedMessage: () => queue.pop(),
 		clearQueue,
 	};
+	const viewSession = opts.focusedQueue ? { popLastQueuedMessage: () => focusedQueue.pop() } : session;
 
 	const ctx = {
 		session,
+		viewSession,
+		focusedAgentId: opts.focusedQueue ? "worker" : undefined,
 		compactionQueuedMessages: [...(opts.compaction ?? [])],
 		editor: {
 			setCollapsedText: (t: string) => {
@@ -58,7 +54,7 @@ function makeCtx(
 		showError: () => {},
 	} as unknown as InteractiveModeContext;
 
-	return { ctx, session, queue, clearQueue, getText: () => editorText };
+	return { ctx, session, queue, focusedQueue, clearQueue, getText: () => editorText };
 }
 
 describe("InputController.handleDequeue (Alt+Up)", () => {
@@ -72,6 +68,34 @@ describe("InputController.handleDequeue (Alt+Up)", () => {
 		expect(getText()).toBe("second message");
 		expect(queue.map(m => m.text)).toEqual(["first message"]);
 		expect(clearQueue).not.toHaveBeenCalled();
+	});
+
+	test("recalls the focused subagent's last steering message without touching main", () => {
+		const { ctx, queue, focusedQueue, getText } = makeCtx({
+			queue: [{ text: "main steering" }],
+			focusedQueue: [{ text: "subagent first" }, { text: "subagent last" }],
+		});
+
+		new InputController(ctx).handleDequeue();
+
+		expect(getText()).toBe("subagent last");
+		expect(focusedQueue.map(m => m.text)).toEqual(["subagent first"]);
+		expect(queue.map(m => m.text)).toEqual(["main steering"]);
+	});
+
+	test("does not restore main compaction messages while focused on an empty subagent queue", () => {
+		const { ctx, queue, getText } = makeCtx({
+			queue: [{ text: "main steering" }],
+			focusedQueue: [],
+			compaction: [{ text: "main compaction", mode: "steer" }],
+			draft: "keep draft",
+		});
+
+		new InputController(ctx).handleDequeue();
+
+		expect(getText()).toBe("keep draft");
+		expect(queue.map(m => m.text)).toEqual(["main steering"]);
+		expect(ctx.compactionQueuedMessages).toEqual([{ text: "main compaction", mode: "steer" }]);
 	});
 
 	test("a second Alt+Up pops the next-last message", () => {

@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
 import { $env, isEnoent } from "@oh-my-pi/pi-utils";
 import { probeCdpStatus } from "./attach";
+import { discardOwnedProfileSessions, seedOwnedProfilePreferences } from "./launch";
 import { SHARED_BROWSER_WORKER_CONFIG_ENV, type SharedBrowserWorkerConfig } from "./shared-worker-protocol";
 
 const STARTUP_TIMEOUT_MS = 25_000;
@@ -137,6 +138,10 @@ export async function runSharedBrowserWorker(): Promise<void> {
 	await fs.mkdir(config.userDataDir, { recursive: true });
 	await terminateProfileBrowsers(config);
 	await removeStaleDevToolsPort(config.userDataDir);
+	// A stale Chromium can flush its in-memory profile as it exits. Prepare the
+	// profile after terminating it, not just before the broker starts this worker.
+	await seedOwnedProfilePreferences(config.userDataDir);
+	await discardOwnedProfileSessions(config.userDataDir);
 
 	const browser = Bun.spawn([config.executablePath, ...config.args], {
 		cwd: config.cwd,

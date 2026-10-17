@@ -2,7 +2,7 @@ import { Container } from "../tui";
 import { Spacer } from "../components/spacer";
 import { TruncatedText } from "../components/truncated-text";
 import { t } from "../i18n";
-import { formatKeyHint } from "../key-hint-format";
+import { formatKeyHint, formatTooltipKey } from "../key-hint-format";
 import type { KeyId } from "../keys";
 import { kbd, node, text } from "../native/describe";
 import type { NativeNode, NativeUiEvent } from "../native/node";
@@ -19,7 +19,7 @@ export interface QueuedMessageGroup {
  * Messages queued while the agent works, above the editor. ANSI: a heading
  * per group, numbered dim rows and the dequeue hint. Natively (§8.1): a
  * stack of pills, each `corner-down-right` · the text · `⌥↑ Edit`, the total
- * count in the first pill when more than one waits; the edit control sends
+ * (`N queued`, not a position) in the first pill when more than one waits; the edit control sends
  * `queue.edit`, answered like the dequeue key.
  */
 export class QueuedMessagesBand extends Container {
@@ -42,6 +42,7 @@ export class QueuedMessagesBand extends Container {
 		}
 		const editKey = formatKeyHint(dequeueKey);
 		this.addChild(new TruncatedText(theme.fg("dim", `  ${theme.tree.hook} ${editKey} ${t("to edit")}`), 1, 0));
+		const editTitle = `${t("Edit")}  ${formatTooltipKey(dequeueKey)}`;
 
 		const count = groups.reduce((sum, group) => sum + group.messages.length, 0);
 		const pills: NativeNode[] = [];
@@ -62,7 +63,14 @@ export class QueuedMessagesBand extends Container {
 					),
 				];
 				if (pills.length === 0 && count > 1) {
-					children.push(node("badge", { text: `${count}`, role: "omp.queue.count" }, undefined, "count"));
+					children.push(
+						node(
+							"badge",
+							{ text: `${count} queued`, title: `${count} messages queued`, role: "omp.queue.count" },
+							undefined,
+							"count",
+						),
+					);
 				}
 				children.push(
 					node(
@@ -71,7 +79,7 @@ export class QueuedMessagesBand extends Container {
 							role: "omp.queue.edit",
 							gap: "xs",
 							align: "center",
-							title: `${t("Edit")}  ${editKey}`,
+							title: editTitle,
 							actions: { click: "queue.edit" },
 						},
 						[kbd(dequeueKey), text(t("Edit"))],

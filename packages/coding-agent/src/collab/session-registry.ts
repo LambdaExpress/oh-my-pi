@@ -11,7 +11,6 @@
 
 import * as path from "node:path";
 import { getProjectDir, logger } from "@oh-my-pi/pi-utils";
-import { AsyncJobManager } from "../async";
 import { MCPManager } from "../mcp";
 // Cyclic import with ../modes/core-mode (core-mode will import this registry
 // to run it). Safe: the binding is only invoked at call time inside
@@ -242,11 +241,10 @@ export class SessionRegistry {
 				sessionManager,
 				eventBus,
 				agentId,
-				// Shared process singletons: every core session talks to the same
-				// async-job manager and MCP manager. When the MCP instance is
-				// undefined the sdk's setInstance gate guarantees only the first
-				// top-level session becomes the global instance.
-				asyncJobManager: AsyncJobManager.instance(),
+				// A control-room session is a new root, never a borrower of the
+				// startup session's async jobs or delivery sinks.
+				asyncJobManager: undefined,
+				// MCP transports remain shared and caller-owned.
 				mcpManager: MCPManager.instance() ?? undefined,
 			});
 			session = result.session;

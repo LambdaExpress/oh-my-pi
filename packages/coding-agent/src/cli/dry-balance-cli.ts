@@ -45,6 +45,7 @@ export interface DryBalanceCommandArgs {
 		concurrency?: number;
 		json?: boolean;
 		bench?: boolean;
+		config?: string[];
 	};
 }
 
@@ -52,6 +53,7 @@ export interface DryBalanceAuthOptions {
 	baseUrl?: string;
 	modelId?: string;
 	signal?: AbortSignal;
+	recordAffinity?: boolean;
 }
 
 export interface DryBalanceAuthStorage {
@@ -526,12 +528,13 @@ async function runBenchTargets(
 	);
 }
 
-async function createDefaultRuntime(): Promise<DryBalanceRuntime> {
+async function createDefaultRuntime(configFiles: string[] | undefined): Promise<DryBalanceRuntime> {
 	const cwd = getProjectDir();
-	const settings = await Settings.init({ cwd });
+	const settings = await Settings.init({ cwd, configFiles });
 	const authStorage = await discoverAuthStorage(undefined, { settings });
 	try {
 		const modelRegistry = new ModelRegistry(authStorage);
+		await modelRegistry.hydrateCredentialScopedModelCaches();
 		await loadCliExtensionProviders(modelRegistry, settings, cwd);
 		return {
 			modelRegistry,
@@ -548,7 +551,6 @@ async function resolveDryBalanceModel(
 	modelSelector: string | undefined,
 	modelRegistry: DryBalanceModelRegistry,
 	settings: Settings | undefined,
-	randomSessionId: () => string,
 ): Promise<{ model: Model<Api>; warning?: string }> {
 	const preferences = getModelMatchPreferences(settings);
 	if (modelSelector) {
@@ -579,7 +581,7 @@ async function resolveDryBalanceModel(
 	}
 
 	for (const candidate of allowedModels) {
-		const apiKey = await modelRegistry.getApiKey(candidate, randomSessionId());
+		const apiKey = await modelRegistry.getApiKey(candidate);
 		if (apiKey) return { model: candidate };
 	}
 
@@ -599,10 +601,12 @@ async function runOneAttempt(
 	try {
 		// AuthStorage.oauth.access shares the OAuth credential ranking, refresh,
 		// usage-limit, broker, and session-sticky path used by getApiKey(), while
-		// returning the selected account metadata instead of bearer bytes.
+		// returning the selected account metadata instead of bearer bytes. Samples
+		// are not real sessions, so their selections are never recorded as sticky.
 		const access = await modelRegistry.authStorage.oauth.access(model.provider, sessionId, {
 			baseUrl: model.baseUrl,
 			modelId: model.id,
+			recordAffinity: false,
 		});
 		if (!access) return { ok: false, reason: t("no OAuth access resolved") };
 		return { ok: true, account: extractAccount(access) };
@@ -794,7 +798,7 @@ export async function runDryBalanceCommand(
 		});
 	const streamFn = deps.streamSimple ?? streamSimple;
 	const now = deps.now ?? (() => performance.now());
-	const runtime = await (deps.createRuntime ?? createDefaultRuntime)();
+	const runtime = await (deps.createRuntime?.() ?? createDefaultRuntime(command.flags.config));
 	let progress: DryBalanceBenchProgressSink | undefined;
 	let progressClosed = false;
 	const closeProgress = (): void => {
@@ -804,12 +808,7 @@ export async function runDryBalanceCommand(
 	};
 	try {
 		const modelSelector = command.flags.model ?? command.model;
-		const { model, warning } = await resolveDryBalanceModel(
-			modelSelector,
-			runtime.modelRegistry,
-			runtime.settings,
-			randomSessionId,
-		);
+		const { model, warning } = await resolveDryBalanceModel(modelSelector, runtime.modelRegistry, runtime.settings);
 		if (warning) writeStderr(`${chalk.yellow(t("Warning: {warning}", { warning }))}\n`);
 		let results: DryBalanceAttemptResult[];
 		let benchResults: DryBalanceBenchResult[] | undefined;

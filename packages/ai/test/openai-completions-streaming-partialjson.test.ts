@@ -1,6 +1,6 @@
 /**
  * Contract: openai-completions streamed tool calls carry
- * `kStreamingPartialJson` on `toolcall_start`/`toolcall_delta` events, so the
+ * `kStreamingPartialJson` on the stored blocks in streaming event partials, so the
  * interactive reveal path (write/edit/bash previews) can pace the args as the
  * JSON arrives. Without the symbol the TUI falls back to the throttled
  * `arguments` snapshot and long write payloads appear "直接出结果" instead of
@@ -8,8 +8,9 @@
  */
 import { describe, expect, it } from "bun:test";
 import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
-import type { FetchImpl, Model, ModelSpec } from "@oh-my-pi/pi-ai/types";
+import type { FetchImpl, Model, ModelSpec, ToolCall } from "@oh-my-pi/pi-ai/types";
 import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
+import { validateToolArguments } from "@oh-my-pi/pi-ai/utils/validation";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 
@@ -41,46 +42,58 @@ function createMockFetch(events: unknown[]): FetchImpl {
 	return Object.assign(mockFetch, { preconnect: fetch.preconnect });
 }
 
-const streamedWriteCall = [
-	{ id: "1", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "" } }] },
-	{
-		id: "2",
-		object: "chat.completion.chunk",
-		choices: [
-			{
-				index: 0,
-				delta: {
-					tool_calls: [
-						{ index: 0, id: "call_1", type: "function", function: { name: "write", arguments: '{"path"' } },
-					],
+function streamedWriteCall(complete = true): unknown[] {
+	return [
+		{ id: "1", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "" } }] },
+		{
+			id: "2",
+			object: "chat.completion.chunk",
+			choices: [
+				{
+					index: 0,
+					delta: {
+						tool_calls: [
+							{ index: 0, id: "call_1", type: "function", function: { name: "write", arguments: '{"path"' } },
+						],
+					},
 				},
-			},
-		],
-	},
-	{
-		id: "3",
-		object: "chat.completion.chunk",
-		choices: [
-			{
-				index: 0,
-				delta: { tool_calls: [{ index: 0, function: { arguments: ':"src/demo.ts","content":"line 01' } }] },
-			},
-		],
-	},
-	{
-		id: "4",
-		object: "chat.completion.chunk",
-		choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "\\nline 02\\nline 03" } }] } }],
-	},
-	{ id: "5", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
-];
+			],
+		},
+		{
+			id: "3",
+			object: "chat.completion.chunk",
+			choices: [
+				{
+					index: 0,
+					delta: { tool_calls: [{ index: 0, function: { arguments: ':"src/demo.ts","content":"line 01' } }] },
+				},
+			],
+		},
+		{
+			id: "4",
+			object: "chat.completion.chunk",
+			choices: [
+				{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "\\nline 02\\nline 03" } }] } },
+			],
+		},
+		...(complete
+			? [
+					{
+						id: "5",
+						object: "chat.completion.chunk",
+						choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '"}' } }] } }],
+					},
+				]
+			: []),
+		{ id: "6", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+	];
+}
 
 describe("openai-completions streaming partialJson", () => {
 	it("carries kStreamingPartialJson on streamed write tool calls", async () => {
 		const events = streamOpenAICompletions(
 			deepseekModel(),
 			{
-				sessionId: "probe",
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 				tools: [
 					{
@@ -92,27 +105,25 @@ describe("openai-completions streaming partialJson", () => {
 						},
 					},
 				],
-				toolChoice: "auto",
-				stream: true,
-			} as never,
+			},
 			{
 				apiKey: "probe",
-				fetch: createMockFetch(streamedWriteCall),
-				baseUrl: "https://opencode.ai/zen/go/v1",
-			} as never,
+				sessionId: "probe",
+				toolChoice: "auto",
+				fetch: createMockFetch(streamedWriteCall()),
+			},
 		);
 
 		const frames: string[] = [];
 		for await (const event of events) {
 			if (event.type === "toolcall_start" || event.type === "toolcall_delta") {
-				const block = event.partial.content[event.contentIndex ?? 0];
+				const block = event.partial.content[event.contentIndex];
 				if (block === null || typeof block !== "object" || !(kStreamingPartialJson in block)) continue;
 				const partialJson = block[kStreamingPartialJson];
 				if (typeof partialJson === "string") frames.push(partialJson);
 			}
 			if (event.type === "error") {
-				const error = (event as { error?: { errorMessage?: string } }).error;
-				throw new Error(`stream error: ${error?.errorMessage}`);
+				throw new Error(`stream error: ${event.error.errorMessage}`);
 			}
 		}
 
@@ -129,11 +140,10 @@ describe("openai-completions streaming partialJson", () => {
 		}
 	});
 
-	it("clears the streaming partialJson once the tool call closes", async () => {
+	it.each([true, false])("clears stored streaming JSON after a call closes (complete: %s)", async complete => {
 		const events = streamOpenAICompletions(
 			deepseekModel(),
 			{
-				sessionId: "probe",
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 				tools: [
 					{
@@ -145,29 +155,48 @@ describe("openai-completions streaming partialJson", () => {
 						},
 					},
 				],
-				toolChoice: "auto",
-				stream: true,
-			} as never,
+			},
 			{
 				apiKey: "probe",
-				fetch: createMockFetch(streamedWriteCall),
-				baseUrl: "https://opencode.ai/zen/go/v1",
-			} as never,
+				sessionId: "probe",
+				toolChoice: "auto",
+				fetch: createMockFetch(streamedWriteCall(complete)),
+			},
 		);
 
+		const closedCalls: ToolCall[] = [];
 		for await (const event of events) {
 			if (event.type === "toolcall_end") {
-				const partialJson = (event.toolCall as unknown as Record<symbol, unknown>)[kStreamingPartialJson];
-				expect(partialJson).toBeUndefined();
-				expect(event.toolCall.arguments).toEqual({
-					path: "src/demo.ts",
-					content: "line 01\nline 02\nline 03",
-				});
+				const block = event.partial.content[event.contentIndex];
+				if (block?.type !== "toolCall") throw new Error("Expected stored tool call");
+				expect(Reflect.get(block, kStreamingPartialJson)).toBeUndefined();
+				expect(block.arguments).toEqual(event.toolCall.arguments);
+				closedCalls.push(event.toolCall);
 			}
 			if (event.type === "error") {
-				const error = (event as { error?: { errorMessage?: string } }).error;
-				throw new Error(`stream error: ${error?.errorMessage}`);
+				throw new Error(`stream error: ${event.error.errorMessage}`);
 			}
 		}
+		expect(closedCalls).toHaveLength(1);
+		const call = closedCalls[0]!;
+		if (complete) {
+			expect(call.arguments).toEqual({
+				path: "src/demo.ts",
+				content: "line 01\nline 02\nline 03",
+			});
+		} else {
+			expect(call.arguments).toEqual({
+				__parseError: expect.any(String),
+				__rawJson: '{"path":"src/demo.ts","content":"line 01\\nline 02\\nline 03',
+			});
+			expect(() =>
+				validateToolArguments({ name: "write", description: "", parameters: { type: "object" } }, call),
+			).toThrow("Tool call arguments are not valid JSON");
+		}
+		const result = await events.result();
+		const stored = result.content.find(block => block.type === "toolCall");
+		if (!stored) throw new Error("Expected completed stored tool call");
+		expect(Reflect.get(stored, kStreamingPartialJson)).toBeUndefined();
+		expect(stored.arguments).toEqual(call.arguments);
 	});
 });

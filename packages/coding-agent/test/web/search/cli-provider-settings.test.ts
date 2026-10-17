@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
-import { closeModelCacheSharedDb } from "@oh-my-pi/pi-catalog/model-cache";
+import { closeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getModelDbPath, setAgentDir, setProjectDir, TempDir } from "@oh-my-pi/pi-utils";
 import { runSearchCommand } from "../../../src/cli/web-search-cli";
@@ -55,7 +55,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
 	if (modelDbPath) {
-		closeModelCacheSharedDb(modelDbPath);
+		closeModelCache(modelDbPath);
 		modelDbPath = undefined;
 	}
 	restoreSettingsTestState(settingsState);

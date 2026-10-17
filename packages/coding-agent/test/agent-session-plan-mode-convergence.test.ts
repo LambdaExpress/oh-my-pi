@@ -523,6 +523,37 @@ describe("AgentSession plan-mode convergence", () => {
 		expect(harness.session.getToolByName("mcp__chrome_devtools_list_pages")).toBe(registeredTool);
 	});
 
+	it("restores transport-only write when rolling back to a plan after restoring its read-only snapshot", async () => {
+		const harness = await createPlanSession(
+			[{ content: ["planning A"] }, { content: ["planning B"] }, { content: ["planning C"] }],
+			{ planYolo: true, xdev: true },
+		);
+		await harness.session.prompt("make a plan");
+		await harness.session.waitForIdle();
+		const chromeTool = makeMcpTool("mcp__chrome_devtools_list_pages", "discoverable", "write");
+		await harness.session.refreshMCPTools([chromeTool]);
+		const planState = harness.session.getPlanModeState();
+		const planTools = harness.session.getEnabledToolNames();
+		const planMountedTools = harness.session.getMountedXdevToolNames();
+		expect(harness.isDeviceOnlyWrite()).toBe(true);
+
+		harness.session.setPlanModeState(undefined);
+		await harness.session.restoreNonMCPToolPresentation(["read"], []);
+		expect(harness.session.getActiveToolNames()).toEqual(["read", chromeTool.name]);
+		expect(harness.isDeviceOnlyWrite()).toBe(false);
+
+		// Model restoration can fail after the tool restore commits. Reapplying
+		// the exact plan presentation must not turn its write transport into a
+		// newly granted full-write capability.
+		harness.session.setPlanModeState(planState);
+		await harness.session.setActiveToolPresentation(planTools, planMountedTools);
+
+		expect(harness.session.getActiveToolNames()).toEqual(["read", "write"]);
+		expect(harness.session.getMountedXdevToolNames()).toEqual(planMountedTools);
+		expect(harness.isDeviceOnlyWrite()).toBe(true);
+		expect(harness.isPendingFullWriteDescription()).toBe(false);
+	});
+
 	it("keeps PlanYolo retryable when pre-plan tool restoration fails", async () => {
 		const rebuildGate = { fail: false };
 		const harness = await createPlanSession([{ content: ["planning"] }], { planYolo: true, rebuildGate });

@@ -51,6 +51,7 @@ import {
 	type ExtensionUIContext,
 	type ExtensionUIDialogOptions,
 	getExtensionUISelectOptionLabel,
+	timedOutAskDialogResult,
 } from "../../extensibility/extensions";
 import { runExtensionCompact } from "../../extensibility/extensions/compact-handler";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
@@ -76,7 +77,15 @@ import { AUTO_THINKING, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/th
 import { OTHER_OPTION } from "../../tools/ask";
 import { resolvePlanFilePath } from "../../plan-mode/plan-files";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-import { DEFAULT_TTS_VOICE, TTS_LOCAL_MODELS, TTS_LOCAL_VOICE_OPTIONS } from "../../tts/models";
+import {
+	DEFAULT_TTS_SPEED,
+	DEFAULT_TTS_VOICE,
+	TTS_LOCAL_MODELS,
+	TTS_LOCAL_VOICE_OPTIONS,
+	TTS_SPEED_MAX,
+	TTS_SPEED_MIN,
+	TTS_SPEED_OPTIONS,
+} from "../../tts/models";
 import { canonicalizeMessage } from "@oh-my-pi/pi-tui/chat/thinking-display";
 import { createAcpClientBridge } from "./acp-client-bridge";
 import {
@@ -184,6 +193,8 @@ type ManagedSessionRecord = {
 	resolveLifetimeReady: () => void;
 	rejectLifetimeReady: (reason?: unknown) => void;
 	lifetimeEvents: Promise<void>;
+	/** Advances only when a config event is admitted to the lifetime delivery chain. */
+	configEventVersion: number;
 	bootstrapComplete: boolean;
 	closedError: PromptLifecycleError | undefined;
 	promptEventHandlers: Set<Promise<void>>;
@@ -260,17 +271,22 @@ function buildAcpSpeechModelsCatalog(): Record<string, unknown> {
 	const defaultSpeechModel = localSelector(TTS_LOCAL_MODELS[0].key);
 	const defaultDictationModel = localSelector(DEFAULT_STT_MODEL_KEY);
 	const voices = TTS_LOCAL_VOICE_OPTIONS.map(({ value, label }) => ({ value, label }));
+	// Speed settings are numeric, so presets are advertised as numbers clients can write back as-is.
+	const speeds = TTS_SPEED_OPTIONS.map(({ value, label }) => ({ value: Number(value), label }));
 	return {
 		settings: {
 			speechToTextModel: "modelRoles.dictation",
 			textToSpeechModel: "modelRoles.speech",
 			textToSpeechVoice: "tts.localVoice",
 			speechVoice: "speech.voice",
+			textToSpeechSpeed: "tts.localSpeed",
+			speechSpeed: "speech.speed",
 		},
 		defaults: {
 			speechToTextModel: defaultDictationModel,
 			textToSpeechModel: defaultSpeechModel,
 			voice: DEFAULT_TTS_VOICE,
+			speed: DEFAULT_TTS_SPEED,
 		},
 		speechToText: {
 			setting: "modelRoles.dictation",
@@ -285,8 +301,12 @@ function buildAcpSpeechModelsCatalog(): Record<string, unknown> {
 			modelSetting: "modelRoles.speech",
 			voiceSetting: "tts.localVoice",
 			speechVoiceSetting: "speech.voice",
+			speedSetting: "tts.localSpeed",
+			speechSpeedSetting: "speech.speed",
 			defaultModel: defaultSpeechModel,
 			defaultVoice: DEFAULT_TTS_VOICE,
+			defaultSpeed: DEFAULT_TTS_SPEED,
+			speedRange: { min: TTS_SPEED_MIN, max: TTS_SPEED_MAX },
 			models: TTS_LOCAL_MODELS.map(({ key, label, description, voices: modelVoices }): AcpSpeechTtsModelOption => ({
 				value: localSelector(key),
 				label,
@@ -294,6 +314,7 @@ function buildAcpSpeechModelsCatalog(): Record<string, unknown> {
 				voices: modelVoices.map(({ id, label: voiceLabel }) => ({ value: id, label: voiceLabel })),
 			})),
 			voices,
+			speeds,
 		},
 	};
 }
@@ -435,6 +456,7 @@ export function createAcpExtensionUiContext(
 ): ExtensionUIContext {
 	const supportsForm = clientCapabilities?.elicitation?.form != null;
 	return {
+		supportsEditor: false,
 		select: async (title, options, dialogOptions) => {
 			if (!supportsForm) return undefined;
 			const value = await elicitFromAcpClient(
@@ -526,28 +548,7 @@ export function createAcpExtensionUiContext(
 					},
 				},
 			);
-			if (timedOut) {
-				return {
-					kind: "submit",
-					results: questions.map(question => {
-						const labels = question.options.map(option => option.label);
-						const fallbackIndex = Math.min(
-							Math.max(question.recommended ?? 0, 0),
-							Math.max(labels.length - 1, 0),
-						);
-						const fallback = labels[fallbackIndex];
-						return {
-							id: question.id,
-							question: question.question,
-							options: labels,
-							multi: question.multi ?? false,
-							selectedOptions: fallback === undefined ? [] : [fallback],
-							customInput: undefined,
-							timedOut: true,
-						};
-					}),
-				};
-			}
+			if (timedOut) return timedOutAskDialogResult(questions);
 			if (!content) return undefined;
 
 			return {
@@ -606,6 +607,7 @@ export function createAcpExtensionUiContext(
 		},
 		addAutocompleteProvider: () => {},
 		setEditorComponent: () => {},
+		getEditorComponent: () => undefined,
 		get theme() {
 			return theme;
 		},
@@ -786,6 +788,7 @@ export class AcpAgent implements Agent {
 		if (typeof params.value === "boolean") {
 			throw new Error(`Unsupported boolean ACP config option: ${params.configId}`);
 		}
+		const configEventVersion = record.configEventVersion;
 
 		switch (params.configId) {
 			case MODE_CONFIG_ID:
@@ -813,13 +816,13 @@ export class AcpAgent implements Agent {
 
 		// For `model`/`thinking`, `#setModelById`/`#setThinkingLevelById` change
 		// the session model/thinking level through AgentSession, which now emits
-		// a lifetime event (`model_changed`/`thinking_level_changed`) that
-		// `#handleLifetimeEvent` turns into a push after the bootstrap guard.
-		// Before the guard, the lifetime listener drops the event because the
-		// response's `configOptions` already carries the changed state, so push
-		// directly here; after the guard, let the serialized lifetime chain push it.
+		// a lifetime event (`model_changed`/`thinking_level_changed`). Only an
+		// event admitted after the bootstrap guard owns the push. The guard can
+		// open while the setter is awaited, so its current state is not proof
+		// that the event was admitted.
 		const handledBySubscription =
-			(params.configId === THINKING_CONFIG_ID || params.configId === MODEL_CONFIG_ID) && record.bootstrapComplete;
+			(params.configId === THINKING_CONFIG_ID || params.configId === MODEL_CONFIG_ID) &&
+			record.configEventVersion !== configEventVersion;
 		if (!handledBySubscription) {
 			await this.#pushConfigOptionUpdate(record);
 		} else {
@@ -987,6 +990,7 @@ export class AcpAgent implements Agent {
 			return;
 		}
 
+		const configEventVersion = record.configEventVersion;
 		const builtinResult = await executeAcpBuiltinSlashCommand(text, {
 			session: record.session,
 			sessionManager: record.session.sessionManager,
@@ -1016,7 +1020,15 @@ export class AcpAgent implements Agent {
 					},
 				});
 			},
-			notifyConfigChanged: async () => {
+			notifyConfigChanged: async options => {
+				// An admitted config event owns delivery even if its serialized
+				// handler has not started yet. Events dropped during bootstrap
+				// still need an explicit push, including when command output
+				// awaited delivery long enough for the guard to open meanwhile.
+				if (options?.handledBySessionEvent && record.configEventVersion !== configEventVersion) {
+					await record.lifetimeEvents;
+					return;
+				}
 				await this.#pushConfigOptionUpdate(record);
 			},
 		});
@@ -1385,6 +1397,7 @@ export class AcpAgent implements Agent {
 			resolveLifetimeReady: lifetimeReady.resolve,
 			rejectLifetimeReady: lifetimeReady.reject,
 			lifetimeEvents: Promise.resolve(),
+			configEventVersion: 0,
 		};
 	}
 
@@ -1405,14 +1418,20 @@ export class AcpAgent implements Agent {
 		if (event.type !== "thinking_level_changed" && event.type !== "model_changed") {
 			return;
 		}
+		// Config delivery is part of command completion, even though the
+		// subscription lives beyond an individual prompt turn.
+		const delivery = this.#pushConfigOptionUpdate(record);
+		record.promptEventHandlers.add(delivery);
 		try {
-			await this.#pushConfigOptionUpdate(record);
+			await delivery;
 		} catch (error) {
 			logger.warn("Failed to push config_option_update after a lifetime event", {
 				sessionId: record.session.sessionId,
 				eventType: event.type,
 				error,
 			});
+		} finally {
+			record.promptEventHandlers.delete(delivery);
 		}
 	}
 
@@ -2126,13 +2145,10 @@ export class AcpAgent implements Agent {
 					// events are not lost. Config changes are different: the
 					// response already carries their state, so discard events
 					// received before the client can know this session id.
-					if (
-						!record.bootstrapComplete &&
-						(event.type === "thinking_level_changed" || event.type === "model_changed")
-					) {
-						return;
-					}
+					const configEvent = event.type === "thinking_level_changed" || event.type === "model_changed";
+					if (configEvent && !record.bootstrapComplete) return;
 					record.lifetimeEvents = record.lifetimeEvents.then(() => this.#handleLifetimeEvent(record, event));
+					if (configEvent) record.configEventVersion++;
 				});
 				// Skills/commands rediscovery (live `skills.*`/`commands.*` edits, MCP
 				// prompts, manage_skill) re-advertises the palette.

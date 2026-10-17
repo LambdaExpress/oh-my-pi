@@ -37,6 +37,7 @@ describe("connected MCP server inventory", () => {
 
 	it("reports the tools of a connected server and forgets it after disconnect", async () => {
 		await manager.connectServers({ [SERVER]: fixtureConfig() }, {});
+		expect(await manager.waitForStartup(0)).toEqual({ connected: [SERVER], pending: [], failed: [] });
 
 		const connected = manager.getConnectedServerTools();
 		expect(connected.get(SERVER)).toHaveLength(MANY_TOOL_COUNT);

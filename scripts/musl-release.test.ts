@@ -12,14 +12,9 @@ afterEach(async () => {
 
 async function run(
 	command: string[],
-	env: NodeJS.ProcessEnv = process.env,
+	env?: Record<string, string | undefined>,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-	const proc = Bun.spawn(command, {
-		cwd: repoRoot,
-		env,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	const proc = Bun.spawn(command, { cwd: repoRoot, env, stdout: "pipe", stderr: "pipe" });
 	const [exitCode, stdout, stderr] = await Promise.all([
 		proc.exited,
 		new Response(proc.stdout).text(),
@@ -39,75 +34,46 @@ function shellPath(filePath: string): string {
 	return filePath.replace(/^([A-Za-z]):[\\/]/, (_, drive: string) => `/${drive.toLowerCase()}/`).replaceAll("\\", "/");
 }
 
-describe("musl release artifacts", () => {
-	test("builds the requested x64 and arm64 musl asset names with Bun's musl targets", async () => {
-		const result = await run([
-			"bun",
-			"scripts/ci-release-build-binaries.ts",
-			"--dry-run",
-			"--targets",
-			"linux-musl-x64,linux-musl-arm64",
-		]);
+function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", `'\\''`)}'`;
+}
 
-		expect(result.exitCode, result.stderr).toBe(0);
-		expect(result.stdout).toContain(
-			"Bun.build target=bun-linux-x64-musl-baseline outfile=packages/coding-agent/binaries/omp-linux-musl-x64",
-		);
-		expect(result.stdout).toContain(
-			"Bun.build target=bun-linux-arm64-musl outfile=packages/coding-agent/binaries/omp-linux-musl-arm64",
-		);
+async function createInstallerFixture(options: { musl: boolean; badChecksum?: boolean; existing?: boolean }) {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-fork-install-"));
+	tempDirs.push(dir);
+	const binDir = path.join(dir, "bin");
+	const installDir = options.existing ? binDir : path.join(dir, "install");
+	await fs.mkdir(binDir);
+	await writeExecutable(binDir, "uname", '#!/bin/sh\n[ "$1" = "-s" ] && echo Linux || echo x86_64\n');
+	await writeExecutable(binDir, "ldd", `#!/bin/sh\necho '${options.musl ? "musl libc (x86_64)" : "glibc 2.39"}'\n`);
+	const binary = "#!/bin/sh\necho omp/18.0.4+code.9\n";
+	const binaryName = `omp-linux-${options.musl ? "musl-" : ""}x64`;
+	const digest = options.badChecksum ? "0".repeat(64) : new Bun.CryptoHasher("sha256").update(binary).digest("hex");
+	const release = JSON.stringify({
+		tag_name: "code-9",
+		draft: false,
+		prerelease: false,
+		body: `## SHA256\n\n\`\`\`text\n${digest}  ${binaryName}\n\`\`\`\n`,
 	});
-
-	test("selects the musl asset when the Linux host reports musl", async () => {
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-musl-install-"));
-		tempDirs.push(dir);
-		const binDir = path.join(dir, "bin");
-		const installDir = path.join(dir, "install");
-		await fs.mkdir(binDir);
-		await writeExecutable(binDir, "uname", '#!/bin/sh\n[ "$1" = "-s" ] && echo Linux || echo x86_64\n');
-		await writeExecutable(binDir, "ldd", "#!/bin/sh\necho 'musl libc (x86_64)'\n");
-		await writeExecutable(
-			binDir,
-			"curl",
-			`#!/bin/sh
+	const requests = path.join(dir, "requests");
+	await writeExecutable(
+		binDir,
+		"curl",
+		`#!/bin/sh
+printf '%s\\n' "$*" >> ${shellQuote(shellPath(requests))}
 case "$*" in
-  *api.github.com*) echo '[{"tag_name":"code-7","draft":false,"prerelease":false,"mentions_count":0}]' ;;
+  */releases/tags/code-9*) printf '%s\\n' ${shellQuote(release)} ;;
+  *api.github.com*) printf '%s\\n' ${shellQuote(`[${release}]`)} ;;
   *) while [ "$#" -gt 0 ]; do
-       [ "$1" = "-o" ] && { printf '%s\n' '#!/bin/sh' 'echo omp/18.0.4+code.7' > "$2"; exit 0; }
+       [ "$1" = "-o" ] && { printf '%s' ${shellQuote(binary)} > "$2"; exit 0; }
        shift
-     done ;;
+     done
+     exit 1 ;;
 esac
 `,
-		);
-		const env = { ...process.env, HOME: shellPath(dir), PI_INSTALL_DIR: shellPath(installDir) };
-
-		const result = await run(
-			[
-				"sh",
-				"-c",
-				'PATH="$1:$PATH"; export PATH; shift; . "$@"',
-				"sh",
-				shellPath(binDir),
-				"scripts/install.sh",
-				"--binary",
-			],
-			env,
-		);
-
-		expect(result.exitCode, `${result.stderr}\n${result.stdout}`).toBe(0);
-		expect(result.stdout).toContain("Using version: code-7");
-		expect(result.stdout).toContain("Downloading omp-linux-musl-x64...");
-		expect(await Bun.file(path.join(installDir, "omp")).text()).toContain("+code.7");
-	});
-
-	test("replaces an existing upstream omp with the fork binary even when native Bun is available", async () => {
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-fork-bootstrap-"));
-		tempDirs.push(dir);
-		const binDir = path.join(dir, "bin");
-		await fs.mkdir(binDir);
-		await writeExecutable(binDir, "uname", '#!/bin/sh\n[ "$1" = "-s" ] && echo Linux || echo x86_64\n');
-		await writeExecutable(binDir, "ldd", "#!/bin/sh\necho 'glibc 2.39'\n");
-		await writeExecutable(binDir, "omp", "#!/bin/sh\necho omp/18.0.4\n");
+	);
+	if (options.existing) {
+		await writeExecutable(binDir, "omp", "#!/bin/sh\necho upstream\n");
 		await writeExecutable(
 			binDir,
 			"bun",
@@ -119,28 +85,74 @@ case "$1" in
 esac
 `,
 		);
-		await writeExecutable(
-			binDir,
-			"curl",
-			`#!/bin/sh
-case "$*" in
-  *api.github.com*) echo '[{"tag_name":"code-9","draft":false,"prerelease":false}]' ;;
-  *) while [ "$#" -gt 0 ]; do
-       [ "$1" = "-o" ] && { printf '#!/bin/sh\necho omp/18.0.4+code.9\n' > "$2"; exit 0; }
-       shift
-     done ;;
-esac
-`,
-		);
-		const env = { ...process.env, HOME: shellPath(dir) };
+	}
+	const env = { ...process.env, HOME: shellPath(dir), PI_BUILD_URL: "", PI_INSTALL_DIR: "" };
+	if (!options.existing) env.PI_INSTALL_DIR = shellPath(installDir);
+	return {
+		binDir,
+		installDir,
+		binary,
+		requests,
+		env,
+		run: () =>
+			run(
+				// Source after setting PATH: a fresh MSYS sh can prepend /usr/bin
+				// and hide the host/download fixtures on Windows.
+				[
+					"sh",
+					"-c",
+					'installer=$2; PATH="$1:$PATH"; export PATH; shift 2; . "$installer" "$@"',
+					"sh",
+					shellPath(binDir),
+					"scripts/install.sh",
+				],
+				env,
+			),
+	};
+}
 
-		const result = await run(
-			["sh", "-c", 'PATH="$1:$PATH"; export PATH; exec sh "$2"', "sh", shellPath(binDir), "scripts/install.sh"],
-			env,
+describe("musl release artifacts", () => {
+	test("builds the requested x64 and arm64 musl asset names with Bun's musl targets", async () => {
+		const result = await run([
+			"bun",
+			"scripts/ci-release-build-binaries.ts",
+			"--dry-run",
+			"--targets",
+			"linux-musl-x64,linux-musl-arm64",
+		]);
+		expect(result.exitCode, result.stderr).toBe(0);
+		expect(result.stdout).toContain(
+			"Bun.build target=bun-linux-x64-musl-baseline outfile=packages/coding-agent/binaries/omp-linux-musl-x64",
 		);
+		expect(result.stdout).toContain(
+			"Bun.build target=bun-linux-arm64-musl outfile=packages/coding-agent/binaries/omp-linux-musl-arm64",
+		);
+	});
 
-		expect(result.exitCode, `${result.stderr}\n${result.stdout}`).toBe(0);
-		expect(result.stdout).toContain("Downloading omp-linux-x64...");
-		expect(await Bun.file(path.join(binDir, "omp")).text()).toContain("+code.9");
+	test("selects and verifies the fork musl asset when the Linux host reports musl", async () => {
+		const fixture = await createInstallerFixture({ musl: true });
+		const result = await fixture.run();
+		expect(result.exitCode, result.stderr + result.stdout).toBe(0);
+		expect(await Bun.file(fixture.requests).text()).toContain("/releases/download/code-9/omp-linux-musl-x64");
+		expect(await Bun.file(path.join(fixture.installDir, "omp")).text()).toBe(fixture.binary);
+		expect(await fs.readdir(fixture.installDir)).toEqual(["omp"]);
+	});
+
+	test("replaces an existing upstream omp with the fork binary even when native Bun is available", async () => {
+		const fixture = await createInstallerFixture({ musl: false, existing: true });
+		const result = await fixture.run();
+		expect(result.exitCode, result.stderr + result.stdout).toBe(0);
+		expect(await Bun.file(fixture.requests).text()).toContain("/releases/download/code-9/omp-linux-x64");
+		expect(await Bun.file(path.join(fixture.installDir, "omp")).text()).toBe(fixture.binary);
+	});
+
+	test("keeps an existing install when the fork release checksum does not match", async () => {
+		const fixture = await createInstallerFixture({ musl: false, existing: true, badChecksum: true });
+		const result = await fixture.run();
+		expect(result.exitCode).not.toBe(0);
+		expect(await Bun.file(path.join(fixture.installDir, "omp")).text()).toBe("#!/bin/sh\necho upstream\n");
+		expect(
+			(await fs.readdir(fixture.installDir)).filter(name => name.includes(".new") || name.includes(".bak")),
+		).toEqual([]);
 	});
 });

@@ -6,6 +6,8 @@ import { BUILTIN_COLLABORATION_SLASH_COMMANDS } from "./builtin-collaboration";
 import {
 	buildArgumentCompletions,
 	buildDirectoryArgumentCompletions,
+	buildEffortArgumentCompletions,
+	buildEffortInlineHint,
 	buildMcpArgumentCompletions,
 	buildModelSelectorCompletions,
 	buildStaticInlineHint,
@@ -70,6 +72,7 @@ export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BU
 		},
 		icon: command.icon,
 		subcommands: command.subcommands,
+		subcommandOptional: command.subcommandOptional,
 		inlineHint: command.inlineHint,
 		getTuiAutocompleteDescription: command.getTuiAutocompleteDescription,
 	}),
@@ -91,11 +94,19 @@ function materializeTuiBuiltinSlashCommand(
 		subcommands,
 	};
 	if (subcommands) {
-		materialized.getArgumentCompletions =
-			cmd.name === "mcp" && runtime
-				? buildMcpArgumentCompletions(subcommands, runtime)
-				: buildArgumentCompletions(subcommands);
-		materialized.getInlineHint = buildSubcommandInlineHint(subcommands);
+		// `/mcp` and `/effort` narrow their declarative lists to live session
+		// state so the dropdown never offers a value the handler would reject.
+		if (runtime && cmd.name === "mcp") {
+			materialized.getArgumentCompletions = buildMcpArgumentCompletions(subcommands, runtime);
+			materialized.getInlineHint = buildSubcommandInlineHint(subcommands);
+		} else if (runtime && cmd.name === "effort") {
+			materialized.getArgumentCompletions = buildEffortArgumentCompletions(runtime);
+			materialized.getInlineHint = buildEffortInlineHint(runtime);
+		} else {
+			const options = { optional: cmd.subcommandOptional };
+			materialized.getArgumentCompletions = buildArgumentCompletions(subcommands, options);
+			materialized.getInlineHint = buildSubcommandInlineHint(subcommands, options);
+		}
 	} else if (cmd.name === "move") {
 		materialized.getArgumentCompletions = buildDirectoryArgumentCompletions();
 		if (cmd.inlineHint) materialized.getInlineHint = buildStaticInlineHint(cmd.inlineHint);

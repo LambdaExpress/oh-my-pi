@@ -172,7 +172,8 @@ mod staged_commit_platform {
 		let to = CString::new(to.as_os_str().as_bytes()).map_err(|_| {
 			io::Error::new(io::ErrorKind::InvalidInput, "destination path contains NUL")
 		})?;
-		// SAFETY: Both path pointers remain valid for the duration of the syscall.
+		// SAFETY: Both path pointers remain valid for the duration of the
+		// syscall.
 		let result = unsafe {
 			libc::syscall(
 				libc::SYS_renameat2,
@@ -390,8 +391,8 @@ mod staged_commit_platform {
 			} else {
 				0
 			};
-		// SAFETY: The NUL-terminated UTF-16 buffers remain valid for the duration of
-		// MoveFileExW.
+		// SAFETY: The NUL-terminated UTF-16 buffers remain valid for the duration
+		// of MoveFileExW.
 		if unsafe { MoveFileExW(wide(stage_path).as_ptr(), wide(destination_path).as_ptr(), flags) }
 			!= 0
 		{
@@ -412,8 +413,8 @@ mod staged_commit_platform {
 
 	fn replace_regular_file(stage_path: &Path, destination_path: &Path) -> io::Result<()> {
 		let backup_path = backup_path(stage_path);
-		// SAFETY: All NUL-terminated UTF-16 buffers remain valid for the duration of
-		// ReplaceFileW.
+		// SAFETY: All NUL-terminated UTF-16 buffers remain valid for the duration
+		// of ReplaceFileW.
 		if unsafe {
 			ReplaceFileW(
 				wide(destination_path).as_ptr(),
@@ -435,8 +436,9 @@ mod staged_commit_platform {
 		});
 		if replaceable {
 			if let Err(remove_error) = std::fs::remove_file(&backup_path) {
-				// Preserve both old destination and staged content by using the staged path as
-				// rollback backup. SAFETY: All NUL-terminated UTF-16 buffers remain valid
+				// Preserve both old destination and staged content by using the
+				// staged path as rollback backup. SAFETY: All
+				// NUL-terminated UTF-16 buffers remain valid
 				// for the duration of ReplaceFileW.
 				let rollback = unsafe {
 					ReplaceFileW(
@@ -464,8 +466,8 @@ mod staged_commit_platform {
 		}
 
 		let inspect_error = backup_metadata.err();
-		// SAFETY: All NUL-terminated UTF-16 buffers remain valid for the duration of
-		// ReplaceFileW.
+		// SAFETY: All NUL-terminated UTF-16 buffers remain valid for the duration
+		// of ReplaceFileW.
 		let rollback = unsafe {
 			ReplaceFileW(
 				wide(destination_path).as_ptr(),

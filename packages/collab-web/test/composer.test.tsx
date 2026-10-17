@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import type { KeyboardEvent } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { GuestSnapshot } from "../src/lib/client";
 import { GuestClient } from "../src/lib/client";
+import type { ComposerProps } from "../src/components/shell/Composer";
 import { Composer, NewSessionComposer, shouldSubmitOnEnter } from "../src/components/shell/Composer";
 import { ModelPicker } from "../src/components/shell/ModelPicker";
 import { encodeBase64Url } from "../src/lib/link";
@@ -10,38 +10,28 @@ import { encodeBase64Url } from "../src/lib/link";
 const LINK = `roomroomroom1234#${encodeBase64Url(new Uint8Array(32))}`;
 const client = new GuestClient(LINK, "tester");
 
-function snapshot(uiRequest: GuestSnapshot["uiRequest"]): GuestSnapshot {
+function props(uiRequest: ComposerProps["uiRequest"]): ComposerProps {
 	return {
+		client,
 		phase: "live",
-		endedReason: null,
-		header: null,
-		entries: [],
 		state: { isStreaming: true, queuedMessageCount: 0, cwd: "/work", participants: [] },
-		agents: [],
-		progress: new Map(),
-		lifecycle: new Map(),
-		stream: null,
-		streamDone: false,
-		activeTools: new Map(),
 		working: true,
 		readOnly: false,
 		uiRequest,
 		models: null,
-		notices: [],
-		loading: null,
+		queuedMessageCount: 0,
 	};
 }
 
-function renderComposer(overrides: Partial<GuestSnapshot> = {}): string {
-	return renderToStaticMarkup(<Composer client={client} snapshot={{ ...snapshot(null), working: false, ...overrides }} />);
+function renderComposer(overrides: Partial<ComposerProps> = {}): string {
+	return renderToStaticMarkup(<Composer {...props(null)} working={false} {...overrides} />);
 }
 
 describe("Composer host UI requests", () => {
 	it("renders selectable ask responses for mobile guests", () => {
 		const html = renderToStaticMarkup(
 			<Composer
-				client={client}
-				snapshot={snapshot({
+				{...props({
 					reqId: 1,
 					kind: "select",
 					title: "Continue?",
@@ -58,7 +48,7 @@ describe("Composer host UI requests", () => {
 
 	it("renders a submit field for custom ask responses", () => {
 		const html = renderToStaticMarkup(
-			<Composer client={client} snapshot={snapshot({ reqId: 2, kind: "editor", title: "Other", prefill: "draft" })} />,
+			<Composer {...props({ reqId: 2, kind: "editor", title: "Other", prefill: "draft" })} />,
 		);
 
 		expect(html).toContain("Other");
@@ -68,7 +58,7 @@ describe("Composer host UI requests", () => {
 
 	it("keeps the editor submit enabled for whitespace-only drafts", () => {
 		const html = renderToStaticMarkup(
-			<Composer client={client} snapshot={snapshot({ reqId: 3, kind: "editor", title: "Other", prefill: "   " })} />,
+			<Composer {...props({ reqId: 3, kind: "editor", title: "Other", prefill: "   " })} />,
 		);
 
 		const submit = { found: false, disabled: false };
@@ -100,7 +90,7 @@ describe("Composer session metadata and controls", () => {
 	});
 
 	it("renders the real cwd as plain workspace metadata and keeps model selection in the bottom controls", () => {
-		const snap = snapshot(null);
+		const snap = props(null);
 		snap.working = false;
 		snap.state = {
 			isStreaming: false,
@@ -111,7 +101,7 @@ describe("Composer session metadata and controls", () => {
 			participants: [],
 		};
 
-		const html = renderToStaticMarkup(<Composer client={client} snapshot={snap} />);
+		const html = renderToStaticMarkup(<Composer {...snap} />);
 
 		expect(html).toContain('class="sh-composer-card"');
 		expect(html).toContain('class="sh-workspace sh-workspace-button" disabled=""');
@@ -143,21 +133,19 @@ describe("Composer session metadata and controls", () => {
 	});
 
 	it("keeps queue and abort controls observable while the host is working", () => {
-		const snap = snapshot(null);
-		snap.state = { ...snap.state!, queuedMessageCount: 2 };
-		const html = renderToStaticMarkup(<Composer client={client} snapshot={snap} />);
+		const snap = props(null);
+		snap.queuedMessageCount = 2;
+		const html = renderToStaticMarkup(<Composer {...snap} />);
 
 		expect(html).toContain("queued");
 		expect(html).toContain("×2");
 		expect(html).toContain('class="sh-composer-send sh-composer-stop"');
 		expect(html).toContain('aria-label="stop the current turn"');
-		expect(html).not.toContain("sh-btn-stop");
-		expect(html).not.toContain(">Stop</span>");
 		expect(html).not.toContain('aria-label="send prompt"');
 	});
 
 	it("renders host-advertised thinking levels with the configured selector selected", () => {
-		const snap = snapshot(null);
+		const snap = props(null);
 		snap.working = false;
 		snap.state = {
 			isStreaming: false,
@@ -170,7 +158,7 @@ describe("Composer session metadata and controls", () => {
 			participants: [],
 		};
 
-		const html = renderToStaticMarkup(<Composer client={client} snapshot={snap} />);
+		const html = renderToStaticMarkup(<Composer {...snap} />);
 
 		expect(html).toContain('title="change thinking level"');
 		expect(html).toContain('aria-expanded="false"');
@@ -179,10 +167,10 @@ describe("Composer session metadata and controls", () => {
 	});
 
 	it("hides unavailable thinking controls and disables them for read-only sessions", () => {
-		const unavailable = snapshot(null);
+		const unavailable = props(null);
 		unavailable.working = false;
 		unavailable.state = { ...unavailable.state!, isStreaming: false };
-		const readOnly = snapshot(null);
+		const readOnly = props(null);
 		readOnly.working = false;
 		readOnly.readOnly = true;
 		readOnly.state = {
@@ -192,10 +180,10 @@ describe("Composer session metadata and controls", () => {
 			availableThinkingLevels: ["off", "auto", "low", "high"],
 		};
 
-		expect(renderToStaticMarkup(<Composer client={client} snapshot={unavailable} />)).not.toContain(
+		expect(renderToStaticMarkup(<Composer {...unavailable} />)).not.toContain(
 			'title="change thinking level"',
 		);
-		const readOnlyHtml = renderToStaticMarkup(<Composer client={client} snapshot={readOnly} />);
+		const readOnlyHtml = renderToStaticMarkup(<Composer {...readOnly} />);
 		expect(readOnlyHtml).toContain('title="change thinking level"');
 		expect(readOnlyHtml).toContain('class="sh-composer-picker-trigger" disabled=""');
 	});
@@ -203,9 +191,14 @@ describe("Composer session metadata and controls", () => {
 
 describe("ModelPicker model states", () => {
 	it("renders the unloaded model state without treating a missing fixture field as an empty list", () => {
-		const snap = snapshot(null);
+		const snap = props(null);
 		const html = renderToStaticMarkup(
-			<ModelPicker snapshot={snap} onModelList={() => {}} onModelChange={() => {}} />,
+			<ModelPicker
+				model={snap.state?.model}
+				models={snap.models}
+				onModelList={() => {}}
+				onModelChange={() => {}}
+			/>,
 		);
 
 		expect(snap.models).toBeNull();
@@ -215,14 +208,19 @@ describe("ModelPicker model states", () => {
 	});
 
 	it("renders the selected model from session state", () => {
-		const snap = snapshot(null);
+		const snap = props(null);
 		snap.state = {
 			...snap.state!,
 			model: { id: "opus", name: "Opus", provider: "anthropic", contextWindow: 200_000 },
 		};
 		snap.models = [snap.state.model!];
 		const html = renderToStaticMarkup(
-			<ModelPicker snapshot={snap} onModelList={() => {}} onModelChange={() => {}} />,
+			<ModelPicker
+				model={snap.state.model}
+				models={snap.models}
+				onModelList={() => {}}
+				onModelChange={() => {}}
+			/>,
 		);
 
 		expect(html).toContain("Opus");

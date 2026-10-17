@@ -9,11 +9,11 @@
  */
 import { constants as fsConstants, type Stats } from "node:fs";
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
-import { CONFIG_DIR_NAME, getAgentDir, isEnoent } from "@oh-my-pi/pi-utils";
+import { CONFIG_DIR_NAME, getAgentDir, isEnoent, normalizePathForComparison } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { findRepoRoot, getAncestorDirs } from "../capability/fs";
+import { getProjectDiscoveryCeilings } from "../discovery/helpers";
 
 /** Provider id stamped on discovered managed skills (distinguishes them from authored). */
 export const MANAGED_SKILLS_PROVIDER_ID = "omp-managed";
@@ -64,10 +64,21 @@ export async function resolveManagedSkillTarget(input: ResolveManagedSkillTarget
 	}
 
 	const cwd = path.resolve(input.cwd);
+	const ceilings = getProjectDiscoveryCeilings();
+	if (ceilings.has(normalizePathForComparison(cwd))) {
+		throw new Error("Project managed skills require a directory below the home or temporary-root discovery ceiling.");
+	}
 	const repoRoot = await findRepoRoot(cwd);
-	let projectBase = repoRoot ?? cwd;
-	for (const ancestor of getAncestorDirs(cwd, repoRoot ?? os.homedir())) {
+	const normalizedRepoRoot = repoRoot ? normalizePathForComparison(repoRoot) : null;
+	let projectBase = cwd;
+	for (const ancestor of getAncestorDirs(cwd)) {
+		const normalized = normalizePathForComparison(ancestor.dir);
+		if (ceilings.has(normalized)) break;
 		if (await hasProjectConfigDir(ancestor.dir)) {
+			projectBase = ancestor.dir;
+			break;
+		}
+		if (normalized === normalizedRepoRoot) {
 			projectBase = ancestor.dir;
 			break;
 		}

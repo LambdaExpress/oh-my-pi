@@ -150,7 +150,13 @@ async function callSearch(
 	timeoutMs?: number,
 ): Promise<AnthropicApiResponse> {
 	const url = buildAnthropicUrl(auth);
-	const headers = { ...configuredHeaders, ...buildAnthropicSearchHeaders(auth) };
+	const headers = buildAnthropicSearchHeaders(auth, {
+		modelHeaders: configuredHeaders,
+		allowAnthropicHeaderOverrides:
+			model.compat !== undefined &&
+			"allowAnthropicHeaderOverrides" in model.compat &&
+			model.compat.allowAnthropicHeaderOverrides === true,
+	});
 
 	const injectClaudeCodeInstruction =
 		model.compat === undefined ||
@@ -338,7 +344,7 @@ export async function searchAnthropic(params: SearchParams): Promise<SearchRespo
 	const response = await withAuth(
 		keyOrResolver,
 		async key => {
-			const auth = buildAnthropicAuthConfig(key, searchBaseUrl);
+			const auth = buildAnthropicAuthConfig(key, searchBaseUrl, { isOAuth: params.model.isOAuth });
 			const configuredHeaders = await params.modelRegistry.resolveModelHeaders(params.model, params.signal);
 			// Mirror the main Messages path: OAuth requests need a Claude-Code-shaped
 			// metadata.user_id (`{session_id, account_uuid?, device_id}`) so the

@@ -196,11 +196,15 @@ process.stdout.write("READY\\x1b[6n");
 				timeoutMs: 1_000,
 			});
 			if (logs.op !== "logs") throw new Error("unexpected logs result");
-			// ConPTY can answer with its actual cursor position, while the
-			// headless responder uses home. Either must reach the child without
-			// leaking a terminal reply into the captured output.
-			expect(logs.text).toMatch(/CPR:[1-9]\d*:[1-9]\d*/);
-			expect(logs.text).not.toMatch(/\x1b\[\d+;\d+R/);
+			// Coordinates come from whichever terminal answered the probe. The
+			// broker's headless responder reports home (1;1): it is the only
+			// answer on POSIX and under current ConPTY, which forwards the probe.
+			// Older inbox conhost answers from the console's real cursor
+			// position before the probe reaches the broker, so Windows accepts
+			// any report. Pin POSIX exactly — a regression where the responder
+			// stopped answering while something else did would otherwise pass.
+			expect(logs.text).toMatch(process.platform === "win32" ? /CPR:[1-9]\d*:[1-9]\d*/u : /CPR:1:1/u);
+			expect(logs.text).not.toMatch(/\x1b\[\d+;\d+R/u);
 		} finally {
 			await client.request({ op: "stop", name: "terminal-query", timeoutMs: 2_000 }).catch(() => undefined);
 			await client.request({ op: "shutdown" }).catch(() => undefined);

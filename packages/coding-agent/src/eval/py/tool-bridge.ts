@@ -131,7 +131,6 @@ async function callSessionToolPromptOnAbort(
 		session: entry.toolSession,
 		signal: entry.signal,
 		emitStatus: entry.emitStatus,
-		defaultIntent: "py prelude",
 		identity,
 		runInEvalContext: entry.runInEvalContext,
 	});

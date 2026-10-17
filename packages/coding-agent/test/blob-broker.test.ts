@@ -14,19 +14,10 @@ import { type BlobPersistence, BlobRegistry } from "../src/blob-broker/store";
 import { wrapStreamFnWithBlobUrlFallback } from "../src/blob-broker/stream-fallback";
 import { createCommandUploader, extractUploadUrl, splitCommandTemplate } from "../src/blob-broker/uploaders";
 import { BlobStore as SessionBlobStore } from "../src/session/blob-store";
+import { writeFakeExecutable } from "./helpers/fake-executable";
 
 const PNG_B64 = Buffer.from("blob-broker-test-bytes-1").toString("base64");
 const OTHER_B64 = Buffer.from("blob-broker-test-bytes-2").toString("base64");
-
-type BunSpawnOptions = Bun.SpawnOptions.SpawnOptions<
-	Bun.SpawnOptions.Writable,
-	Bun.SpawnOptions.Readable,
-	Bun.SpawnOptions.Readable
->;
-
-function commandTemplateArg(value: string): string {
-	return `"${value.replaceAll("\\", "/").replaceAll('"', '\\"')}"`;
-}
 
 function makeModel(api: string, provider: string): Model {
 	return buildModel({
@@ -247,6 +238,30 @@ describe("BlobRegistry persistence", () => {
 		// Same content address: registration reused the existing blob file.
 		expect(await sessionStore.has(hash)).toBe(true);
 	});
+
+	it("keeps the flushed index when a background save that started earlier finishes later", async () => {
+		const persist = makePersist(60_000);
+		const write = vi.spyOn(Bun, "write");
+		vi.useFakeTimers();
+		try {
+			const registry = new BlobRegistry({ persist });
+			const bytes = new Uint8Array(Buffer.from("shared-index"));
+			await registry.registerBytes("first-image", "image/png", bytes);
+			// Start the debounced background save, then register again and flush before it lands.
+			vi.advanceTimersByTime(1_000);
+			await registry.registerBytes("second-image", "image/png", bytes);
+			registry.flush();
+			// Let the stale background write (and its rename continuation) settle.
+			await Promise.allSettled(write.mock.results.map(result => result.value));
+		} finally {
+			vi.useRealTimers();
+			write.mockRestore();
+		}
+
+		const reloaded = new BlobRegistry({ persist });
+		expect(reloaded.lookup("first-image")).not.toBeNull();
+		expect(reloaded.lookup("second-image")).not.toBeNull();
+	});
 });
 
 describe("ImageUrlService", () => {
@@ -339,6 +354,17 @@ describe("uploaders", () => {
 		expect(splitCommandTemplate(`pasta -b -f {file}`)).toEqual(["pasta", "-b", "-f", "{file}"]);
 		expect(splitCommandTemplate(`up --name "two words" '{file}'`)).toEqual(["up", "--name", "two words", "{file}"]);
 		expect(splitCommandTemplate(`a\\ b c`)).toEqual(["a b", "c"]);
+		// Windows paths keep their separators; backslash still escapes quotes and spaces.
+		expect(splitCommandTemplate(`C:\\tools\\up.exe -f {file}`, "win32")).toEqual([
+			"C:\\tools\\up.exe",
+			"-f",
+			"{file}",
+		]);
+		expect(splitCommandTemplate(`"C:\\Program Files\\up.exe" a\\ b \\"q\\"`, "win32")).toEqual([
+			"C:\\Program Files\\up.exe",
+			"a b",
+			'"q"',
+		]);
 	});
 
 	it("extracts the last url on stdout and trims trailing punctuation", () => {
@@ -347,53 +373,34 @@ describe("uploaders", () => {
 	});
 
 	it("runs a command uploader end to end against a stub binary", async () => {
-		const windows = process.platform === "win32";
-		const stub = path.join(os.tmpdir(), `omp-test-uploader-${process.pid}${windows ? ".cmd" : ".sh"}`);
-		let restoreSpawn: (() => void) | undefined;
-		if (windows) {
-			const runner = path.join(os.tmpdir(), `omp-test-uploader-runner-${process.pid}.ts`);
-			await Bun.write(stub, "@echo off\r\n");
-			await Bun.write(
-				runner,
-				[
-					'import * as fs from "node:fs";',
-					"const [, file, extension] = process.argv.slice(2);",
-					"if (!file || !extension || fs.statSync(file).size === 0) process.exit(3);",
-					'process.stdout.write("uploaded " + file + "\\nhttps://files.example/abc." + extension + "\\n");',
-				].join("\n"),
-			);
-			const realSpawn = Bun.spawn.bind(Bun);
-			const spawnSpy = vi.spyOn(Bun, "spawn").mockImplementation(((argv: string[], options?: BunSpawnOptions) => {
-				return path.resolve(argv[0] ?? "") === path.resolve(stub)
-					? realSpawn([process.execPath, runner, ...argv.slice(1)], options)
-					: realSpawn(argv, options);
-			}) as typeof Bun.spawn);
-			restoreSpawn = () => spawnSpy.mockRestore();
-			cleanups.push(() => void fs.promises.rm(runner, { force: true }));
-		} else {
-			await Bun.write(
-				stub,
-				`#!/bin/sh\ntest -s "$2" || exit 3\necho "uploaded $2"\necho "https://files.example/abc.$3"\n`,
-			);
-			await fs.promises.chmod(stub, 0o755);
-		}
-		cleanups.push(() => void fs.promises.rm(stub, { force: true }));
+		const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-test-uploader-"));
+		cleanups.push(() => void fs.promises.rm(stubDir, { recursive: true, force: true }));
+		const stub = writeFakeExecutable(
+			stubDir,
+			"uploader",
+			`import * as fs from "node:fs";
+const [, file, ext] = process.argv.slice(2);
+if (fs.statSync(file, { throwIfNoEntry: false })?.size) {
+	console.log(\`uploaded \${file}\`);
+	console.log(\`https://files.example/abc.\${ext}\`);
+} else {
+	process.exitCode = 3;
+}
+`,
+		);
 
-		const uploader = createCommandUploader(`${commandTemplateArg(stub)} --x {file} {ext}`);
-		try {
-			const publication = await uploader.upload({
-				bytes: new Uint8Array(Buffer.from("payload")),
-				mimeType: "image/png",
-				extension: "png",
-			});
-			expect(publication).toEqual({
-				url: "https://files.example/abc.png",
-				destination: "command",
-				bytes: 7,
-			});
-		} finally {
-			restoreSpawn?.();
-		}
+		// Quoted, not escaped: a native Windows path must survive template splitting.
+		const uploader = createCommandUploader(`"${stub}" --x {file} {ext}`);
+		const publication = await uploader.upload({
+			bytes: new Uint8Array(Buffer.from("payload")),
+			mimeType: "image/png",
+			extension: "png",
+		});
+		expect(publication).toEqual({
+			url: "https://files.example/abc.png",
+			destination: "command",
+			bytes: 7,
+		});
 	});
 
 	it("rejects command uploads when the project directory becomes inaccessible", async () => {

@@ -86,7 +86,7 @@ impl clap::Parser for TimeoutCommand {}
 
 /// Records the external children spawned while running the timed command.
 ///
-/// brush's cancellation token can only SIGKILL a child (see
+/// brush's cancellation token sends TERM then KILL (see
 /// `brush_core::processes::Process::wait`), so delivering the *configured*
 /// signal requires knowing the child's pid/pgid; the shell reports those
 /// through its [`SpawnObserver`] hook.
@@ -272,7 +272,7 @@ impl builtins::Command for TimeoutCommand {
 		if !signalled {
 			// The operand ran in-process (a builtin, say) or the child is
 			// already gone; cancellation is the only remaining lever. For
-			// external children it degrades to SIGKILL — see `Process::wait`.
+			// external children it uses TERM then KILL — see `Process::wait`.
 			child_cancel.cancel();
 		}
 		let mut killed = signal_display(signal) == "KILL";
@@ -531,25 +531,24 @@ mod tests {
 			assert_eq!(signal_display(signal), name);
 		}
 		// Shell-trap pseudo-signals and unknown names are invalid for kill(2).
-		for spec in ["NOSUCH", "EXIT", "DEBUG", "ERR", "0", "64", "-5"] {
+		for spec in ["NOSUCH", "EXIT", "DEBUG", "ERR", "RETURN", "0", "64", "-5"] {
 			assert!(parse_signal(spec).is_none(), "spec {spec:?} must be rejected");
 		}
 	}
 
-	#[cfg(unix)]
 	#[test]
 	fn numeric_signals_map_to_names() {
 		for (spec, name) in [("15", "TERM"), ("9", "KILL"), ("2", "INT")] {
-			let signal = parse_signal(spec).expect("Unix signal number must parse");
+			let signal = parse_signal(spec).expect("supported signal number must parse");
 			assert_eq!(signal_display(signal), name);
 		}
 	}
 
 	#[cfg(windows)]
 	#[test]
-	fn numeric_signals_are_unsupported() {
-		// The Windows backend exposes named termination operations only.
-		for spec in ["15", "9", "2"] {
+	fn numbers_without_windows_signal_mappings_are_rejected() {
+		// Only the backend's common POSIX-number mappings are supported.
+		for spec in ["7", "10", "12", "16", "137", "143"] {
 			assert!(parse_signal(spec).is_none(), "spec {spec:?} must be rejected");
 		}
 	}
@@ -637,16 +636,34 @@ mod tests {
 		assert_eq!(u8::from(result.exit_code), 125);
 	}
 
-	#[cfg(unix)]
+	#[test]
+	#[ignore = "spawned as a native timeout operand"]
+	fn native_timeout_child() {
+		std::thread::sleep(Duration::from_secs(30));
+	}
+
 	#[tokio::test]
 	async fn external_child_receives_the_configured_signal() {
 		// Failure mode: the timed-out external child only ever seeing SIGKILL
 		// (the cancel-token path) instead of the configured signal.
-		let result = run_with_deadline("timeout -s TERM 0.050 /bin/sleep 5").await;
-		assert_eq!(u8::from(result.exit_code), 124);
+		let executable = std::env::current_exe().unwrap();
+		let command = format!(
+			"{} --ignored --exact timeout::tests::native_timeout_child",
+			crate::host::quote_arg(executable.to_str().expect("UTF-8 test executable path")),
+		);
+		for (signal, code) in [("15", 124), ("9", 137)] {
+			let result =
+				run_with_deadline(&format!("timeout --foreground -s {signal} 0.050 {command}")).await;
+			assert_eq!(u8::from(result.exit_code), code, "signal {signal}");
+		}
 
-		let result =
-			run_with_deadline("timeout --preserve-status 0.050 /bin/sleep 5").await;
-		assert_eq!(u8::from(result.exit_code), 143, "SIGTERM death is 128+15");
+		#[cfg(unix)]
+		{
+			let result = run_with_deadline(&format!(
+				"timeout --foreground --preserve-status -s 15 0.050 {command}"
+			))
+			.await;
+			assert_eq!(u8::from(result.exit_code), 143, "SIGTERM death is 128+15");
+		}
 	}
 }

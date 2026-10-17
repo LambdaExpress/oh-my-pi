@@ -54,6 +54,11 @@ fork 二进制的版本格式为 `omp/X.Y.Z+code.N`：`X.Y.Z` 表示同步到的
 
 安装脚本默认下载最新的 `code-N` Release，不会回退到上游 npm 包。
 
+fork 二进制会先按 Release 正文中的 SHA-256 校验清单验证下载内容，再替换现有安装。
+显式指定 `v<version>` 引用或设置 `PI_BUILD_URL` 时，脚本才改用上游构建服务（默认
+`build.stencil.so`），并按服务返回的 SHA-256 验证二进制；这不属于 fork 的 `code-N` 发布序列。
+上游版本使用 `--binary --ref v<version>` 固定，PowerShell 使用 `-Binary -Ref v<version>`。
+
 **macOS / Linux**
 
 ```sh
@@ -124,8 +129,8 @@ curl -fsSL https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/release/scri
 # 临时运行
 nix run github:LambdaExpress/oh-my-pi/release
 
-# 安装到当前 profile
-nix profile install github:LambdaExpress/oh-my-pi/release
+# 安装到当前 profile（Nix < 2.30 使用 `nix profile install`）
+nix profile add github:LambdaExpress/oh-my-pi/release
 ```
 
 Flake 使用者可引用 `packages.<system>.omp`、`overlays.default`、`nixosModules.default` 或
@@ -426,7 +431,7 @@ Auth tags below: `oauth` signs in with your provider account, `plan` routes thro
 
 Direct APIs and gateways. Mix providers per role.
 
-Anthropic `oauth` · OpenAI · OpenAI Codex `oauth` · Google Gemini · Google Vertex · Google Antigravity `oauth` · xAI · SuperGrok `oauth` · DeepSeek · Mistral · Groq · Cerebras · Fireworks · Together · Baseten · DeepInfra · Hugging Face · NVIDIA · Meta · Amazon Bedrock · Azure OpenAI · SiliconFlow · GMI Cloud · CoreWeave · Sakana AI · Command Code · Charm Hyper · StepFun · Helmcode · OpenRouter · Synthetic · Vercel AI Gateway · Cloudflare AI Gateway · Wafer Serverless
+Anthropic `oauth` · OpenAI · OpenAI Codex `oauth` · Google Gemini · Google Vertex · Google Antigravity `oauth` · xAI · SuperGrok `oauth` · DeepSeek · Mistral · Groq · Cerebras · SambaNova · Fireworks · Together · Baseten · DeepInfra · Hugging Face · NVIDIA · Meta · Amazon Bedrock · Azure OpenAI · SiliconFlow · GMI Cloud · CoreWeave · Sakana AI · Command Code · Charm Hyper · StepFun · Helmcode · OpenRouter · Synthetic · Vercel AI Gateway · Cloudflare AI Gateway · Wafer Serverless
 
 ### Coding plans
 
@@ -470,6 +475,13 @@ omp setup
 modelRoles:
   default: local/example-model
 ```
+
+### 模型路由
+
+- **自定义供应商**：在 `~/.omp/agent/models.yml` 中声明兼容 `openai-completions`、`openai-responses`、`openai-codex-responses`、`azure-openai-responses`、`anthropic-messages`、`bedrock-converse-stream`、`google-generative-ai`、`google-gemini-cli`、`google-vertex`，或 judge API `typesafe`、`openrouter-decisions`、`openai-decisions`、`workers-ai-systemone` 的服务。
+- **回退链**：通过 `retry.fallbackChains` 为角色或模型配置有序候选；主模型遭遇 429 或配额限制时，后续候选接管当前 turn，冷却期结束后可恢复主模型。
+- **按路径选模**：为 `enabledModels` 和 `disabledProviders` 条目添加 `path:` 前缀，将模型策略限定到指定路径及其子目录，不改动全局策略。
+- **凭据轮换**：同一供应商可配置多把 API key，运行时保留会话亲和性，并按凭据独立退避和轮换。
 
 ## 从源码开发
 
@@ -678,6 +690,17 @@ Key ideas:
 - Keep interactive terminal-first UX for real coding work
 - Include practical built-ins (tools, sessions, branching, subagents, extensibility)
 - Make advanced behavior configurable rather than hidden
+
+### Project inputs and trust
+
+Opening a repository loads its project inputs by design: settings, extensions, hooks, tools, commands, skills, rules, and project MCP configuration. To exclude project `.mcp.json` for one invocation, pass `--config <file>` pointing at a YAML overlay with nested keys (a flat `mcp.enableProjectConfig: false` line is ignored):
+
+```yaml
+mcp:
+  enableProjectConfig: false
+```
+
+Use `--no-extensions` to skip ambient extension discovery; or use `--trusted-extension /absolute/path/to/file.ts` for an exact extension allowlist. `--no-tools` disables built-in tools, but project tool modules remain a separate discovery surface. These flags narrow inputs without changing the repository-trust model.
 
 ---
 

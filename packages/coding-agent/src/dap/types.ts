@@ -474,7 +474,6 @@ export interface DapClientState {
 	proc: ptree.ChildProcess<"pipe">;
 	requestSeq: number;
 	pendingRequests: Map<number, DapPendingRequest>;
-	messageBuffer: Uint8Array;
 	isReading: boolean;
 	lastActivity: number;
 	capabilities?: DapCapabilities;

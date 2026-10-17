@@ -1,10 +1,11 @@
+import type { SessionState, WireModel } from "@oh-my-pi/pi-wire";
 import { Check, ChevronDown } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useId, useRef, useState } from "react";
-import type { GuestSnapshot } from "../../lib/client";
 
 export interface ModelPickerProps {
-	snapshot: GuestSnapshot;
+	model: SessionState["model"];
+	models: readonly WireModel[] | null;
 	onModelList(): void;
 	onModelChange(provider: string, id: string): void;
 	disabled?: boolean;
@@ -148,9 +149,13 @@ function ComposerPicker<T>({
 }
 
 /** Session model picker. The host model list is loaded lazily on first open. */
-export function ModelPicker({ snapshot, onModelList, onModelChange, disabled = false }: ModelPickerProps): ReactNode {
-	const model = snapshot.state?.model;
-	const models = snapshot.models;
+export function ModelPicker({
+	model,
+	models,
+	onModelList,
+	onModelChange,
+	disabled = false,
+}: ModelPickerProps): ReactNode {
 	return (
 		<ComposerPicker
 			items={models}

@@ -10,6 +10,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { commitStagedFileAtomic } from "@oh-my-pi/pi-natives";
 import { isEexist, ptree, readLines } from "@oh-my-pi/pi-utils";
+import { quotePosixArgument } from "../utils/shell-quote";
 import {
 	buildPowerShellCommand,
 	buildRemoteCommandInvocation,
@@ -18,7 +19,7 @@ import {
 	type SSHConnectionTarget,
 	type SSHPowerShellCommand,
 } from "./connection-manager";
-import { quotePosixPath, quotePowerShellString, wrapInPosixShell } from "./utils";
+import { quotePowerShellString, wrapInPosixShell } from "./utils";
 
 /** Per-operation timeout for remote transfers (matches the ssh tool's grep window). */
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -197,7 +198,7 @@ export async function readRemoteFile(
 	const mode = await resolveRemoteTransferMode(target);
 	let raw: Uint8Array;
 	if (mode.kind === "posix") {
-		const command = `head -c ${opts.maxBytes + 1} ${quotePosixPath(remotePath)}`;
+		const command = `head -c ${opts.maxBytes + 1} ${quotePosixArgument(remotePath)}`;
 		const invocation = await buildRemoteCommandInvocation(target, wrapInPosixShell(mode.shell, command));
 		try {
 			using child = ptree.spawn([invocation.executable ?? "ssh", ...invocation.args], {
@@ -266,8 +267,8 @@ export async function writeRemoteFile(
 		if (remotePath.endsWith("/")) {
 			throw new Error("ssh://: destination is a directory path (trailing '/'); ssh:// write requires a file path");
 		}
-		const dest = quotePosixPath(remotePath);
-		const tmp = quotePosixPath(`${remotePath}.omp-tmp.${crypto.randomUUID()}`);
+		const dest = quotePosixArgument(remotePath);
+		const tmp = quotePosixArgument(`${remotePath}.omp-tmp.${crypto.randomUUID()}`);
 		// Stage stdin into the temp first (so the remote never blocks on an unread
 		// pipe and a dropped connection lands in the temp, never the destination).
 		// An EXIT trap removes the staged temp on every exit path (staging failure,
@@ -369,7 +370,7 @@ export async function deleteRemoteFile(
 ): Promise<void> {
 	const mode = await resolveRemoteTransferMode(target);
 	if (mode.kind === "posix") {
-		const p = quotePosixPath(remotePath);
+		const p = quotePosixArgument(remotePath);
 		const command =
 			`if [ -d ${p} ]; then echo 'ssh://: cannot delete directory' >&2; exit 1; ` +
 			`elif [ -e ${p} ] || [ -L ${p} ]; then rm -f -- ${p}; ` +
@@ -416,8 +417,8 @@ export async function moveRemoteFile(
 ): Promise<void> {
 	const mode = await resolveRemoteTransferMode(target);
 	if (mode.kind === "posix") {
-		const from = quotePosixPath(fromRemotePath);
-		const to = quotePosixPath(toRemotePath);
+		const from = quotePosixArgument(fromRemotePath);
+		const to = quotePosixArgument(toRemotePath);
 		const command =
 			`if [ -d ${from} ]; then echo 'ssh://: source is a directory' >&2; exit 1; ` +
 			`elif [ -e ${from} ] || [ -L ${from} ]; then ` +
@@ -472,7 +473,7 @@ export async function statRemotePath(
 ): Promise<RemotePathKind> {
 	const mode = await resolveRemoteTransferMode(target);
 	if (mode.kind === "posix") {
-		const p = quotePosixPath(remotePath);
+		const p = quotePosixArgument(remotePath);
 		const command = `if [ -d ${p} ]; then echo directory; elif [ -f ${p} ]; then echo file; elif [ -e ${p} ]; then echo other; else echo missing; fi`;
 		const invocation = await buildRemoteCommandInvocation(target, wrapInPosixShell(mode.shell, command));
 		try {
@@ -528,7 +529,7 @@ export async function listRemoteDir(
 	const mode = await resolveRemoteTransferMode(target);
 	let text: string;
 	if (mode.kind === "posix") {
-		const command = `LC_ALL=C ls -1Ap -- ${quotePosixPath(remotePath)}`;
+		const command = `LC_ALL=C ls -1Ap -- ${quotePosixArgument(remotePath)}`;
 		const invocation = await buildRemoteCommandInvocation(target, wrapInPosixShell(mode.shell, command));
 		try {
 			using child = ptree.spawn([invocation.executable ?? "ssh", ...invocation.args], {
@@ -642,7 +643,7 @@ async function getRemoteSourceSize(
 	signal?: AbortSignal,
 ): Promise<number> {
 	if (mode.kind === "posix") {
-		const source = quotePosixPath(remotePath);
+		const source = quotePosixArgument(remotePath);
 		const text = await runRemotePosixText(
 			target,
 			mode.shell,
@@ -694,7 +695,7 @@ async function getRemoteDestinationKind(
 	signal?: AbortSignal,
 ): Promise<RemotePathEntryKind> {
 	if (mode.kind === "posix") {
-		const destination = quotePosixPath(remotePath);
+		const destination = quotePosixArgument(remotePath);
 		const text = await runRemotePosixText(
 			target,
 			mode.shell,
@@ -754,11 +755,11 @@ async function probeRemotePosixCommitStrategy(
 	const hostInfo = await ensureHostInfo(target);
 	const probe =
 		hostInfo.os === "linux" || hostInfo.os === "wsl"
-			? `python3 -c ${quotePosixPath(
+			? `python3 -c ${quotePosixArgument(
 					"import ctypes, errno; c=ctypes.CDLL(None,use_errno=True); f=getattr(c,'renameat2'); r=f(-100,b'/__omp_transfer_probe_a__',-100,b'/__omp_transfer_probe_b__',2); e=ctypes.get_errno(); raise SystemExit(0 if r == 0 or e not in (errno.ENOSYS, errno.EINVAL) else 1)",
 				)} >/dev/null 2>&1`
 			: hostInfo.os === "macos"
-				? `python3 -c ${quotePosixPath(
+				? `python3 -c ${quotePosixArgument(
 						"import ctypes, errno; c=ctypes.CDLL(None,use_errno=True); f=getattr(c,'renamex_np'); r=f(b'/__omp_transfer_probe_a__',b'/__omp_transfer_probe_b__',2); e=ctypes.get_errno(); raise SystemExit(0 if r == 0 or e not in (errno.ENOSYS, errno.EINVAL) else 1)",
 					)} >/dev/null 2>&1`
 				: "false";
@@ -941,9 +942,9 @@ function createRemoteTransferArtifacts(remotePath: string, mode: RemoteTransferM
 }
 
 function buildPosixUploadStageScript(remotePath: string, artifacts: RemoteTransferArtifacts): string {
-	const parent = quotePosixPath(path.posix.dirname(remotePath));
-	const stage = quotePosixPath(artifacts.stagePath);
-	const proof = quotePosixPath(artifacts.proofPath);
+	const parent = quotePosixArgument(path.posix.dirname(remotePath));
+	const stage = quotePosixArgument(artifacts.stagePath);
+	const proof = quotePosixArgument(artifacts.proofPath);
 	return `set -u
 parent=${parent}
 stage=${stage}
@@ -1032,7 +1033,7 @@ try {
 
 function buildRemoteDownloadCommand(mode: RemoteTransferMode, remotePath: string): string {
 	if (mode.kind === "posix") {
-		return wrapInPosixShell(mode.shell, `cat < ${quotePosixPath(remotePath)}`);
+		return wrapInPosixShell(mode.shell, `cat < ${quotePosixArgument(remotePath)}`);
 	}
 	return buildPowerShellCommand(
 		mode.executable,
@@ -1228,7 +1229,7 @@ function buildPosixExchangeCommand(strategy: "remote-linux-exchange" | "remote-m
 		strategy === "remote-linux-exchange"
 			? "import ctypes, os, sys; c=ctypes.CDLL(None,use_errno=True); f=getattr(c,'renameat2'); r=f(-100,os.fsencode(sys.argv[1]),-100,os.fsencode(sys.argv[2]),2); e=ctypes.get_errno(); raise SystemExit(0 if r == 0 else e or 1)"
 			: "import ctypes, os, sys; c=ctypes.CDLL(None,use_errno=True); f=getattr(c,'renamex_np'); r=f(os.fsencode(sys.argv[1]),os.fsencode(sys.argv[2]),2); e=ctypes.get_errno(); raise SystemExit(0 if r == 0 else e or 1)";
-	return `python3 -c ${quotePosixPath(code)} "$stage" "$destination"`;
+	return `python3 -c ${quotePosixArgument(code)} "$stage" "$destination"`;
 }
 
 function buildPosixUploadAcknowledgementScript(): string {
@@ -1245,10 +1246,10 @@ exit 0`;
 }
 
 function buildPosixUploadCommitScript(plan: SshFileTransferPlan, artifacts: RemoteTransferArtifacts): string {
-	const stage = quotePosixPath(artifacts.stagePath);
-	const proof = quotePosixPath(artifacts.proofPath);
-	const backup = quotePosixPath(artifacts.backupPath);
-	const destination = quotePosixPath(plan.remotePath);
+	const stage = quotePosixArgument(artifacts.stagePath);
+	const proof = quotePosixArgument(artifacts.proofPath);
+	const backup = quotePosixArgument(artifacts.backupPath);
+	const destination = quotePosixArgument(plan.remotePath);
 	let commit: string;
 	switch (plan.commitStrategy) {
 		case "no-replace":
@@ -1479,10 +1480,10 @@ ${buildPowerShellUploadAcknowledgementScript()}
 
 function buildPosixUploadRecoveryScript(plan: SshFileTransferPlan, artifacts: RemoteTransferArtifacts): string {
 	return `set -u
-stage=${quotePosixPath(artifacts.stagePath)}
-proof=${quotePosixPath(artifacts.proofPath)}
-backup=${quotePosixPath(artifacts.backupPath)}
-destination=${quotePosixPath(plan.remotePath)}
+stage=${quotePosixArgument(artifacts.stagePath)}
+proof=${quotePosixArgument(artifacts.proofPath)}
+backup=${quotePosixArgument(artifacts.backupPath)}
+destination=${quotePosixArgument(plan.remotePath)}
 proof_state=missing
 backup_state=missing
 stage_state=missing
@@ -1552,7 +1553,7 @@ function buildRemoteArtifactCleanupCommand(mode: RemoteTransferMode, artifacts: 
 	if (mode.kind === "posix") {
 		return wrapInPosixShell(
 			mode.shell,
-			`rm -f -- ${quotePosixPath(artifacts.stagePath)} ${quotePosixPath(artifacts.proofPath)} ${quotePosixPath(
+			`rm -f -- ${quotePosixArgument(artifacts.stagePath)} ${quotePosixArgument(artifacts.proofPath)} ${quotePosixArgument(
 				artifacts.backupPath,
 			)}`,
 		);

@@ -209,7 +209,15 @@ function makeSession(
 	runningJobIds: string[] = [],
 ): SessionStub {
 	const sessionManager = SessionManager.inMemory(process.cwd());
-	for (const message of initialMessages) sessionManager.appendMessage(message);
+	const runToolCallIds = new Set<string>();
+	for (const message of initialMessages) {
+		sessionManager.appendMessage(message);
+		if (initialStreaming && message.role === "assistant") {
+			for (const block of message.content) {
+				if (block.type === "toolCall") runToolCallIds.add(block.id);
+			}
+		}
+	}
 	let streaming = initialStreaming;
 	let listener: ((event: AgentSessionEvent) => Promise<void> | void) | undefined;
 	let persistence = Promise.resolve();
@@ -238,7 +246,11 @@ function makeSession(
 			await persistence;
 		},
 		buildTranscriptSessionContext(options) {
-			return sessionManager.buildSessionContext({ transcript: true, ...options, keepDanglingToolCalls: true });
+			return sessionManager.buildSessionContext({
+				transcript: true,
+				collapseCompactedHistory: options?.collapseCompactedHistory,
+				inFlightToolCallIds: options?.keepInFlightToolCalls && streaming ? runToolCallIds : undefined,
+			});
 		},
 		getToolByName: () => undefined,
 		activeToolExecutionUpdates: () => [...activeToolUpdates.values()],

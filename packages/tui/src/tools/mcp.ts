@@ -89,35 +89,30 @@ function renderMarkdownMCPResult(
 	const markdown = new Markdown(trimmedOutput, 0, 0, getMarkdownTheme(), {
 		color: text => theme.fg("toolOutput", text),
 	});
+	// Args tree and output pane rows are spinner-invariant; rebuild only on
+	// expansion or width change instead of every animated frame.
+	let bodyMemo: { expanded: boolean; width: number; lines: readonly string[] } | undefined;
 	return plainToolCard(
 		theme,
 		({ contentWidth }) => {
 			const isError = result.isError ?? result.details?.isError ?? false;
 			const title = result.details ? `${result.details.serverName}/${result.details.mcpToolName}` : t("MCP");
-			const body: string[] = [];
-			if (options.expanded && args && Object.keys(args).length > 0) {
-				body.push(...buildMcpArgsSection(args, theme));
-			} else if (isError && args && Object.keys(args).length > 0) {
-				// A failing call keeps its args visible even collapsed: they are the
-				// only clue to what the server rejected.
-				const preview = formatArgsInline(args, Math.max(20, contentWidth - Bun.stringWidth(theme.tree.last) - 2));
-				if (preview) body.push(` ${theme.fg("dim", theme.tree.last)} ${theme.fg("dim", preview)}`);
+			if (bodyMemo === undefined || bodyMemo.expanded !== options.expanded || bodyMemo.width !== contentWidth) {
+				bodyMemo = {
+					expanded: options.expanded,
+					width: contentWidth,
+					lines: buildMarkdownMcpBody(
+						markdown,
+						truncationWarning,
+						options.expanded,
+						contentWidth,
+						theme,
+						args,
+						isError,
+					),
+				};
 			}
-
-			const rendered = markdown.render(Math.max(1, contentWidth));
-			body.push(
-				...formatOutputPaneLines(
-					{
-						lines: rendered,
-						expanded: options.expanded,
-						collapsedMaxLines: 4,
-						expandedMaxLines: 12,
-						showExpandHintWhenUncapped: true,
-					},
-					theme,
-				).lines,
-			);
-			if (truncationWarning) body.push(truncationWarning);
+			const body = bodyMemo.lines;
 			const status: StatusLineOptions = options.isPartial
 				? {
 						icon: options.spinnerFrame !== undefined ? "running" : "pending",
@@ -135,8 +130,50 @@ function renderMarkdownMCPResult(
 				applyBg: false,
 			};
 		},
-		{ paddingX: 0, paddingY: 0 },
+		{
+			paddingX: 0,
+			paddingY: 0,
+			onInvalidate: () => (bodyMemo = undefined),
+			onReleaseRenderCaches: () => {
+				bodyMemo = undefined;
+				markdown.releaseRenderCaches();
+			},
+		},
 	);
+}
+
+function buildMarkdownMcpBody(
+	markdown: Markdown,
+	truncationWarning: string | null,
+	expanded: boolean,
+	contentWidth: number,
+	theme: Theme,
+	args: Record<string, unknown> | undefined,
+	isError: boolean,
+): string[] {
+	const body: string[] = [];
+	if (expanded && args && Object.keys(args).length > 0) {
+		body.push(...buildMcpArgsSection(args, theme));
+	} else if (isError && args && Object.keys(args).length > 0) {
+		// A failed call keeps its arguments visible even when collapsed.
+		const preview = formatArgsInline(args, Math.max(20, contentWidth - Bun.stringWidth(theme.tree.last) - 2));
+		if (preview) body.push(` ${theme.fg("dim", theme.tree.last)} ${theme.fg("dim", preview)}`);
+	}
+	const rendered = markdown.render(Math.max(1, contentWidth));
+	body.push(
+		...formatOutputPaneLines(
+			{
+				lines: rendered,
+				expanded,
+				collapsedMaxLines: 4,
+				expandedMaxLines: 12,
+				showExpandHintWhenUncapped: true,
+			},
+			theme,
+		).lines,
+	);
+	if (truncationWarning) body.push(truncationWarning);
+	return body;
 }
 
 /**
@@ -155,9 +192,7 @@ export function renderMCPResult(
 		.filter(text => text.length > 0)
 		.join("\n\n");
 	const trimmedOutput = stripOutputNotice(textContent, result.details?.meta).trimEnd();
-	const truncationWarning = result.details?.meta?.truncation
-		? formatStyledTruncationWarning(result.details.meta, theme)
-		: null;
+	const truncationWarning = formatStyledTruncationWarning(result.details?.meta, theme);
 	let parsedOutput: unknown;
 	let isJsonOutput = false;
 	if (trimmedOutput.startsWith("{") || trimmedOutput.startsWith("[")) {
@@ -171,6 +206,8 @@ export function renderMCPResult(
 	if (trimmedOutput && renderMarkdownResults && !isJsonOutput) {
 		return renderMarkdownMCPResult(result, trimmedOutput, truncationWarning, options, theme, args);
 	}
+	// `expanded`, args and output are fixed for this card; only width varies the body.
+	let bodyMemo: { width: number; lines: readonly string[] } | undefined;
 	return plainToolCard(
 		theme,
 		({ contentWidth }) => {
@@ -186,66 +223,77 @@ export function renderMCPResult(
 					? { icon: "error", title }
 					: { iconOverride: theme.styledSymbol("tool.mcp", "accent"), title };
 			const phase: ToolCardPhase = options.isPartial ? "partial" : isError ? "error" : "success";
-			const body: string[] = [];
-
-			// Args section (when expanded)
-			if (expanded && args && typeof args === "object" && Object.keys(args).length > 0) {
-				body.push(...buildMcpArgsSection(args, theme));
-			} else if (isError && args && typeof args === "object" && Object.keys(args).length > 0) {
-				// A failing call keeps its args visible even collapsed: they are the
-				// only clue to what the server rejected.
-				const preview = formatArgsInline(args, Math.max(20, contentWidth - Bun.stringWidth(theme.tree.last) - 2));
-				if (preview) body.push(` ${theme.fg("dim", theme.tree.last)} ${theme.fg("dim", preview)}`);
+			if (bodyMemo === undefined || bodyMemo.width !== contentWidth) {
+				bodyMemo = { width: contentWidth, lines: buildMcpResultBody(contentWidth) };
 			}
-
-			// Output section. The body and spill metadata are normalized before
-			// component selection so the opt-in Markdown path can use its own renderer.
-
-			if (!trimmedOutput) {
-				body.push(theme.fg("dim", t("(no output)")));
-				return { status, phase, body, applyBg: false };
-			}
-
-			// Preserve the existing structured JSON renderer regardless of the
-			// Markdown preference; JSON trees remain more useful than styled source.
-			if (isJsonOutput) {
-				const maxDepth = expanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
-				const maxLines = expanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
-				const maxScalarLen = expanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
-				const tree = renderJsonTreeLines(parsedOutput, theme, maxDepth, maxLines, maxScalarLen);
-
-				if (tree.lines.length > 0) {
-					body.push(...tree.lines);
-					if (!expanded) {
-						body.push(formatExpandHint(theme, expanded, true));
-					} else if (tree.truncated) {
-						body.push(theme.fg("dim", "…"));
-					}
-					if (truncationWarning) body.push(truncationWarning);
-					return { status, phase, body, applyBg: false };
-				}
-			}
-
-			// Raw text output, capped to the first rows with an expand hint while collapsed.
-			body.push(
-				...formatOutputPaneLines(
-					{
-						lines: trimmedOutput.split("\n"),
-						expanded,
-						collapsedMaxLines: 4,
-						expandedMaxLines: 12,
-						styleLine: line => truncateToWidth(styleToolOutputLine(line, theme), contentWidth),
-						showExpandHintWhenUncapped: true,
-					},
-					theme,
-				).lines,
-			);
-
-			if (truncationWarning) body.push(truncationWarning);
-			return { status, phase, body, applyBg: false };
+			return { status, phase, body: bodyMemo.lines, applyBg: false };
 		},
-		{ paddingX: 0, paddingY: 0 },
+		{
+			paddingX: 0,
+			paddingY: 0,
+			onInvalidate: () => (bodyMemo = undefined),
+			onReleaseRenderCaches: () => (bodyMemo = undefined),
+		},
 	);
+
+	function buildMcpResultBody(contentWidth: number): string[] {
+		const body: string[] = [];
+		// Args section (when expanded)
+		if (expanded && args && typeof args === "object" && Object.keys(args).length > 0) {
+			body.push(...buildMcpArgsSection(args, theme));
+		} else if ((result.isError ?? result.details?.isError ?? false) && args && Object.keys(args).length > 0) {
+			// A failed call keeps its arguments visible even when collapsed.
+			const preview = formatArgsInline(args, Math.max(20, contentWidth - Bun.stringWidth(theme.tree.last) - 2));
+			if (preview) body.push(` ${theme.fg("dim", theme.tree.last)} ${theme.fg("dim", preview)}`);
+		}
+
+		// Output section. The body and spill metadata are normalized before
+		// component selection so the opt-in Markdown path can use its own renderer.
+
+		if (!trimmedOutput) {
+			body.push(theme.fg("dim", t("(no output)")));
+			if (truncationWarning) body.push(truncationWarning);
+			return body;
+		}
+
+		// Preserve the existing structured JSON renderer regardless of the
+		// Markdown preference; JSON trees remain more useful than styled source.
+		if (isJsonOutput) {
+			const maxDepth = expanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
+			const maxLines = expanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
+			const maxScalarLen = expanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
+			const tree = renderJsonTreeLines(parsedOutput, theme, maxDepth, maxLines, maxScalarLen);
+
+			if (tree.lines.length > 0) {
+				body.push(...tree.lines);
+				if (!expanded) {
+					body.push(formatExpandHint(theme, expanded, true));
+				} else if (tree.truncated) {
+					body.push(theme.fg("dim", "…"));
+				}
+				if (truncationWarning) body.push(truncationWarning);
+				return body;
+			}
+		}
+
+		// Raw text output, capped to the first rows with an expand hint while collapsed.
+		body.push(
+			...formatOutputPaneLines(
+				{
+					lines: trimmedOutput.split("\n"),
+					expanded,
+					collapsedMaxLines: 4,
+					expandedMaxLines: 12,
+					styleLine: line => truncateToWidth(styleToolOutputLine(line, theme), contentWidth),
+					showExpandHintWhenUncapped: true,
+				},
+				theme,
+			).lines,
+		);
+
+		if (truncationWarning) body.push(truncationWarning);
+		return body;
+	}
 }
 
 /** Visible MCP argument entries (streaming/intent bookkeeping keys dropped). */
@@ -284,7 +332,8 @@ export function describeMCPResult(
 	_options: RenderResultOptions,
 	args?: Record<string, unknown>,
 ): NativeToolView | undefined {
-	return mcpResultMemo.get(result, [renderMarkdownResults, JSON.stringify(args ?? null)], () => {
+	// Callers allocate a fresh args object per streamed delta, so identity is a sound dep.
+	return mcpResultMemo.get(result, [renderMarkdownResults, args], () => {
 		const textContent = (result.content ?? [])
 			.filter(block => block.type === "text")
 			.map(block => block.text ?? "")

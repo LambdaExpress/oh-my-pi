@@ -1,6 +1,8 @@
+import type { SessionHeader, SessionState } from "@oh-my-pi/pi-wire";
 import { ArrowLeft, LogOut, PanelRight, Settings } from "lucide-react";
 import type { ReactNode, RefObject } from "react";
-import type { ConnectionPhase, GuestSnapshot } from "../../lib/client";
+import { memo } from "react";
+import type { ConnectionPhase } from "../../lib/client";
 import { shortenPath } from "../../lib/format";
 
 const PHASE_LABEL: Record<ConnectionPhase, string> = {
@@ -12,7 +14,10 @@ const PHASE_LABEL: Record<ConnectionPhase, string> = {
 };
 
 export interface HeaderBarProps {
-	snapshot: GuestSnapshot;
+	header: SessionHeader | null;
+	state: SessionState | null;
+	phase: ConnectionPhase;
+	readOnly: boolean;
 	subCount: number;
 	railOpen: boolean;
 	agentsButtonRef?: RefObject<HTMLButtonElement | null>;
@@ -24,8 +29,12 @@ export interface HeaderBarProps {
 	onBack?: () => void;
 }
 
-export function HeaderBar({
-	snapshot,
+/** Memoized on its snapshot fields, so streaming frames that leave them untouched skip it. */
+export const HeaderBar = memo(function HeaderBar({
+	header,
+	state,
+	phase,
+	readOnly,
 	subCount,
 	railOpen,
 	agentsButtonRef,
@@ -35,7 +44,6 @@ export function HeaderBar({
 	onToggleSettings,
 	onBack,
 }: HeaderBarProps): ReactNode {
-	const { header, state, phase, readOnly } = snapshot;
 	const title = header?.title ?? state?.sessionName ?? "session";
 
 	return (
@@ -108,4 +116,4 @@ export function HeaderBar({
 			</div>
 		</header>
 	);
-}
+});

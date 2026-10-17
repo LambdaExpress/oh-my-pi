@@ -124,21 +124,28 @@ export function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySna
 	return out;
 }
 
+/**
+ * Suffix flagging a claimed-running agent with no turn in flight; empty for a
+ * live one. Shared by `jobs`, empty-wait results, and the `proc://` roster so
+ * every surface tells a finished-but-unterminalized run (#11079) from real work.
+ */
+export function agentStaleNote(agent: AgentActivitySnapshot): string {
+	if (agent.live) return "";
+	// An accepted final result with no turn in flight is the #11079 leak:
+	// the run is over but the ref never terminalized, so say so actionably
+	// instead of the generic stale-registration hint.
+	return agent.acceptedAt !== undefined
+		? ` — final result accepted ${formatDuration(Math.max(0, Date.now() - agent.acceptedAt))} ago but still running; clear it with \`write proc://${agent.id}/kill\``
+		: " — no turn in flight (stale registration?)";
+}
+
 /** Model-facing lines for the running-agents section shared by `jobs` and empty-wait results. */
 function describeAgents(agents: AgentActivitySnapshot[]): string[] {
 	const lines = [`## Running Agents (${agents.length}) — not job-backed\n`];
 	for (const agent of agents) {
 		const parent = agent.parentId ? ` (spawned by \`${agent.parentId}\`)` : "";
 		const activity = agent.activity ? ` — ${agent.activity}` : "";
-		// An accepted final result with no turn in flight is the #11079 leak:
-		// the run is over but the ref never terminalized, so say so actionably
-		// instead of the generic stale-registration hint.
-		const stale = agent.live
-			? ""
-			: agent.acceptedAt !== undefined
-				? ` — final result accepted ${formatDuration(Math.max(0, Date.now() - agent.acceptedAt))} ago but still running; clear it with \`write proc://${agent.id}/kill\``
-				: " — no turn in flight (stale registration?)";
-		lines.push(`- \`${agent.id}\`${parent} — up ${formatDuration(agent.ageMs)}${activity}${stale}`);
+		lines.push(`- \`${agent.id}\`${parent} — up ${formatDuration(agent.ageMs)}${activity}${agentStaleNote(agent)}`);
 	}
 	lines.push(
 		"",
@@ -184,6 +191,7 @@ export function snapshotJobs(
 		let resolvedModelIdentity: string | undefined;
 		let resolvedThinkingLevel: JobSnapshot["resolvedThinkingLevel"];
 		let advisor = false;
+		let completionPercent: number | undefined;
 		if (latest.type === "task") {
 			const progressValue = latest.latestDetails?.progress;
 			if (Array.isArray(progressValue)) {
@@ -212,6 +220,10 @@ export function snapshotJobs(
 					resolvedThinkingLevel = parseConfiguredThinkingLevel(thinkingValue);
 				}
 				advisor = progressRecord?.advisor === true;
+				const completionValue = progressRecord?.completionPercent;
+				if (typeof completionValue === "number" && Number.isFinite(completionValue)) {
+					completionPercent = completionValue;
+				}
 			}
 		}
 		return {
@@ -226,6 +238,7 @@ export function snapshotJobs(
 			...(resolvedModelIdentity ? { resolvedModelIdentity } : {}),
 			...(resolvedThinkingLevel !== undefined ? { resolvedThinkingLevel } : {}),
 			...(advisor ? { advisor: true } : {}),
+			...(completionPercent !== undefined && latest.status === "running" ? { completionPercent } : {}),
 			...(!resultConsumed && options.includeResults !== false && latest.resultText
 				? { resultText: latest.resultText }
 				: {}),
@@ -314,6 +327,13 @@ export function buildJobResult(
 			if (j.errorText) {
 				lines.push(`Error: ${j.errorText}`);
 			}
+			if (j.meta?.artifactError) {
+				const warning = formatArtifactErrorNotice(j.meta.artifactError);
+				// Some producers already append the notice to their captured
+				// preview. Metadata-only failures need the same model-visible
+				// warning even though the report itself was captured completely.
+				if (!j.resultText?.includes(warning) && !j.errorText?.includes(warning)) lines.push(warning);
+			}
 			if (j.structured) {
 				const hasData = Object.hasOwn(j.structured, "data");
 				let header = `Structured output: ${structuredStatusLabel(j.structured.status)}`;
@@ -369,20 +389,6 @@ export function buildJobResult(
 		// once a later wait exists — same predicate the TUI uses to displace
 		// stale waiting frames.
 		...(isWaitingPollDetails(details) ? { useless: true } : {}),
-	};
-}
-
-/** Bare `wait` with no running jobs and nobody who could message: nothing to block on. */
-export function nothingToWaitForResult(session: ToolSession): AgentToolResult<CoordinationDetails> {
-	const agents = runningAgentsOutsideJobs(session);
-	const lines: string[] = ["No running background jobs to wait for."];
-	if (agents.length > 0) {
-		lines.push("", ...describeAgents(agents));
-	}
-	return {
-		content: [{ type: "text", text: lines.join("\n") }],
-		details: { op: "wait", jobs: [], ...(agents.length ? { agents } : {}) },
-		...(agents.length === 0 ? { useless: true } : {}),
 	};
 }
 

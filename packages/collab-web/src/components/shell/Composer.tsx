@@ -1,14 +1,24 @@
+import type { CollabUiRequest, SessionState, WireModel } from "@oh-my-pi/pi-wire";
 import { ArrowUp, Folder, SendHorizontal, Square } from "lucide-react";
 import type { KeyboardEvent, ReactNode, RefObject } from "react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { GuestClient, GuestSnapshot } from "../../lib/client";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { ConnectionPhase, GuestClient } from "../../lib/client";
 import { desktopBridge } from "../../lib/desktop-bridge";
 import { shortenPath } from "../../lib/format";
 import { ModelPicker, ThinkingPicker } from "./ModelPicker";
 
 export interface ComposerProps {
 	client: GuestClient;
-	snapshot: GuestSnapshot;
+	phase: ConnectionPhase;
+	readOnly: boolean;
+	state: SessionState | null;
+	models: readonly WireModel[] | null;
+	/** Pending host-side UI request this guest can answer. */
+	uiRequest: CollabUiRequest | null;
+	/** Host agent turn in flight. */
+	working: boolean;
+	/** Prompts queued behind the running turn. */
+	queuedMessageCount: number;
 }
 
 export interface NewSessionComposerProps {
@@ -158,8 +168,7 @@ function Workspace({ cwd }: { cwd: string | undefined }): ReactNode {
 	);
 }
 
-function ContextGauge({ snapshot }: { snapshot: GuestSnapshot }): ReactNode {
-	const usage = snapshot.state?.contextUsage;
+function ContextGauge({ usage }: { usage: SessionState["contextUsage"] }): ReactNode {
 	const percent =
 		usage?.percent ??
 		(usage?.tokens != null && usage.contextWindow !== null && usage.contextWindow > 0
@@ -250,20 +259,28 @@ export function NewSessionComposer({ cwd, pending, disabled, onSubmit }: NewSess
 	);
 }
 
-export function Composer({ client, snapshot }: ComposerProps): ReactNode {
+/** Memoized on its snapshot fields, so streaming frames that leave them untouched skip it. */
+export const Composer = memo(function Composer({
+	client,
+	phase,
+	readOnly,
+	state,
+	models,
+	uiRequest,
+	working,
+	queuedMessageCount,
+}: ComposerProps): ReactNode {
 	const [text, setText] = useState("");
 	const taRef = useRef<HTMLTextAreaElement | null>(null);
 	const { composingRef, onCompositionStart, onCompositionEnd } = useCompositionGuard();
 
-	const live = snapshot.phase === "live";
-	const readOnly = snapshot.readOnly;
-	const uiRequest = snapshot.uiRequest;
+	const live = phase === "live";
 	const canPrompt = live && !readOnly;
-	const busy = snapshot.working;
-	const queued = snapshot.state?.queuedMessageCount ?? 0;
+	const busy = working;
+	const queued = queuedMessageCount;
 	const canSend = canPrompt && text.trim().length > 0;
-	const thinkingLevels = snapshot.state?.availableThinkingLevels ?? [];
-	const configuredThinkingLevel = snapshot.state?.configuredThinkingLevel;
+	const thinkingLevels = state?.availableThinkingLevels ?? [];
+	const configuredThinkingLevel = state?.configuredThinkingLevel;
 
 	useLayoutEffect(() => {
 		autosize(taRef.current);
@@ -327,7 +344,7 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 						/>
 					)}
 					<div className="sh-composer-controls sh-ask-actions">
-						<Workspace cwd={snapshot.state?.cwd} />
+						<Workspace cwd={state?.cwd} />
 						<span className="sh-composer-control-spacer" />
 						<button type="button" className="sh-btn" onClick={() => client.sendUiResponse(uiRequest.reqId)}>
 							Cancel
@@ -373,7 +390,7 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 					spellCheck={false}
 				/>
 				<div className="sh-composer-controls">
-					<Workspace cwd={snapshot.state?.cwd} />
+					<Workspace cwd={state?.cwd} />
 					{thinkingLevels.length > 0 && configuredThinkingLevel && (
 						<ThinkingPicker
 							levels={thinkingLevels}
@@ -383,7 +400,8 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 						/>
 					)}
 					<ModelPicker
-						snapshot={snapshot}
+						model={state?.model}
+						models={models}
 						disabled={!canPrompt}
 						onModelList={() => client.sendModelList()}
 						onModelChange={(provider, id) => client.sendModelChange(provider, id)}
@@ -394,7 +412,7 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 							<span className="sh-queued-label">queued </span>×{queued}
 						</span>
 					)}
-					<ContextGauge snapshot={snapshot} />
+					<ContextGauge usage={state?.contextUsage} />
 					{busy && !readOnly ? (
 						<button
 							type="button"
@@ -422,4 +440,4 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 			</div>
 		</div>
 	);
-}
+});

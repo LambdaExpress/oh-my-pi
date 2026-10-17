@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { type LocalProtocolOptions, resolveLocalRoot } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { InternalUrlFilesystem } from "@oh-my-pi/pi-coding-agent/internal-urls/url-filesystem";
-import { ShellFsFileType, ShellFsOp } from "@oh-my-pi/pi-natives";
+import { executeShell, ShellFsFileType, ShellFsOp } from "@oh-my-pi/pi-natives";
 
 const READ = { read: true, write: false, append: false, truncate: false, create: false, createNew: false };
 const CREATE = { read: false, write: true, append: false, truncate: true, create: true, createNew: false };
@@ -17,21 +17,16 @@ function shellFs(tier: "read" | "write" | "exec" = "exec"): InternalUrlFilesyste
 	return new InternalUrlFilesystem({ context: { localProtocolOptions: localOptions }, tier });
 }
 
-async function createUrlSymlink(target: string, linkPath: string): Promise<() => void> {
-	if (process.platform !== "win32") {
-		await fs.symlink(target, linkPath);
-		return () => {};
-	}
-	// Windows normalizes a symlink's target as a host path, destroying the
-	// literal URI. Keep a real dangling link for containment/lstat and supply
-	// the URI at the readlink boundary where the URL filesystem consumes it.
-	await fs.symlink(path.join(tempDir, "missing-link-target"), linkPath, "file");
-	const readlink = fs.readlink;
-	const spy = vi
-		.spyOn(fs, "readlink")
-		.mockImplementation((async (filePath: Parameters<typeof fs.readlink>[0]) =>
-			filePath === linkPath ? target : readlink(filePath)) as typeof fs.readlink);
-	return () => spy.mockRestore();
+/**
+ * Create `link` holding the literal `target`, as the native shell's `ln -s` does.
+ * Node's `fs.symlink` rewrites `/` to `\` in the target on Windows, mangling a URL.
+ */
+async function nativeSymlink(target: string, link: string): Promise<void> {
+	const result = await executeShell({
+		command: `ln -s '${target}' '${path.basename(link)}'`,
+		cwd: path.dirname(link),
+	});
+	if (result.exitCode !== 0) throw new Error(`ln -s ${target} ${link} exited ${result.exitCode}`);
 }
 
 beforeEach(async () => {
@@ -53,8 +48,11 @@ describe("InternalUrlFilesystem local://", () => {
 	});
 
 	it("addresses entry names that need percent-encoding, as the first segment and below", async () => {
-		const name = process.platform === "win32" ? "we ird #%41 a@b" : "we?ird #%41 a@b:1";
-		const encoded = encodeURIComponent(name).replaceAll("%40", "@").replaceAll("%3A", ":");
+		// `?` and `:` are illegal in Windows file names; the rest still needs encoding.
+		const [name, encoded] =
+			process.platform === "win32"
+				? ["we ird #%41 a@b", "we%20ird%20%23%2541%20a@b"]
+				: ["we?ird #%41 a@b:1", "we%3Fird%20%23%2541%20a@b:1"];
 		await fs.mkdir(path.join(localRoot, name), { recursive: true });
 		await fs.writeFile(path.join(localRoot, name, name), "x");
 
@@ -91,31 +89,27 @@ describe("InternalUrlFilesystem local://", () => {
 			target: "local://source.txt",
 		});
 		expect(link).toEqual({ local: path.join(localRoot, "link") });
-		const restore = await createUrlSymlink("local://source.txt", path.join(localRoot, "link"));
-		try {
-			await expect(shellFs().handle({ op: ShellFsOp.Open, path: "local://link", open: READ })).resolves.toEqual({
-				local: path.join(localRoot, "source.txt"),
-			});
-			await expect(shellFs().handle({ op: ShellFsOp.ReadLink, path: "local://link" })).resolves.toEqual({
-				local: path.join(localRoot, "link"),
-			});
-			await expect(shellFs().handle({ op: ShellFsOp.Canonicalize, path: "local://link" })).resolves.toEqual({
-				path: "local://source.txt",
-			});
-		} finally {
-			restore();
-		}
+		// What the native side does with that redirect: the link stores the URL verbatim.
+		await nativeSymlink("local://source.txt", path.join(localRoot, "link"));
+
+		await expect(shellFs().handle({ op: ShellFsOp.Open, path: "local://link", open: READ })).resolves.toEqual({
+			local: path.join(localRoot, "source.txt"),
+		});
+		await expect(shellFs().handle({ op: ShellFsOp.ReadLink, path: "local://link" })).resolves.toEqual({
+			local: path.join(localRoot, "link"),
+		});
+		await expect(shellFs().handle({ op: ShellFsOp.Canonicalize, path: "local://link" })).resolves.toEqual({
+			path: "local://source.txt",
+		});
 	});
 
 	it("applies the link target's write policy when writing through a URL symlink", async () => {
 		await fs.mkdir(localRoot, { recursive: true });
-		const restore = await createUrlSymlink("omp://README.md", path.join(localRoot, "doc"));
-		try {
-			const response = await shellFs().handle({ op: ShellFsOp.Open, path: "local://doc", open: CREATE });
-			expect(response.error?.code).toBe("EROFS");
-		} finally {
-			restore();
-		}
+		await nativeSymlink("omp://README.md", path.join(localRoot, "doc"));
+
+		const response = await shellFs().handle({ op: ShellFsOp.Open, path: "local://doc", open: CREATE });
+
+		expect(response.error?.code).toBe("EROFS");
 	});
 
 	it("backs URLs onto host paths, including would-be paths of missing entries, without creating them", async () => {

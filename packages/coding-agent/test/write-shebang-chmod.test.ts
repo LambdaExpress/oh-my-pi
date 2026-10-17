@@ -40,23 +40,38 @@ describe("write tool shebang chmod", () => {
 		await removeWithRetries(tmpDir);
 	});
 
-	it.skipIf(process.platform === "win32")(
-		"marks files starting with #! as executable and flags the result",
-		async () => {
-			const filePath = path.join(tmpDir, "run.sh");
-			const tool = new WriteTool(createSession(tmpDir));
+	// POSIX execute bits: Windows accepts chmod but keeps no execute bits.
+	const posixIt = it.skipIf(process.platform === "win32");
 
-			const result = await tool.execute("call-1", {
-				path: filePath,
-				content: "#!/bin/sh\necho hi\n",
-			});
+	posixIt("marks files starting with #! as executable and flags the result", async () => {
+		const filePath = path.join(tmpDir, "run.sh");
+		const tool = new WriteTool(createSession(tmpDir));
 
-			const stat = await fs.stat(filePath);
-			// All three execute bits flipped on (chmod a+x semantics).
-			expect(stat.mode & 0o111).toBe(0o111);
-			expect(details(result).madeExecutable).toBe(true);
-		},
-	);
+		const result = await tool.execute("call-1", {
+			path: filePath,
+			content: "#!/bin/sh\necho hi\n",
+		});
+
+		const stat = await fs.stat(filePath);
+		// All three execute bits flipped on (chmod a+x semantics).
+		expect(stat.mode & 0o111).toBe(0o111);
+		expect(details(result).madeExecutable).toBe(true);
+	});
+
+	it.skipIf(process.platform !== "win32")("does not claim chmod +x where execute bits cannot stick", async () => {
+		const filePath = path.join(tmpDir, "run.sh");
+		const tool = new WriteTool(createSession(tmpDir));
+
+		const content = "#!/bin/sh\necho hi\n";
+		const result = await tool.execute("call-win", {
+			path: filePath,
+			content,
+		});
+
+		expect(result.isError).toBeUndefined();
+		expect(await fs.readFile(filePath, "utf8")).toBe(content);
+		expect(details(result).madeExecutable).toBeUndefined();
+	});
 
 	it("does not chmod files without a shebang", async () => {
 		const filePath = path.join(tmpDir, "data.txt");
@@ -72,7 +87,22 @@ describe("write tool shebang chmod", () => {
 		expect(details(result).madeExecutable).toBeUndefined();
 	});
 
-	it.skipIf(process.platform === "win32")("does not re-flag when file is already executable", async () => {
+	posixIt("preserves mode for Rust inner attributes without an executable notice", async () => {
+		const filePath = path.join(tmpDir, "lib.rs");
+		await fs.writeFile(filePath, "fn main() {}\n");
+		await fs.chmod(filePath, 0o644);
+
+		const tool = new WriteTool(createSession(tmpDir));
+		const result = await tool.execute("call-rust", {
+			path: filePath,
+			content: "#![allow(dead_code)]\nfn main() {}\n",
+		});
+
+		expect((await fs.stat(filePath)).mode & 0o777).toBe(0o644);
+		expect(details(result).madeExecutable).toBeUndefined();
+	});
+
+	posixIt("does not re-flag when file is already executable", async () => {
 		const filePath = path.join(tmpDir, "preexec.sh");
 		await fs.writeFile(filePath, "#!/bin/sh\nold\n");
 		await fs.chmod(filePath, 0o755);
@@ -88,19 +118,4 @@ describe("write tool shebang chmod", () => {
 		// Mode didn't change, so no flag.
 		expect(details(result).madeExecutable).toBeUndefined();
 	});
-
-	it.skipIf(process.platform !== "win32")(
-		"writes shebang content when the filesystem has no POSIX execute bits",
-		async () => {
-			const filePath = path.join(tmpDir, "run.sh");
-			const content = "#!/bin/sh\necho hi\n";
-			const result = await new WriteTool(createSession(tmpDir)).execute("call-windows", {
-				path: filePath,
-				content,
-			});
-
-			expect(result.isError).toBeUndefined();
-			expect(await fs.readFile(filePath, "utf8")).toBe(content);
-		},
-	);
 });

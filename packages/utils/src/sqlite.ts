@@ -17,7 +17,17 @@ const SNAPSHOT_COMPARE_CHUNK = 64 * 1024;
 
 let snapshotCompareBuffer: Buffer | undefined;
 
-type SqliteFileIdentity = string | null | undefined;
+/**
+ * A store's identity as `dev:ino:birthtimeMs`, `null` when the path holds no
+ * file, or `undefined` when the stat itself failed and no conclusion is safe.
+ */
+export type SqliteFileIdentity = string | null | undefined;
+
+/** Failed openers share one recovery cohort, including differently cased Windows paths. */
+function corruptHandleKey(dbPath: string): string {
+	const resolved = path.resolve(dbPath);
+	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
 
 class SqliteAttemptFailure extends Error {
 	readonly original: unknown;
@@ -34,7 +44,13 @@ class SqliteAttemptFailure extends Error {
 	}
 }
 
-function sqliteFileIdentity(dbPath: string): SqliteFileIdentity {
+/**
+ * Identity of the file currently at `dbPath`. Quarantine moves a corrupt store
+ * aside and recreates one at the same path, so a connection cached on the path
+ * alone keeps writing to the unlinked inode: callers that hold a long-lived
+ * handle compare this before reusing it.
+ */
+export function sqliteFileIdentity(dbPath: string): SqliteFileIdentity {
 	try {
 		const stat = fs.statSync(dbPath);
 		return `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
@@ -72,6 +88,8 @@ interface SqliteCorruptionRecovery {
 
 interface SqliteOpeningState {
 	key: string;
+	/** Keep filesystem paths separate from the case-folded Windows cohort key. */
+	dbPath: string;
 	pending: number;
 	callers: number;
 	succeeded: boolean;
@@ -91,10 +109,10 @@ interface SqliteInitializingContext {
 const openingStates = new Map<string, SqliteOpeningState>();
 const initializingContext = new AsyncLocalStorage<SqliteInitializingContext>();
 
-function joinOpeningState(key: string): SqliteOpeningState {
+function joinOpeningState(key: string, dbPath: string): SqliteOpeningState {
 	let state = openingStates.get(key);
 	if (!state) {
-		state = { key, pending: 0, callers: 0, succeeded: false };
+		state = { key, dbPath: path.resolve(dbPath), pending: 0, callers: 0, succeeded: false };
 		openingStates.set(key, state);
 	}
 	state.pending++;
@@ -138,7 +156,7 @@ function finishOpeningState(state: SqliteOpeningState): void {
 	let outcome: SqliteRecoveryOutcome;
 	try {
 		const backupPath = recoverCorruptDatabase(
-			state.key,
+			state.dbPath,
 			request.failure,
 			request.options,
 			state,
@@ -579,6 +597,7 @@ function recoverCorruptDatabase(
  * unequal/partial peer evidence remains in its private staging directory.
  * Incomplete pre-close preservation retains failed handles and blocks further
  * same-path opens until process exit rather than checkpointing uncopied evidence.
+ * Windows cohorts share a case-folded key without rewriting evidence paths.
  * File identities protect a peer's replacement,
  * and successful concurrent local initializers are never discarded. A foreign
  * live Windows handle can prevent replacement; its preservation error surfaces
@@ -590,7 +609,7 @@ export async function openSqliteDatabase<T>(
 	initialize: (db: Database) => T | Promise<T>,
 	options: SqliteOpenOptions = {},
 ): Promise<T> {
-	const key = path.resolve(dbPath);
+	const key = corruptHandleKey(dbPath);
 	const parent = initializingContext.getStore();
 	const nested = hasInitializingParent(key, parent);
 	const existing = openingStates.get(key);
@@ -618,7 +637,7 @@ export async function openSqliteDatabase<T>(
 		const outcome = await recovering.complete.promise;
 		if (!outcome.ok) throw outcome.error;
 	}
-	const state = joinOpeningState(key);
+	const state = joinOpeningState(key, dbPath);
 	try {
 		let failure: unknown;
 		try {
@@ -663,7 +682,7 @@ export function openSqliteDatabaseSync<T>(
 	initialize: (db: Database) => T,
 	options: SqliteOpenOptions = {},
 ): T {
-	const key = path.resolve(dbPath);
+	const key = corruptHandleKey(dbPath);
 	const existing = openingStates.get(key);
 	const recovering = existing?.recovery;
 	if (existing && recovering) {
@@ -679,7 +698,7 @@ export function openSqliteDatabaseSync<T>(
 			releaseOpeningState(existing);
 		}
 	}
-	const state = joinOpeningState(key);
+	const state = joinOpeningState(key, dbPath);
 	try {
 		let failure: unknown;
 		try {
@@ -710,7 +729,7 @@ export function openSqliteDatabaseSync<T>(
 /** Adds the failing store's path to an error without losing SQLite result codes or its original stack. */
 export function annotateSqliteError(error: unknown, dbPath: string): Error {
 	const annotated = error instanceof Error ? error : new Error(String(error));
-	annotated.message = `Database ${JSON.stringify(dbPath)}: ${annotated.message}`;
+	annotated.message = `Database "${dbPath}": ${annotated.message}`;
 	return annotated;
 }
 

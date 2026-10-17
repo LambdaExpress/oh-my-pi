@@ -8,11 +8,11 @@ import {
 	type SessionHeader,
 	TITLE_CHANGE_ENTRY_TYPE,
 } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { resetSessionIndexForTests } from "@oh-my-pi/pi-coding-agent/session/session-index";
 import { loadEntriesFromFile } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { FileSessionStorage, type WriteTextAtomicOptions } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import type { SessionTitleUpdate } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
-import { resetSessionIndexForTests } from "@oh-my-pi/pi-coding-agent/session/session-index";
 import { getConfigRootDir, removeSyncWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 
 import { makeAssistantMessage } from "./helpers";
@@ -74,6 +74,7 @@ describe("session title source persistence", () => {
 	});
 
 	afterEach(() => {
+		// Title changes open history.db under testAgentDir; Windows cannot delete an open file.
 		resetSessionIndexForTests();
 		if (originalAgentDir) {
 			setAgentDir(originalAgentDir);
@@ -108,6 +109,8 @@ describe("session title source persistence", () => {
 		const reopened = await SessionManager.open(sessionFile!);
 		expect(reopened.getSessionName()).toBe("Auto title");
 		expect(reopened.titleSource).toBe("auto");
+		await reopened.close();
+		await session.close();
 	});
 
 	it("loads legacy slotless files with header titles", async () => {
@@ -166,6 +169,7 @@ describe("session title source persistence", () => {
 		const titleChanges = entries.filter(entry => entry.type === TITLE_CHANGE_ENTRY_TYPE);
 		expect(titleChanges.map(entry => entry.title)).toEqual(["Auto title", "Manual title"]);
 		expect(titleChanges.map(entry => entry.trigger)).toEqual(["initial", "rename"]);
+		await session.close();
 	});
 
 	it("notifies name-change subscribers only after successful applied names", async () => {

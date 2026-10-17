@@ -5,7 +5,7 @@
  * columns with a dotted outline around the selected target.
  */
 import { type Component } from "../tui";
-import { visibleWidth } from "../utils";
+import { stripPromptZones, visibleWidth } from "../utils";
 import {
 	isUserRequestEntry,
 	type TranscriptEntryLike as TranscriptEntry,
@@ -45,23 +45,6 @@ export interface OutlineStyle {
 	color?: ThemeColor;
 	/** Short affordance label (e.g. "3 blocks →") drawn into the top rule's right end. */
 	caption?: string;
-}
-
-// User bubbles wrap their rows in OSC 133 prompt-zone marks (see
-// user-message.ts). Re-emitting those inside the alternate-screen overlay
-// latches the terminal's prompt semantics onto overlay rows and garbles the
-// frame, so embedded rows shed them; the transcript proper keeps its zones.
-const OSC133_SPAN_REGEX = /\x1b\]133;[^\x07\x1b]*(?:\x07|\x1b\\)/g;
-
-/** Copy-on-write removal of OSC 133 spans from a rendered row array. */
-export function stripPromptZones(rows: readonly string[]): readonly string[] {
-	let sanitized: string[] | undefined;
-	for (let index = 0; index < rows.length; index++) {
-		if (!rows[index]!.includes("\x1b]133;")) continue;
-		sanitized ??= rows.slice();
-		sanitized[index] = rows[index]!.replace(OSC133_SPAN_REGEX, "");
-	}
-	return sanitized ?? rows;
 }
 
 /**

@@ -2,7 +2,7 @@
 // timeout/abort teardown is inherently wall-clock bound. Fake timers cannot
 // advance a child process's execution or resolve its `exited` promise, so the
 // real-timer exception in ts-no-test-timers applies here.
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -111,20 +111,33 @@ describe("runBoundedProbe", () => {
 
 describe("probeCandidates", () => {
 	test("shares one discovery deadline across hung candidates instead of paying it per candidate", async () => {
-		const start = Date.now();
-		const result = await probeCandidates(
-			[
-				{ command: HANG, env: baseEnv(), label: "cand-a" },
-				{ command: HANG, env: baseEnv(), label: "cand-b" },
-				{ command: HANG, env: baseEnv(), label: "cand-c" },
-			],
-			{ cwd: process.cwd(), timeoutMs: 300 },
-		);
-		const elapsed = Date.now() - start;
-		expect(result).toEqual({ ok: false, aborted: false, failures: expect.any(Array) });
-		// One 300ms budget total, not 3×: the whole discovery stays well under the
-		// combined per-candidate cost it would incur without a shared deadline.
-		expect(elapsed).toBeLessThan(900);
+		const admitted: string[] = [];
+		const spawn = Bun.spawn;
+		const observer = spyOn(Bun, "spawn").mockImplementation((...args) => {
+			const command = args[0];
+			if (Array.isArray(command)) {
+				const candidate = command.find(arg => typeof arg === "string" && arg.startsWith("probe-candidate-"));
+				if (candidate) admitted.push(candidate);
+			}
+			return Reflect.apply(spawn, Bun, args);
+		});
+		try {
+			const result = await probeCandidates(
+				[
+					{ command: [...HANG, "probe-candidate-a"], env: baseEnv(), label: "cand-a" },
+					{ command: [...HANG, "probe-candidate-b"], env: baseEnv(), label: "cand-b" },
+					{ command: [...HANG, "probe-candidate-c"], env: baseEnv(), label: "cand-c" },
+				],
+				{ cwd: process.cwd(), timeoutMs: 300 },
+			);
+			expect(result).toEqual({ ok: false, aborted: false, failures: expect.any(Array) });
+			// The shared deadline stops candidate admission. OS scheduling and
+			// process-tree teardown may legitimately outlast that deadline.
+			expect(admitted).not.toContain("probe-candidate-b");
+			expect(admitted).not.toContain("probe-candidate-c");
+		} finally {
+			observer.mockRestore();
+		}
 	});
 
 	test("returns the first candidate that exits 0 and skips the rest", async () => {

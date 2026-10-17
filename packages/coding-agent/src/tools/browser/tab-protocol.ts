@@ -48,6 +48,8 @@ export type WorkerInitPayload =
 			mode: "headless";
 			browserWSEndpoint: string;
 			safeDir: string;
+			/** The tab's upload staging folder, which outlives a recycled worker; see `UploadStaging`. */
+			uploadDir: string;
 			/** Keep the page tied to an OMP-owned worker without pinning a visible window's layout viewport. */
 			emulateViewport?: boolean;
 			viewport?: Viewport;
@@ -62,9 +64,6 @@ export type WorkerInitPayload =
 			userAgent?: string;
 			/** Ignore invalid HTTPS certificates for this page. */
 			ignoreHttpsErrors?: boolean;
-			url?: string;
-			waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
-			timeoutMs: number;
 	  }
 	| {
 			mode: "attach";
@@ -72,6 +71,8 @@ export type WorkerInitPayload =
 			safeDir: string;
 			/** Preserve visible-page activation when a timed-out worker reattaches to its OMP-owned target. */
 			activatePageBeforeRun?: boolean;
+			/** The tab's upload staging folder, which outlives a recycled worker; see `UploadStaging`. */
+			uploadDir: string;
 			targetId: string;
 			/** Apply an explicitly requested viewport without changing unconfigured user tabs. */
 			viewport?: Viewport;
@@ -86,9 +87,6 @@ export type WorkerInitPayload =
 			userAgent?: string;
 			/** Ignore invalid HTTPS certificates for this page. */
 			ignoreHttpsErrors?: boolean;
-			url?: string;
-			waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
-			timeoutMs: number;
 			/**
 			 * Post-timeout recycle: before adopting the page, dismiss any open JS dialog and
 			 * stop a pending navigation so a blocked target cannot stall worker init (which
@@ -103,11 +101,9 @@ export type WorkerInitPayload =
 			 */
 			activateForScreenshot?: boolean;
 			/**
-			 * True when the tab lives in a browser the user drives directly (connected CDP
-			 * attach, browser relay). Its document can be legitimately backgrounded — the
-			 * user may be looking at another window — so `document.visibilityState` is not a
-			 * reliable screenshot gate and the worker must not raise the tab (that would
-			 * steal the user's focus). The supervisor sets this only for user-driven kinds.
+			 * The user drives this browser (connected, relay): downloads keep its one browser-wide folder and real file
+			 * names, since the user's own downloads land there too. Its document may legitimately be hidden, so
+			 * screenshots may bypass the visibility gate without raising the tab. Unset means an OMP-launched browser.
 			 */
 			userDriven?: boolean;
 	  };
@@ -133,6 +129,8 @@ export interface RunResultOk {
 	displays: Array<TextContent | ImageContent>;
 	returnValue: unknown;
 	screenshots: ScreenshotResult[];
+	/** The run finished but tab-scoped browser state was not restored; the tab must be recycled. */
+	recoverTab?: boolean;
 }
 
 export interface RunErrorPayload {
@@ -143,14 +141,17 @@ export interface RunErrorPayload {
 	isAbort: boolean;
 	/** The worker could not restore tab-scoped browser state and must be recycled. */
 	recoverTab?: boolean;
+	/** `tab.goto` outlasted its budget; the page stays on what loaded. */
+	navigationTimeout?: boolean;
+	/** The page's renderer crashed; the worker runs nothing more and must be recycled. */
+	rendererCrashed?: boolean;
 }
 
 export type WorkerOutbound =
 	| {
 			/**
 			 * Puppeteer loaded, browser connected. Sent before page acquisition so the supervisor's cold-start budget
-			 * bounds only the realm setup (cold import + connect); page creation and the first navigation run under the
-			 * ready wait.
+			 * bounds only the realm setup (cold import + connect); page creation runs under the ready wait.
 			 */
 			type: "setup";
 	  }

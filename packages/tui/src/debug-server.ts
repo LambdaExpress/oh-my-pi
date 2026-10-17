@@ -1,5 +1,4 @@
-import { existsSync, unlinkSync } from "node:fs";
-import { createServer, type Server, type Socket } from "node:net";
+import { type IpcConnection, IpcServer } from "@oh-my-pi/pi-natives";
 import { type Component, isFocusable, type OverlayOptions, type TUI } from "./tui";
 import { plainText } from "./native/spans";
 
@@ -209,78 +208,66 @@ function mouseSequence(x: number, y: number, action: string): string[] {
 export class TuiDebugServer {
 	readonly #tui: TUI;
 	readonly #path: string;
-	#server: Server | undefined;
-	#sockets = new Set<Socket>();
-	#dispatching: Socket | undefined;
+	#server: IpcServer | undefined;
+	#listening: Promise<boolean> | undefined;
+	#stopped = false;
+	#connections = new Set<IpcConnection>();
+	#dispatching: IpcConnection | undefined;
 
 	constructor(tui: TUI, path: string) {
 		this.#tui = tui;
 		this.#path = path;
 	}
 
+	/** Resolves true once the socket accepts connections, false if listen failed or the server stopped first. */
+	get ready(): Promise<boolean> {
+		return this.#listening ?? Promise.resolve(false);
+	}
+
 	start(): void {
-		if (this.#server !== undefined) return;
-		try {
-			if (existsSync(this.#path)) unlinkSync(this.#path);
-		} catch {
-			// The listen error below is isolated from the host application.
-		}
-		const server = createServer(socket => this.#accept(socket));
-		this.#server = server;
-		server.on("error", error => {
-			void error;
-		});
-		try {
-			server.listen(this.#path);
-		} catch {
-			this.#server = undefined;
-			server.close();
-		}
+		if (this.#listening !== undefined) return;
+		this.#stopped = false;
+		this.#listening = IpcServer.listen(this.#path, { framing: "lines" }, connection => this.#accept(connection)).then(
+			server => {
+				if (this.#stopped) {
+					void server.close().catch(() => {});
+					return false;
+				}
+				this.#server = server;
+				return true;
+			},
+			() => false, // A live peer or unusable path disables the debug socket; the host application is unaffected.
+		);
 	}
 
 	stop(): void {
+		this.#stopped = true;
 		const server = this.#server;
 		this.#server = undefined;
+		this.#listening = undefined;
 		// An injected key can synchronously stop the TUI. Keep that request's
-		// socket writable until its response is queued, and drain all already
+		// connection writable until its response is queued, and drain all already
 		// queued replies before closing the other connections.
-		for (const socket of this.#sockets) {
-			if (socket !== this.#dispatching) socket.end();
+		for (const connection of this.#connections) {
+			if (connection !== this.#dispatching) connection.end();
 		}
-		try {
-			server?.close();
-		} catch {
-			// A failed or already-closed listener still needs its stale path removed.
-		}
-		try {
-			if (existsSync(this.#path)) unlinkSync(this.#path);
-		} catch {
-			// Teardown must not affect the host application.
-		}
+		void server?.close().catch(() => {});
 	}
 
-	#accept(socket: Socket): void {
-		this.#sockets.add(socket);
-		let buffer = "";
-		socket.setEncoding("utf8");
-		socket.on("data", chunk => {
-			buffer += chunk;
-			let newline = buffer.indexOf("\n");
-			while (newline !== -1) {
-				const line = buffer.slice(0, newline).replace(/\r$/, "");
-				buffer = buffer.slice(newline + 1);
-				if (line.length > 0) this.#handleLine(socket, line);
-				if (this.#server === undefined) break;
-				newline = buffer.indexOf("\n");
-			}
-		});
-		socket.on("error", error => {
-			void error;
-		});
-		socket.on("close", () => this.#sockets.delete(socket));
+	#accept(connection: IpcConnection): void {
+		if (this.#stopped) {
+			connection.destroy();
+			return;
+		}
+		this.#connections.add(connection);
+		connection.start(
+			line => void this.#handleLine(connection, line),
+			() => this.#connections.delete(connection),
+		);
 	}
 
-	#handleLine(socket: Socket, line: string): void {
+	async #handleLine(connection: IpcConnection, line: string): Promise<void> {
+		if (this.#stopped) return;
 		let request: DebugRequest;
 		try {
 			const parsed: unknown = JSON.parse(line);
@@ -288,40 +275,35 @@ export class TuiDebugServer {
 				throw new Error("request must be an object");
 			request = parsed as DebugRequest;
 		} catch (error) {
-			this.#write(socket, { ok: false, error: `malformed JSON: ${errorMessage(error)}` });
+			this.#write(connection, { ok: false, error: `malformed JSON: ${errorMessage(error)}` });
 			return;
 		}
+		let response: DebugResponse;
 		try {
-			this.#dispatching = socket;
-			const response = this.#dispatch(request);
-			if (request.op === "quit" && response.ok) {
-				this.#write(socket, response, () => {
-					this.#tui.stop();
-					process.exit(0);
-				});
-				return;
-			}
-			this.#write(socket, response);
+			this.#dispatching = connection;
+			response = this.#dispatch(request);
 		} catch (error) {
-			this.#write(socket, { ok: false, error: errorMessage(error) });
+			response = { ok: false, error: errorMessage(error) };
 		} finally {
 			this.#dispatching = undefined;
 		}
+		this.#write(connection, response);
+		if (request.op === "quit" && response.ok) {
+			await connection.drained();
+			this.#tui.stop();
+			process.exit(0);
+		}
 	}
 
-	#write(socket: Socket, response: DebugResponse, flushed?: () => void): void {
+	#write(connection: IpcConnection, response: DebugResponse): void {
 		let line: string;
 		try {
 			line = JSON.stringify(response);
 		} catch (error) {
 			line = JSON.stringify({ ok: false, error: errorMessage(error) });
 		}
-		try {
-			if (this.#server === undefined) socket.end(`${line}\n`, flushed);
-			else socket.write(`${line}\n`, flushed);
-		} catch {
-			// Broken clients cannot affect the TUI.
-		}
+		connection.send(line);
+		if (this.#stopped) connection.end();
 	}
 
 	#dispatch(request: DebugRequest): DebugResponse {

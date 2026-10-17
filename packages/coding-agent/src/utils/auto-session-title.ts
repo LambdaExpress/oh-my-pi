@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { titleTextFromSkillPrompt } from "@oh-my-pi/pi-tui/chat/skill-title-input";
 import { textContent } from "@oh-my-pi/pi-tui/chat/transcript-entry";
-import { isTitleContextReply } from "../session/messages";
+import { titleContextWordCount } from "../session/messages";
 import { formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
 
 const DEFERRED_TITLE_CONTEXT_TURN_LIMIT = 6;
@@ -22,7 +22,7 @@ export function buildDeferredTitleContext(messages: readonly AgentMessage[]): st
 			if (message.attribution === "agent") continue;
 			text = textContent(message.content, "\n\n");
 		} else if (message.role === "assistant") {
-			if (!isTitleContextReply(message)) continue;
+			if (titleContextWordCount(message) === 0) continue;
 			text = textContent(message.content, "\n\n");
 			for (const block of message.content) {
 				if (block.type !== "thinking" || !block.thinking.trim()) continue;

@@ -38,6 +38,7 @@ export class ShowImagesSelectorComponent extends OverlayPanel {
 		this.addChild(this.#selectList);
 		this.#sheet = new SelectListSheet(this.#selectList, {
 			title: t("Show Images"),
+			icon: "image",
 			noun: t("options"),
 			current: [currentValue ? "yes" : "no"],
 		});

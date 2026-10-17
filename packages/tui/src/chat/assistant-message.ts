@@ -2,7 +2,15 @@ import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-a
 import { type Component, Container } from "../tui";
 import { Image, type ImageBudget } from "../components/image";
 import { ImageProtocol, TERMINAL } from "../terminal-capabilities";
-import { Markdown, type MarkdownTheme } from "../components/markdown";
+import {
+	type DefaultTextStyle,
+	holdPartialTableRow,
+	Markdown,
+	type MarkdownTheme,
+	rewriteMarkdownLinkDestinations,
+	speculativeStreamingSource,
+	streamingMarkdownSource,
+} from "../components/markdown";
 import { Spacer } from "../components/spacer";
 import { Text } from "../components/text";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
@@ -10,12 +18,13 @@ import chalk from "@oh-my-pi/pi-utils/chalk";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { AssistantThinkingRenderer } from "./extension-types";
 import { t } from "../i18n";
-import { ensureThemeSync, getMarkdownTheme, getThemeEpoch, theme } from "../theme";
+import { ensureThemeSync, getMarkdownTheme, getMarkdownThemeWithLinkTargets, getThemeEpoch, theme } from "../theme";
 import { card, col, elapsed, node, span, text } from "../native/describe";
 import { hasTranscriptActions, runTranscriptAction } from "./transcript-actions";
-import type { NativeChild, NativeNode, NativeUiEvent } from "../native/node";
+import type { DescribeContext, NativeChild, NativeNode, NativeUiEvent } from "../native/node";
 import { isNativeRendering } from "../native/state";
-import { NativeImageCache } from "../native/blobs";
+import { NativeImageCache, nativeMediaNode } from "../native/blobs";
+import { linkedImageText } from "../prompt/image-references";
 import { Memo } from "../native/memo";
 import { EMPTY_LINK_TARGETS, resolveImageOptions } from "../render/render-utils";
 import { WidthAwareText } from "../render";
@@ -28,6 +37,10 @@ import { type ServedModelMismatch, ServedModelMarkerComponent } from "./served-m
 import { isReactionTarget, type ReactionSplit, type ReactionTarget, splitReaction } from "./reaction";
 import { isRowPrefix, type TranscriptStableRow, trimBlankEdges } from "../chrome/transcript-container";
 import { formatTurnUsage, type TurnUsageSummary } from "../overlays/usage-row";
+import { FigureMarkdown } from "./figure-markdown";
+import { svgFigureRendering } from "./svg-figure";
+import { hasSvgFence } from "./svg-source";
+import { chartFence, hasChartTable, lookupTableChart, splitTableCharts } from "./table-chart";
 
 /**
  * Max wrapped rows of a turn-ending provider error rendered inline in the
@@ -52,20 +65,23 @@ function thoughtLabel(clock: { start: number; end?: number } | undefined): strin
 }
 
 type ThinkingContentBlock = Extract<AssistantMessage["content"][number], { type: "thinking" }>;
-type DisplayThinkingContentBlock = ThinkingContentBlock & { rawThinking?: string };
-type FastPathItem = {
-	md: Markdown;
+/** Renders one text or thinking block: Markdown, or {@link FigureMarkdown} for text holding a ```svg fence. */
+type ProseBlock = Markdown | FigureMarkdown;
+/** A streamed block the fast path updates in place. */
+interface FastPathItem {
+	md: ProseBlock;
 	contentIndex: number;
 	blockType: "text" | "thinking";
 	lastText: string;
-};
+}
+type DisplayThinkingContentBlock = ThinkingContentBlock & { rawThinking?: string };
 
 type StablePartKind = "thinking" | "text";
 type StablePart = { kind: StablePartKind; text: string } | { kind: "spacer" };
 
 /**
- * One published prefix of the leading visible-thinking run. Later snapshots
- * extend earlier ones part-wise (only the final thinking part may grow), so
+ * One published prefix of the leading prose run. Later snapshots extend
+ * earlier ones part-wise (only the final text or thinking part may grow), so
  * rendered stable rows only ever gain a suffix — the append-only transcript
  * contract that lets them retire into native scrollback mid-stream.
  */
@@ -105,6 +121,14 @@ interface StableRenderInputs {
 	readonly markdown: MarkdownTheme;
 	readonly color: ((text: string) => string) | undefined;
 }
+
+/**
+ * A partial last thinking line the prose fold may still drop: the start of a
+ * fence marker (`` ` ``, `~`) or of an empty `<!-- -->` sentinel. Once it turns
+ * into either, the fold's ellipsis lands back on the line above it
+ * (`formatThinkingForDisplay`), so that line is not yet settled.
+ */
+const UNSETTLED_THINKING_TAIL = /(?:^|\n)[^\S\n]*(?:`{1,2}|~{1,2}|<(?:!(?:-(?:-[^\S\n]*-{0,2})?)?)?)[^\S\n]*$/;
 
 function isSnapshotExtension(previous: readonly StablePart[], current: readonly StablePart[]): boolean {
 	if (previous.length > current.length) return false;
@@ -259,13 +283,10 @@ function lerpHex(from: string, to: string, t: number): string {
 }
 
 /**
- * Renders an assistant message; streaming content remains mutable until the
- * provider finalizes it because later deltas can revise earlier Markdown.
- * The exception is the leading run of visible thinking blocks: raw thinking
- * only ever appends, so its frozen Markdown prefix publishes as append-only
- * stable rows ({@link AppendOnlyTranscriptBlock}) and can retire into native
- * scrollback while the block still streams — a long reasoning trace is no
- * longer clipped to the mutable viewport.
+ * Renders an assistant message. Append-only streams publish settled Markdown
+ * prefixes as stable rows ({@link AppendOnlyTranscriptBlock}), letting prose
+ * retire into native scrollback while its tail still streams. Wires that can
+ * revise earlier source withhold publication through {@link setMidStreamPublication}.
  */
 export class AssistantMessageComponent extends Container {
 	readonly transcriptBlockMode = "appendOnly" as const;
@@ -274,22 +295,32 @@ export class AssistantMessageComponent extends Container {
 	#cacheMarker?: CacheInvalidationMarkerComponent;
 	#servedModelMarker?: ServedModelMarkerComponent;
 	#lastMessage?: AssistantMessage;
-	#emergencyText?: Markdown;
+	#emergencyText?: ProseBlock;
 	#toolImagesByCallId = new Map<string, ImageContent[]>();
+	/** File each grouped read showed that Tern's media viewer shows, for native `media` nodes. */
+	#toolMediaPathByCallId = new Map<string, string>();
 	/**
 	 * Payload keys ({@link imagePayloadKey}) whose Kitty PNG conversion this
-	 * component already awaits, so a re-delivered image neither re-encodes nor
+	 * component is awaiting, so a re-delivered image neither re-encodes nor
 	 * schedules a second {@link updateContent} cascade. The conversions
-	 * themselves are shared process-wide by {@link convertImageToPngShared}.
+	 * themselves live in the bounded process-wide cache behind
+	 * {@link convertImageToPngShared}; an evicted one is redone on the next
+	 * render instead of being pinned here for the session.
 	 */
 	#kittyConversionsAwaited = new Set<string>();
 	/**
-	 * Conversions this component displays, held so a later re-render (theme
-	 * invalidation) still finds them after the bounded shared cache evicts them.
+	 * Conversions the current image children display, by payload key. Rebuilt
+	 * on every full render pass ({@link updateContent}), so a conversion is held
+	 * only while it is on screen — a re-render after the shared cache evicted
+	 * it still finds it — and released once hidden or replaced.
 	 */
-	#kittyConverted = new Map<string, ImageContent>();
+	#kittyDisplayed = new Map<string, ImageContent>();
+	/** The previous pass's {@link #kittyDisplayed}, readable only during a render pass. */
+	#kittyPreviouslyDisplayed: Map<string, ImageContent> | undefined;
 	#showImages = true;
 	#showToolResultImages = true;
+	/** Charts under numeric tables; off for subagent transcripts. */
+	#showTableCharts = true;
 	#transcriptBlockFinalized: boolean;
 	/** See {@link setMidStreamPublication}; the wire's `stream-revision` axis decides it. */
 	#midStreamPublication = true;
@@ -345,6 +376,12 @@ export class AssistantMessageComponent extends Container {
 	// Fast-path state: reuse Markdown children when message shape is stable during streaming.
 	#fastPathKey: string | undefined;
 	#fastPathItems: FastPathItem[] | undefined;
+	/**
+	 * Text blocks whose ```svg fences are lifted into figures, by content index.
+	 * Kept across slow-path rebuilds so a figure keeps its raster (and its
+	 * in-flight one) instead of starting over on every update.
+	 */
+	#figureBlocks = new Map<number, FigureMarkdown>();
 	/** Live "thinking" pulse shown in place of a hidden thinking block while it
 	 *  streams; undefined when not animating. Driven by {@link #thinkingDotsTimer}. */
 	#thinkingDots: Text | undefined;
@@ -388,6 +425,8 @@ export class AssistantMessageComponent extends Container {
 	#textColorTransform?: (text: string) => string;
 	#linkTargets: ReadonlyMap<string, string> = EMPTY_LINK_TARGETS;
 	#markdownTheme: MarkdownTheme | undefined;
+	/** Text-block sources with {@link #linkTargets} applied, for the native `md` nodes; reset with the targets. */
+	#nativeLinkSources = new Map<string, string>();
 	/** Block this reply reacts to; undefined when the preceding block takes no reactions. */
 	#reactionTarget: ReactionTarget | undefined;
 	/** Reaction lifted from the reply's opening emoji, once resolved. */
@@ -405,16 +444,38 @@ export class AssistantMessageComponent extends Container {
 	/** Markdown nodes by key, reused while their text and streaming flag are unchanged. */
 	#nativeParts = new Map<string, { text: string; stream: boolean; node: NativeNode }>();
 	readonly #nativeImages = new NativeImageCache();
+	/** Smart table chart picks a TSP describe is waiting on. */
+	readonly #chartPicks = new Set<Promise<void>>();
 
 	setTextColorTransform(transform?: (text: string) => string): void {
 		this.#textColorTransform = transform;
+	}
+
+	/**
+	 * Default text style for assistant paragraph Markdown. An explicitly
+	 * installed transform (live-command output) always wins and keeps its
+	 * historical paint-everything contract; otherwise the optional
+	 * `assistantMessageText` theme token paints prose, flagged `proseFg` so
+	 * markdown sub-elements keep their own `md*` tokens (docs/theme.md).
+	 * Returns undefined when the token is unset or empty so the terminal
+	 * default foreground is used byte-for-byte, exactly as before the token
+	 * existed.
+	 *
+	 * The token is re-derived on every rebuild (the theme-change path calls
+	 * `invalidate()` and rebuilds through the teardown path, which re-consults
+	 * the active theme), so prose follows theme switches both ways.
+	 */
+	#getProseTextStyle(): DefaultTextStyle | undefined {
+		if (this.#textColorTransform) return { color: this.#textColorTransform };
+		if (typeof theme === "undefined" || !theme.hasColor("assistantMessageText")) return undefined;
+		return { color: (text: string) => theme.fg("assistantMessageText", text), proseFg: true };
 	}
 
 	#getProseTheme(): MarkdownTheme {
 		if (this.#markdownTheme) return this.#markdownTheme;
 		const base = getMarkdownTheme();
 		const snapshot = this.#linkTargets;
-		const markdownTheme = snapshot.size > 0 ? { ...base, resolveLink: (href: string) => snapshot.get(href) } : base;
+		const markdownTheme = snapshot.size > 0 ? getMarkdownThemeWithLinkTargets(snapshot) : base;
 		this.#markdownTheme = markdownTheme;
 		return markdownTheme;
 	}
@@ -436,6 +497,9 @@ export class AssistantMessageComponent extends Container {
 		this.#markdownTheme = undefined;
 		this.#fastPathKey = undefined;
 		this.#fastPathItems = undefined;
+		for (const block of this.#figureBlocks.values()) block.restyle();
+		this.#nativeLinkSources.clear();
+		this.#nativeViewVersion++;
 		if (this.#lastMessage) {
 			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
@@ -505,6 +569,7 @@ export class AssistantMessageComponent extends Container {
 	readonly #thinkingRenderers: readonly AssistantThinkingRenderer[];
 	readonly #imageBudget?: ImageBudget;
 	#proseOnlyThinking: boolean;
+	#expandThinkingBlocks: boolean;
 
 	constructor(
 		message?: AssistantMessage,
@@ -514,6 +579,7 @@ export class AssistantMessageComponent extends Container {
 		imageBudget?: ImageBudget,
 		proseOnlyThinking = true,
 		linkTargets?: ReadonlyMap<string, string>,
+		expandThinkingBlocks = false,
 	) {
 		super();
 		this.#hideThinkingBlock = hideThinkingBlock;
@@ -521,6 +587,7 @@ export class AssistantMessageComponent extends Container {
 		this.#thinkingRenderers = thinkingRenderers;
 		this.#imageBudget = imageBudget;
 		this.#proseOnlyThinking = proseOnlyThinking;
+		this.#expandThinkingBlocks = expandThinkingBlocks;
 
 		ensureThemeSync();
 		this.#transcriptBlockFinalized = message !== undefined;
@@ -583,6 +650,7 @@ export class AssistantMessageComponent extends Container {
 		this.#markdownTheme = undefined;
 		this.#fastPathKey = undefined;
 		this.#fastPathItems = undefined;
+		for (const block of this.#figureBlocks.values()) block.restyle();
 		if (this.#lastMessage) {
 			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
@@ -595,6 +663,11 @@ export class AssistantMessageComponent extends Container {
 		return rows;
 	}
 
+	override releaseRenderCaches(): void {
+		super.releaseRenderCaches();
+		this.#dropStableRenders();
+		this.#emergencyText?.releaseRenderCaches();
+	}
 	setHideThinkingBlock(hide: boolean): void {
 		this.#hideThinkingBlock = hide;
 		this.#thinkingCollapsed.clear();
@@ -619,11 +692,23 @@ export class AssistantMessageComponent extends Container {
 	 * block's current rows, and a later revision could not retract them.
 	 */
 	allowsMidStreamRetirement(): boolean {
-		return this.#midStreamPublication;
+		// A growing figure can replace its entire raster even between async
+		// encodes, so none of its live rows may become immutable history.
+		return this.#midStreamPublication && this.#figureBlocks.size === 0;
 	}
 
 	setProseOnlyThinking(proseOnly: boolean): void {
 		this.#proseOnlyThinking = proseOnly;
+	}
+
+	/**
+	 * Keep finished thinking sections expanded instead of folding them to "Thought for 12s".
+	 * Sections the user folded or unfolded by hand keep that choice.
+	 */
+	setExpandThinkingBlocks(expand: boolean): void {
+		if (this.#expandThinkingBlocks === expand) return;
+		this.#expandThinkingBlocks = expand;
+		this.#nativeViewVersion++;
 	}
 
 	override dispose(): void {
@@ -766,15 +851,22 @@ export class AssistantMessageComponent extends Container {
 		return this.#transcriptBlockFinalized;
 	}
 
+	/** Whether a figure still waits for the raster of its final source; the transcript holds retirement meanwhile. */
+	isTranscriptBlockPending(): boolean {
+		for (const block of this.#figureBlocks.values()) if (block.pending) return true;
+		return false;
+	}
 	/**
 	 * A `col` (role `omp.assistant`) of `md` nodes keyed by content index, so
 	 * streamed deltas reach the terminal as `text append` on the same node;
 	 * the tail block carries `stream: true` until the message finalizes.
-	 * Thinking blocks are quiet collapsible `section`s (collapsed per
-	 * `hideThinkingBlock`): a muted "Thinking…" shimmer while live, then
-	 * "Thought for 12s"; tokens and rate ride in the head's `title`.
+	 * Thinking blocks are quiet collapsible `section`s: a muted "Thinking…"
+	 * shimmer while live, then "Thought for 12s"; tokens and rate ride in the
+	 * head's `title`. With `hideThinkingBlock` only the live head shows (collapsed)
+	 * and a finished thought emits nothing.
 	 */
-	override describe(): NativeNode {
+	override describe(cx?: DescribeContext): NativeNode {
+		const media = cx?.supports("media") === true;
 		const tail = this.#displayedMessage ? this.#thinkingTailIndex(this.#displayedMessage) : undefined;
 		const rate =
 			tail !== undefined && this.#lastUpdateTransient && this.#thinkingRateLive
@@ -789,9 +881,10 @@ export class AssistantMessageComponent extends Container {
 			this.#errorExpanded,
 			this.#nativeViewVersion,
 			rate,
+			media,
 			getThemeEpoch(),
 		];
-		return this.#native.get(key, () => this.#describeMessage(tail, rate));
+		return this.#native.get(key, () => this.#describeMessage(tail, rate, media));
 	}
 
 	/**
@@ -804,10 +897,10 @@ export class AssistantMessageComponent extends Container {
 		this.#nativeViewVersion++;
 	}
 
-	/** Mirrors a thinking section collapsed or expanded in the terminal. */
+	/** Mirrors a thinking section collapsed or expanded in the terminal; runs its controls' clicks. */
 	handleNativeEvent(event: NativeUiEvent): void {
 		if (event.type === "action") {
-			this.#handleErrorAction(event.act);
+			this.#handleAction(event.act);
 			return;
 		}
 		if (event.type !== "toggle" || !event.key.startsWith("k")) return;
@@ -817,7 +910,7 @@ export class AssistantMessageComponent extends Container {
 		this.#nativeViewVersion++;
 	}
 
-	#describeMessage(thinkingTail: number | undefined, rate: number): NativeNode {
+	#describeMessage(thinkingTail: number | undefined, rate: number, media: boolean): NativeNode {
 		const message = this.#displayedMessage;
 		const previousParts = this.#nativeParts;
 		const parts = new Map<string, { text: string; stream: boolean; node: NativeNode }>();
@@ -830,12 +923,19 @@ export class AssistantMessageComponent extends Container {
 					: {
 							text: source,
 							stream,
-							node: node("md", stream ? { text: source, stream: true } : { text: source }, undefined, key),
+							// A streaming node renders its open link or math span as already closed, as the TUI does.
+							node: node(
+								"md",
+								stream ? { text: speculativeStreamingSource(source), stream: true } : { text: source },
+								undefined,
+								key,
+							),
 						};
 			parts.set(slot, entry);
 			return entry.node;
 		};
 		const children: NativeChild[] = [];
+		let answered = false;
 		if (message) {
 			const live = !this.#transcriptBlockFinalized && this.#lastUpdateTransient;
 			let tailIndex = -1;
@@ -852,7 +952,39 @@ export class AssistantMessageComponent extends Container {
 				const content = message.content[index]!;
 				const streaming = live && index === tailIndex;
 				if (content.type === "text" && canonicalizeMessage(content.text)) {
-					children.push(markdown(`t${index}`, `t${index}`, content.text.trim(), streaming));
+					answered = true;
+					// A native terminal sizes table columns by every row it gets: send a growing row once
+					// its line ends. Hold before trimming, which would drop the newline ending a finished row.
+					const source = (streaming ? holdPartialTableRow(content.text) : content.text).trim();
+					// The terminal renders this source itself and would resolve a relative
+					// link against its own idea of the cwd: hand it the session-resolved
+					// targets (resolved once the segment closes, so never while streaming).
+					const linked = (text: string, live: boolean): string => {
+						if (live || this.#linkTargets.size === 0) return text;
+						const targets = this.#linkTargets;
+						const resolved =
+							this.#nativeLinkSources.get(text) ??
+							rewriteMarkdownLinkDestinations(text, href => targets.get(href));
+						this.#nativeLinkSources.set(text, resolved);
+						return resolved;
+					};
+					if (!this.#showImages || !this.#showTableCharts || !hasChartTable(source)) {
+						children.push(markdown(`t${index}`, `t${index}`, linked(source, streaming), streaming));
+						continue;
+					}
+					// A chart follows its table as an ```svg figure the terminal colors; the prose splits around it.
+					const segments = splitTableCharts(source, streaming);
+					segments.forEach((segment, part) => {
+						const slot = part === 0 ? `t${index}` : `t${index}.${part}`;
+						if (segment.kind === "markdown") {
+							const live = streaming && part === segments.length - 1;
+							children.push(markdown(slot, slot, linked(segment.text.trim(), live), live));
+							return;
+						}
+						const chart = lookupTableChart(segment.table);
+						if (chart instanceof Promise) this.#awaitChart(chart);
+						else if (chart) children.push(markdown(slot, slot, chartFence(chart), false));
+					});
 				} else if (content.type === "thinking") {
 					const display = resolveThinkingDisplay(content, this.#proseOnlyThinking);
 					if (!display.visible) continue;
@@ -864,6 +996,8 @@ export class AssistantMessageComponent extends Container {
 					} else if (clock && clock.end === undefined) {
 						clock.end = performance.now();
 					}
+					// Hidden (Ctrl+T): only the live "Thinking…" head shows; a finished thought leaves nothing.
+					if (this.#hideThinkingBlock && !thinkingLive) continue;
 					const tokens = thinkingLive ? this.#thinkingTokens : (clock?.tokens ?? 0);
 					const title = tokens > 0 ? t("{count} tokens", { count: formatNumber(tokens) }) : undefined;
 					// Live: starburst · "Thinking…" · ticking timer · tok/s. Done: "Thought for 12s".
@@ -886,15 +1020,12 @@ export class AssistantMessageComponent extends Container {
 							"section",
 							{
 								// `.live` while streaming: the body clamps to its tail under a fade.
-								// `.ghost` while thinking is hidden (Ctrl+T): only a faint "Thought for 12s" stays.
-								role: thinkingLive
-									? "omp.thinking.live"
-									: this.#hideThinkingBlock
-										? "omp.thinking.ghost"
-										: "omp.thinking",
+								role: thinkingLive ? "omp.thinking.live" : "omp.thinking",
 								collapsible: true,
-								// Open while it streams; a finished thought folds to its "Thought for 12s" line.
-								collapsed: this.#thinkingCollapsed.get(index) ?? (this.#hideThinkingBlock || !thinkingLive),
+								// Open while it streams; a finished thought folds to its "Thought for 12s" line unless the user keeps thinking expanded.
+								collapsed:
+									this.#thinkingCollapsed.get(index) ??
+									(this.#hideThinkingBlock || (!thinkingLive && !this.#expandThinkingBlocks)),
 								// Tern's fold head sums it into "Worked for 12s".
 								took: clock?.end === undefined ? undefined : Math.max(0, Math.round(clock.end - clock.start)),
 							},
@@ -908,9 +1039,26 @@ export class AssistantMessageComponent extends Container {
 				}
 			}
 			if (this.#showImages && this.#showToolResultImages) {
+				// Reads of files Tern's media viewer shows: the host loads each file once by path, no bytes uploaded.
+				const shownPaths = new Set<string>();
+				if (media) {
+					for (const [toolCallId, mediaPath] of this.#toolMediaPathByCallId) {
+						if (shownPaths.has(mediaPath)) continue;
+						shownPaths.add(mediaPath);
+						children.push(nativeMediaNode(mediaPath, `r${toolCallId}`));
+					}
+				}
 				for (const [toolCallId, images] of this.#toolImagesByCallId) {
+					if (media && this.#toolMediaPathByCallId.has(toolCallId)) continue;
 					images.forEach((image, index) => {
-						children.push(this.#nativeImages.get(`r${toolCallId}:${index}`, image.data, image.mimeType));
+						children.push(
+							this.#nativeImages.get(
+								`r${toolCallId}:${index}`,
+								image.data,
+								image.mimeType,
+								this.#toolMediaPathByCallId.get(toolCallId),
+							),
+						);
 					});
 				}
 			}
@@ -931,16 +1079,29 @@ export class AssistantMessageComponent extends Container {
 		}
 		if (this.#turnUsage) {
 			const usage = formatTurnUsage(this.#turnUsage);
+			const line: NativeChild[] = [];
+			// Led by Copy and a dot: `⧉ · 12.4s · 19K tok this turn`.
+			if (answered && hasTranscriptActions()) {
+				line.push(
+					// `copy-answer`, not Tern's local `copy` (that would copy the icon's empty label).
+					node(
+						"icon",
+						{
+							name: "copy",
+							role: "omp.turn.copy",
+							title: "Copy answer",
+							aria: "Copy answer",
+							actions: { click: "copy-answer" },
+						},
+						undefined,
+						"copy",
+					),
+					node("text", { text: "·" }, undefined, "dot"),
+				);
+			}
+			line.push(node("text", { text: usage.text }, undefined, "text"));
 			children.push(
-				node(
-					"row",
-					{ role: "omp.turn.usage", gap: "xs", align: "center", title: usage.title },
-					[
-						node("icon", { name: "time" }, undefined, "icon"),
-						node("text", { text: usage.text }, undefined, "text"),
-					],
-					"turn-usage",
-				),
+				node("row", { role: "omp.turn.usage", gap: "xs", align: "center", title: usage.title }, line, "turn-usage"),
 			);
 		}
 		return col(children, { role: this.#rewound ? "omp.assistant.rewound" : "omp.assistant" });
@@ -1026,19 +1187,32 @@ export class AssistantMessageComponent extends Container {
 		return card({ role: "omp.error", tone: "error", key: "error" }, children);
 	}
 
-	/** Error frame action clicks: omp's own retry, clipboard and model-picker paths. */
-	#handleErrorAction(act: string): void {
+	/** Control clicks (the error frame's actions, the turn footer's Copy): omp's own retry, clipboard and model-picker paths. */
+	#handleAction(act: string): void {
 		if (act === "retry") runTranscriptAction({ act: "retry" });
 		else if (act === "switch-model") runTranscriptAction({ act: "switch-model" });
 		else if (act === "copy-error" && this.#errorText) runTranscriptAction({ act: "copy", text: this.#errorText });
+		else if (act === "copy-answer") {
+			const text = this.#answerText();
+			if (text) runTranscriptAction({ act: "copy", text });
+		}
 	}
-	/** Width-independent stable identities for the streamed leading thinking run. */
+
+	/** The answer as the transcript shows it: its text blocks' markdown, a blank line apart, without thinking or tool calls. */
+	#answerText(): string {
+		const blocks: string[] = [];
+		for (const content of this.#displayedMessage?.content ?? []) {
+			if (content.type === "text" && canonicalizeMessage(content.text)) blocks.push(content.text.trim());
+		}
+		return blocks.join("\n\n");
+	}
+	/** Width-independent stable identities for the streamed leading prose run. */
 	getTranscriptStableRows(): readonly TranscriptStableRow[] {
 		return this.#transcriptStableRows;
 	}
 
 	/**
-	 * Drop every published thinking stable row. Called by the transcript
+	 * Drop every published stable row. Called by the transcript
 	 * container during a visibility-driven destructive replay so the head no
 	 * longer re-emits reasoning captured while thinking was visible. Safe only
 	 * because the paired display reset clears the scrollback those rows occupied
@@ -1080,12 +1254,11 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	/**
-	 * Publish the frozen prefix of the leading visible-thinking run as stable
-	 * transcript rows so a long reasoning stream can retire into native
-	 * scrollback mid-turn. Only thinking publishes: streamed text deltas can
-	 * revise earlier Markdown, and published bytes must never change — they may
-	 * already sit in terminal history. Every guard skips publication; nothing
-	 * ever retracts it.
+	 * Publish the frozen prefix of an append-only prose stream as stable
+	 * transcript rows. Revision-capable wires withhold publication, and figures
+	 * and unknown children stop the prefix: published bytes may already sit in
+	 * immutable terminal history. Every guard skips publication; nothing ever
+	 * retracts it.
 	 */
 	#publishStableSnapshot(rendered: readonly string[], width: number): void {
 		if (!this.#midStreamPublication) return;
@@ -1111,16 +1284,18 @@ export class AssistantMessageComponent extends Container {
 		if (currentRows.length === previousRows.length) return;
 		this.#stableParts = parts;
 		this.#stableSnapshots.push(snapshot);
-		this.#transcriptStableRows.push({ key: `thinking:${this.#nextStableRowId++}` });
+		this.#transcriptStableRows.push({ key: `prose:${this.#nextStableRowId++}` });
 		this.#recordStableRows(this.#stableSnapshots.length, width, currentRows);
 	}
 
 	/**
 	 * Width-independent parts eligible for publication right now: the leading
-	 * run of visible thinking blocks, ending inside the streaming block at
+	 * run of text and visible thinking blocks, ending inside the streaming block at
 	 * Markdown's frozen boundary. Undefined whenever any prefix byte could still
 	 * change (finalized or non-transient renders, marker rows, extension components,
-	 * hidden thinking, or no frozen prefix yet).
+	 * a hidden-thinking pulse, or no frozen prefix yet). A figure contributes
+	 * only its settled leading prose; neither the figure nor its successors
+	 * qualify.
 	 */
 	#currentStableSnapshot(): readonly StablePart[] | undefined {
 		if (this.#transcriptBlockFinalized || !this.#lastUpdateTransient) return undefined;
@@ -1133,24 +1308,32 @@ export class AssistantMessageComponent extends Container {
 		for (const child of this.#contentContainer.children) {
 			const item = items[itemIndex];
 			if (item?.md === child) {
-				// Text blocks never publish: their deltas can revise earlier rows,
-				// and published bytes may already sit in terminal history.
-				if (item.blockType !== "thinking") break;
+				const md = item.md;
+				if (md instanceof FigureMarkdown) {
+					const leading = md.leadingProse;
+					if (leading.length > 0) parts.push({ kind: item.blockType, text: leading });
+					break;
+				}
 				if (itemIndex === items.length - 1) {
 					// Streaming child: publish Markdown's frozen prefix, and only
 					// once non-blank content exists past it — the block's last
 					// non-blank line is still being written (thinking's prose fold
-					// may rewrite it) and must stay out of published bytes.
-					const raw = item.md.getLastRenderStableText();
-					const frozen = raw.trim();
-					if (frozen.length > 0 && /\S/.test(item.lastText.slice(raw.length))) {
-						parts.push({ kind: "thinking", text: frozen });
+					// may rewrite it) and must stay out of published bytes. A
+					// partial thinking line the fold may still drop does not count.
+					// The frozen prefix is in streamingMarkdownSource form, so
+					// offsets into the block use that form too.
+					const raw = md.getLastRenderStableText();
+					let past = streamingMarkdownSource(item.lastText).slice(raw.length);
+					if (item.blockType === "thinking") past = past.replace(UNSETTLED_THINKING_TAIL, "");
+					if (raw.trim().length > 0 && /\S/.test(past)) {
+						parts.push({ kind: item.blockType, text: raw });
 					}
 					break;
 				}
 				// Closed child: only the streaming tail may mutate in place, so
-				// everything before it is final.
-				parts.push({ kind: "thinking", text: item.lastText });
+				// everything before it is final. Same form as the frozen prefix it
+				// published while streaming, so the snapshot still extends.
+				parts.push({ kind: item.blockType, text: streamingMarkdownSource(item.lastText) });
 				itemIndex++;
 				continue;
 			}
@@ -1169,7 +1352,7 @@ export class AssistantMessageComponent extends Container {
 	/**
 	 * Render the first `partCount` stable parts, the final one cut to
 	 * `lastLength`. Rows match fresh Markdown renders of each part byte for
-	 * byte — {@link #createStableMarkdown} mirrors the live children — but a
+	 * byte — {@link #createMarkdown} builds the live children too — but a
 	 * closed part renders once per width, and the growing final part reuses one
 	 * Markdown instance so its already-frozen blocks are not re-lexed.
 	 */
@@ -1216,38 +1399,82 @@ export class AssistantMessageComponent extends Container {
 		width: number,
 		role: "head" | "replay" | undefined,
 	): readonly string[] {
-		// Trim like the live children, dropping the trailing blank line a frozen
-		// prefix still carries.
-		const trimmed = text.trim();
-		if (this.#transcriptBlockFinalized) return this.#createStableMarkdown(kind, trimmed).render(width);
+		// Trim rendered blank rows, not source: a paragraph's trailing spaces
+		// belong inside its foreground run even at a frozen block boundary.
+		if (this.#transcriptBlockFinalized) return trimBlankEdges(this.#createMarkdown(kind, text).render(width));
 		const head = this.#stableHeadRenderer;
 		const replay = this.#stableReplayRenderer;
 		const renderer = role === "head" ? head : role === "replay" ? replay : head?.index === index ? head : replay;
 		if (renderer?.index === index && renderer.kind === kind) {
-			renderer.md.setText(trimmed);
-			return renderer.md.render(width);
+			renderer.md.setText(text);
+			return trimBlankEdges(renderer.md.render(width));
 		}
-		const md = this.#createStableMarkdown(kind, trimmed);
+		const md = this.#createMarkdown(kind, text);
 		if (role === "head") this.#stableHeadRenderer = { index, kind, md };
 		else if (role === "replay") this.#stableReplayRenderer = { index, kind, md };
-		return md.render(width);
+		return trimBlankEdges(md.render(width));
 	}
 
-	/** Constructor args mirror the live child Markdown so stable rows prefix the block render. */
-	#createStableMarkdown(kind: StablePartKind, text: string): Markdown {
+	/** Markdown for a text or thinking block; live children and stable-row renders share it so stable rows prefix the block render. */
+	#createMarkdown(kind: StablePartKind, text: string): Markdown {
 		return kind === "text"
-			? new Markdown(
-					text,
-					1,
-					0,
-					this.#getProseTheme(),
-					this.#textColorTransform ? { color: this.#textColorTransform } : undefined,
-					0,
-				)
+			? new Markdown(text, 1, 0, this.#getProseTheme(), this.#getProseTextStyle(), 0)
 			: new Markdown(text, 1, 0, getMarkdownTheme(), {
 					color: (value: string) => theme.fg("thinkingText", value),
 					italic: true,
 				});
+	}
+
+	/**
+	 * Whether `text` holds a ```svg fence this terminal draws as a figure, or a
+	 * table it draws a chart under. Native (TSP) terminals receive the fence
+	 * verbatim in the `md` node and draw it themselves, and get charts as image
+	 * nodes from {@link describe}; image-less terminals keep fences as code and
+	 * tables as tables.
+	 */
+	#liftsFigures(text: string): boolean {
+		return (
+			this.#showImages &&
+			TERMINAL.imageProtocol !== null &&
+			!isNativeRendering() &&
+			((svgFigureRendering() && hasSvgFence(text)) || (this.#showTableCharts && hasChartTable(text)))
+		);
+	}
+
+	/** Re-describe once a smart table chart pick lands. */
+	#awaitChart(pick: Promise<void>): void {
+		if (this.#chartPicks.has(pick)) return;
+		this.#chartPicks.add(pick);
+		void pick.then(() => {
+			this.#chartPicks.delete(pick);
+			this.#blockVersion++;
+			this.#onImageUpdate?.();
+		});
+	}
+
+	/**
+	 * The component for text block `index`: Markdown, or a {@link FigureMarkdown}
+	 * when it holds a ```svg fence to lift or a table to chart — taken over from
+	 * `previous` so its figures keep their rasters across rebuilds.
+	 */
+	#proseBlock(index: number, text: string, previous: ReadonlyMap<number, FigureMarkdown>): ProseBlock {
+		if (!this.#liftsFigures(text)) return this.#createMarkdown("text", text);
+		let block = previous.get(index);
+		if (block) {
+			block.setText(text);
+		} else {
+			block = new FigureMarkdown(text, {
+				markdown: value => this.#createMarkdown("text", value),
+				charts: this.#showTableCharts,
+				budget: this.#imageBudget,
+				onChange: () => {
+					this.#blockVersion++;
+					this.#onImageUpdate?.();
+				},
+			});
+		}
+		this.#figureBlocks.set(index, block);
+		return block;
 	}
 
 	#stableLedger(width: number): StableRowLedger {
@@ -1369,6 +1596,18 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	/** Toggle charts under numeric tables (the main session's transcript only, never a subagent's). */
+	setTableChartsVisible(visible: boolean): void {
+		if (this.#showTableCharts === visible) return;
+		this.#showTableCharts = visible;
+		// Figure blocks bake the switch in; rebuild them rather than reuse.
+		for (const block of this.#figureBlocks.values()) block.dispose();
+		this.#figureBlocks.clear();
+		if (this.#lastMessage) {
+			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+		}
+	}
+
 	/** Toggle only images produced by tool results; assistant-native images remain governed by setImagesVisible. */
 	setToolResultImagesVisible(visible: boolean): void {
 		if (this.#showToolResultImages === visible) return;
@@ -1378,8 +1617,15 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
-	setToolResultImages(toolCallId: string, images: ImageContent[]): void {
+	/**
+	 * A grouped read's result images, and `mediaPath`: the file it read that Tern's media viewer
+	 * shows (read details), which a native host supporting `media` shows by path instead of the
+	 * images. A media-only result (a model, a PDF) passes no images.
+	 */
+	setToolResultImages(toolCallId: string, images: ImageContent[], mediaPath?: string): void {
 		if (!toolCallId) return;
+		if (mediaPath) this.#toolMediaPathByCallId.set(toolCallId, mediaPath);
+		else this.#toolMediaPathByCallId.delete(toolCallId);
 		const validImages = images.filter(img => img.type === "image" && img.data && img.mimeType);
 		if (validImages.length === 0) {
 			this.#toolImagesByCallId.delete(toolCallId);
@@ -1392,22 +1638,24 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	/** A displayable Kitty PNG for a non-PNG `image`: the shared cache, else this component's displayed copy. */
+	#kittyConversion(image: ImageContent): ImageContent | undefined {
+		const cached = cachedPngConversion(image);
+		if (cached) return cached;
+		const key = imagePayloadKey(image);
+		return this.#kittyDisplayed.get(key) ?? this.#kittyPreviouslyDisplayed?.get(key);
+	}
+
 	#convertImagesForKitty(entries: Array<{ image: ImageContent; key: string }>): void {
 		if (TERMINAL.imageProtocol !== ImageProtocol.Kitty) return;
 		for (const { image } of entries) {
-			if (image.mimeType === "image/png") continue;
+			if (image.mimeType === "image/png" || this.#kittyConversion(image)) continue;
 			const key = imagePayloadKey(image);
-			if (this.#kittyConverted.has(key)) continue;
-			const cached = cachedPngConversion(image);
-			if (cached) {
-				this.#kittyConverted.set(key, cached);
-				continue;
-			}
 			if (this.#kittyConversionsAwaited.has(key)) continue;
 			this.#kittyConversionsAwaited.add(key);
 			convertImageToPngShared(image)
-				.then(converted => {
-					this.#kittyConverted.set(key, converted);
+				.then(() => {
+					this.#kittyConversionsAwaited.delete(key);
 					if (this.#lastMessage) {
 						this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 					}
@@ -1419,38 +1667,56 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
-	#renderImageEntries(entries: Array<{ image: ImageContent; key: string }>, withLeadingSpacer: boolean): void {
+	#renderImageEntries(
+		entries: Array<{ image: ImageContent; key: string; sourcePath?: string }>,
+		withLeadingSpacer: boolean,
+	): void {
 		if (!this.#showImages || entries.length === 0) return;
 		this.#convertImagesForKitty(entries);
 
 		if (withLeadingSpacer) this.#contentContainer.addChild(new Spacer(1));
-		for (const { image, key } of entries) {
-			const displayImage =
-				TERMINAL.imageProtocol === ImageProtocol.Kitty && image.mimeType !== "image/png"
-					? this.#kittyConverted.get(imagePayloadKey(image))
-					: image;
+		for (const { image, key, sourcePath } of entries) {
+			let displayImage: ImageContent | undefined = image;
+			if (TERMINAL.imageProtocol === ImageProtocol.Kitty && image.mimeType !== "image/png") {
+				displayImage = this.#kittyConversion(image);
+				if (displayImage) this.#kittyDisplayed.set(imagePayloadKey(image), displayImage);
+			}
 			if (TERMINAL.imageProtocol && displayImage) {
 				this.#contentContainer.addChild(
 					new Image(
 						displayImage.data,
 						displayImage.mimeType,
 						{ fallbackColor: (text: string) => theme.fg("toolOutput", text) },
-						{ ...resolveImageOptions(), budget: this.#imageBudget, imageKey: key },
+						{
+							...resolveImageOptions(),
+							sourcePath,
+							budget: this.#imageBudget,
+							imageKey: key,
+							requestRender: this.#onImageUpdate,
+						},
 					),
 				);
 				continue;
 			}
 			this.#contentContainer.addChild(
-				new Text(theme.fg("toolOutput", t("[Image: {mime}]", { mime: image.mimeType })), 1, 0),
+				new Text(
+					theme.fg(
+						"toolOutput",
+						linkedImageText(t("[Image: {mime}]", { mime: image.mimeType }), image, sourcePath),
+					),
+					1,
+					0,
+				),
 			);
 		}
 	}
 
 	#renderToolImages(): void {
 		if (!this.#showToolResultImages) return;
-		const entries = Array.from(this.#toolImagesByCallId.entries()).flatMap(([toolCallId, images]) =>
-			images.map((image, index) => ({ image, key: `${toolCallId}:${index}` })),
-		);
+		const entries = Array.from(this.#toolImagesByCallId.entries()).flatMap(([toolCallId, images]) => {
+			const sourcePath = this.#toolMediaPathByCallId.get(toolCallId);
+			return images.map((image, index) => ({ image, key: `${toolCallId}:${index}`, sourcePath }));
+		});
 		this.#renderImageEntries(entries, true);
 	}
 
@@ -1479,10 +1745,14 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	#computeShapeKey(message: AssistantMessage): string {
-		const parts: string[] = [`htb:${this.#hideThinkingBlock ? 1 : 0}|pot:${this.#proseOnlyThinking ? 1 : 0}`];
+		const parts: string[] = [
+			`htb:${this.#hideThinkingBlock ? 1 : 0}|pot:${this.#proseOnlyThinking ? 1 : 0}|etb:${this.#expandThinkingBlocks ? 1 : 0}`,
+		];
 		for (const content of message.content) {
 			if (content.type === "text") {
-				parts.push(canonicalizeMessage(content.text) ? "T1" : "T0");
+				parts.push(
+					!canonicalizeMessage(content.text) ? "T0" : this.#liftsFigures(content.text.trim()) ? "TF" : "T1",
+				);
 			} else if (content.type === "thinking") {
 				if (this.#hideThinkingBlock) {
 					// Match the pulse's empty/nonempty transition without formatting hidden text.
@@ -1648,6 +1918,8 @@ export class AssistantMessageComponent extends Container {
 
 		// Clear content container
 		this.#contentContainer.clear();
+		this.#kittyPreviouslyDisplayed = this.#kittyDisplayed;
+		this.#kittyDisplayed = new Map();
 		this.#thinkingExtensions.clear();
 		this.#emergencyText = undefined;
 		this.#thinkingDots = undefined;
@@ -1656,6 +1928,8 @@ export class AssistantMessageComponent extends Container {
 		// Determine if we should capture Markdown instances for next fast path
 		const shouldCapture = this.#canFastPath(message);
 		const captureItems: FastPathItem[] | undefined = shouldCapture ? [] : undefined;
+		const previousFigures = this.#figureBlocks;
+		this.#figureBlocks = new Map();
 
 		const hasVisibleContent = message.content.some(
 			c =>
@@ -1674,8 +1948,7 @@ export class AssistantMessageComponent extends Container {
 			if (content.type === "text" && canonicalizeMessage(content.text)) {
 				// Set paddingY=0 to avoid extra spacing before tool executions
 				const trimmed = content.text.trim();
-				const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
-				const md = new Markdown(trimmed, 1, 0, this.#getProseTheme(), mdOptions, 0);
+				const md = this.#proseBlock(i, trimmed, previousFigures);
 				this.#contentContainer.addChild(md);
 				this.#emergencyText = md;
 				captureItems?.push({ md, contentIndex: i, blockType: "text", lastText: trimmed });
@@ -1700,10 +1973,7 @@ export class AssistantMessageComponent extends Container {
 					);
 
 				// Thinking traces in thinkingText color, italic
-				const md = new Markdown(thinkingText, 1, 0, getMarkdownTheme(), {
-					color: (text: string) => theme.fg("thinkingText", text),
-					italic: true,
-				});
+				const md = this.#createMarkdown("thinking", thinkingText);
 				md.transientRenderCache = this.#lastUpdateTransient;
 				this.#contentContainer.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "thinking", lastText: thinkingText });
@@ -1718,6 +1988,9 @@ export class AssistantMessageComponent extends Container {
 				hasRenderedContent ||= this.#showImages;
 			}
 		}
+		for (const [index, block] of previousFigures) {
+			if (this.#figureBlocks.get(index) !== block) block.dispose();
+		}
 
 		if (this.#shouldAnimateThinking(message)) {
 			if (hasVisibleContent) this.#contentContainer.addChild(new Spacer(1));
@@ -1729,6 +2002,7 @@ export class AssistantMessageComponent extends Container {
 		}
 
 		this.#renderToolImages();
+		this.#kittyPreviouslyDisplayed = undefined;
 		const errorPresentation = resolveAssistantErrorPresentation(message);
 		const hasToolCalls = message.content.some(c => c.type === "toolCall");
 		if (!hasToolCalls && errorPresentation.kind === "full") {

@@ -319,7 +319,7 @@ describe("completed run collapse", () => {
 		);
 	});
 
-	it("collapses an Esc-interrupted span before its queued correction starts", async () => {
+	it("collapses an Esc-interrupted prefix before extending it through its queued correction", async () => {
 		const { controller, session, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } = fixture();
 		const initial = { role: "user", content: "build it", timestamp: 24 } as AgentMessage;
 		const interrupted = assistant("", "aborted", 25);
@@ -364,7 +364,11 @@ describe("completed run collapse", () => {
 		await controller.handleEvent({ type: "agent_start" });
 		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(2);
 		expect(recordCompletedRunCollapse).toHaveBeenLastCalledWith(
-			expect.objectContaining({ initialUserMessage: correction, finalAssistantMessage: final }),
+			expect.objectContaining({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				finalAssistantMessage: final,
+			}),
 		);
 	});
 
@@ -811,7 +815,7 @@ describe("completed run collapse", () => {
 		expect(resetDisplay).not.toHaveBeenCalled();
 	});
 
-	it("collapses a manually interrupted tool run before a later correction starts", async () => {
+	it("collapses a manually interrupted prefix before extending it through a later correction", async () => {
 		const { controller, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } = fixture();
 		const initial = { role: "user", content: "open the pull request", timestamp: 90 } as AgentMessage;
 		const progress = assistant("merging the pull request", "toolUse", 91);
@@ -865,8 +869,8 @@ describe("completed run collapse", () => {
 		const collapse = recordCompletedRunCollapse.mock.calls[1]![0] as CompletedRunCollapse;
 		expect(collapse).toEqual(
 			expect.objectContaining({
-				firstMessage: correction,
-				initialUserMessage: correction,
+				firstMessage: initial,
+				initialUserMessage: initial,
 				finalAssistantMessage: final,
 			}),
 		);

@@ -1,6 +1,9 @@
 //! `apply_patch` mode: Codex `*** Begin Patch` envelopes expanded to per-file
 //! patch entries. Port of `packages/coding-agent/src/edit/apply-patch/*` and
 //! `modes/apply-patch.ts`.
+//!
+//! Complete hunk matches must be unique, including after normalization;
+//! every envelope section is staged before any host write.
 
 use std::{
 	collections::{HashMap, HashSet},
@@ -219,10 +222,11 @@ pub fn format_apply_codex_patch_summary(
 
 fn as_patch_input(entry: &ApplyPatchEntry) -> PatchInput<'_> {
 	PatchInput {
-		path:   &entry.path,
-		op:     entry.op,
-		rename: entry.rename.as_deref(),
-		diff:   entry.diff.as_deref(),
+		path:        &entry.path,
+		op:          entry.op,
+		rename:      entry.rename.as_deref(),
+		diff:        entry.diff.as_deref(),
+		first_match: false,
 	}
 }
 
@@ -279,7 +283,7 @@ fn stage_entries(
 		}
 		groups.entry(entry.path.clone()).or_default().push(entry);
 	}
-	let engine = PatchEngine { allow_fuzzy, fuzzy_threshold: threshold };
+	let engine = PatchEngine { allow_fuzzy, fuzzy_threshold: threshold, first_match: false };
 	let mut staged = Vec::with_capacity(groups.len());
 	for path in order {
 		let group = &groups[&path];
@@ -325,14 +329,6 @@ fn stage_entries(
 		}
 	}
 	Ok(staged)
-}
-
-fn extract_added_lines(text: &str) -> String {
-	text
-		.split('\n')
-		.filter_map(|line| line.strip_prefix('+').filter(|_| !line.starts_with("+++ ")))
-		.collect::<Vec<_>>()
-		.join("\n")
 }
 
 fn natural_order_previews(input: &str) -> Vec<PreviewFile> {
@@ -393,7 +389,12 @@ fn inspect_entries(input: &str) -> (Vec<String>, Vec<(String, String)>, Vec<File
 	let mut file_ops = Vec::new();
 	for entry in entries {
 		if let Some(diff) = &entry.diff {
-			let added = extract_added_lines(diff);
+			let added = if entry.op == Operation::Create {
+				// The envelope parser already stripped the authoring `+`.
+				diff.clone()
+			} else {
+				super::added_lines(diff.split('\n'), true).unwrap_or_default()
+			};
 			if !added.is_empty() {
 				if !digests.contains_key(&entry.path) {
 					order.push(entry.path.clone());
@@ -476,6 +477,7 @@ impl ModeEngine for ApplyPatchEngine {
 					self.allow_fuzzy,
 					self.fuzzy_threshold,
 					false,
+					false,
 				)
 			})
 			.collect()
@@ -519,6 +521,18 @@ mod tests {
 			rename: None,
 			diff:   Some("hello\n".into()),
 		}]);
+	}
+
+	#[test]
+	fn inspection_retains_create_content_and_metadata_shaped_hunk_additions() {
+		let (_, entries, _) = inspect_entries(
+			"*** Begin Patch\n*** Add File: added.txt\n+plain\n++++ literal\n*** Update File: \
+			 updated.txt\n--- a/updated.txt\n+++ b/updated.txt\n@@\n-old\n+++ new\n*** End Patch",
+		);
+		assert_eq!(entries, vec![
+			("added.txt".into(), "plain\n+++ literal\n".into()),
+			("updated.txt".into(), "++ new".into()),
+		]);
 	}
 
 	#[test]

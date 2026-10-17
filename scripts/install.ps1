@@ -6,6 +6,12 @@
 #   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/release/scripts/install.ps1))) -Binary
 #   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/release/scripts/install.ps1))) -Source -Ref dev
 #   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/release/scripts/install.ps1))) -Binary -Ref code-1
+#
+# -Ref takes any tag/commit/branch with -Source. Default/code-N binaries come
+# from the fork's GitHub Releases. Explicit v<version> refs or $env:PI_BUILD_URL
+# select the build service (default https://build.stencil.so). Both verify
+# sha256 before replacing an install; build-service answers must also match
+# the host asset name and exact file size.
 
 param(
     [switch]$Source,
@@ -26,6 +32,7 @@ if ($PSVersionTable.PSVersion -lt [version]"5.1") {
 $Repo = "LambdaExpress/oh-my-pi"
 $Package = "@oh-my-pi/pi-coding-agent"
 $InstallDir = if ($env:PI_INSTALL_DIR) { $env:PI_INSTALL_DIR } else { "$env:LOCALAPPDATA\omp" }
+$BuildUrl = if ($env:PI_BUILD_URL) { $env:PI_BUILD_URL.TrimEnd("/") } else { "https://build.stencil.so" }
 # Windows PowerShell 5.1 (.NET Framework) does not reliably resolve
 # [System.Runtime.InteropServices.RuntimeInformation] without an
 # assembly-qualified name, while PowerShell 7+ (Core) loads that type from a
@@ -40,12 +47,11 @@ $RawArchitecture = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW643
 if (-not $RawArchitecture) {
     throw "Unable to determine Windows architecture"
 }
-$NativeArchitecture = switch ($RawArchitecture.ToUpperInvariant()) {
-    "AMD64" { "x64" }
-    "ARM64" { "arm64" }
+$BuildTarget = switch ($RawArchitecture.ToUpperInvariant()) {
+    "AMD64" { "windows-x86_64" }
+    "ARM64" { "windows-arm64" }
     default { throw "Unsupported Windows architecture: $RawArchitecture" }
 }
-$BinaryName = "omp-windows-$NativeArchitecture.exe"
 $MinimumBunVersion = "1.3.14"
 
 # PowerShell 5.1 raises a terminating NativeCommandError for any line a native
@@ -300,34 +306,79 @@ function Get-LatestCodeRelease {
 }
 
 function Install-Binary {
-    if ($Ref) {
-        Write-Host "Fetching release $Ref..."
-        if ($Ref -notmatch '^code-([1-9][0-9]*)$') {
-            throw "Binary release refs must use code-N tags"
+    $ReleaseCode = $null
+    $ExpectedSize = $null
+    $BinaryName = switch ($BuildTarget) {
+        "windows-x86_64" { "omp-windows-x64.exe" }
+        "windows-arm64" { "omp-windows-arm64.exe" }
+    }
+    $UseBuildService = [bool]$env:PI_BUILD_URL -or $Ref -like "v*"
+    if ($Ref -like "code-*") {
+        $UseBuildService = $false
+    }
+    if ($UseBuildService) {
+        if ($Ref) {
+            if ($Ref -notmatch '^v(\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?)$') {
+                throw "Binary installs take a release tag (v<version>) for -Ref, got: $Ref`nFor branch/commit installs, use -Source with -Ref."
+            }
+            $RequestedVersion = $Matches[1]
+            Write-Host "Fetching omp $RequestedVersion..."
+            $ApiUrl = "$BuildUrl/api/products/omp/versions/$RequestedVersion/$BuildTarget"
+        } else {
+            Write-Host "Fetching latest release..."
+            $ApiUrl = "$BuildUrl/api/products/omp/latest/${BuildTarget}?channel=stable"
         }
-        $ReleaseCode = [long]$Matches[1]
         try {
-            $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/tags/$Ref" -TimeoutSec 60
+            $Answer = Invoke-RestMethod -Uri $ApiUrl -TimeoutSec 60
         } catch {
-            throw "Release tag not found: $Ref`nFor branch/commit installs, use -Source with -Ref."
+            throw "Failed to resolve an omp build for $BuildTarget from ${ApiUrl}: $_"
+        }
+        $Version = $Answer.build.version
+        $ExpectedSize = $Answer.file.size
+        # Match the CLI's positive safe-integer byte count, without coercing
+        # JSON strings or booleans into numbers.
+        $ValidSize = ($ExpectedSize -is [int] -or $ExpectedSize -is [long] -or $ExpectedSize -is [double] -or $ExpectedSize -is [decimal]) -and
+            $ExpectedSize -gt 0 -and $ExpectedSize -le 9007199254740991 -and [math]::Floor($ExpectedSize) -eq $ExpectedSize
+        $ExpectedSha256 = "$($Answer.file.sha256)".ToLowerInvariant()
+        $DownloadUrl = $Answer.download
+        if (-not $Version -or $Answer.file.name -isnot [string] -or $Answer.file.name -cne $BinaryName -or -not $ValidSize -or -not $DownloadUrl -or $ExpectedSha256 -notmatch '^[0-9a-f]{64}$') {
+            throw "Unexpected answer from $ApiUrl"
         }
     } else {
-        Write-Host "Fetching latest code release..."
-        $LatestCodeRelease = Get-LatestCodeRelease
-        $Release = $LatestCodeRelease.Release
-        $ReleaseCode = $LatestCodeRelease.Code
+        if ($Ref) {
+            if ($Ref -notmatch '^code-([1-9][0-9]*)$') {
+                throw "Binary release refs must use code-N or v<version> tags`nFor branch/commit installs, use -Source with -Ref."
+            }
+            $ReleaseCode = [long]$Matches[1]
+            Write-Host "Fetching release $Ref..."
+            try {
+                $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/tags/$Ref" -TimeoutSec 60
+            } catch {
+                throw "Release tag not found: $Ref`nFor branch/commit installs, use -Source with -Ref."
+            }
+        } else {
+            Write-Host "Fetching latest code release..."
+            $LatestCodeRelease = Get-LatestCodeRelease
+            $Release = $LatestCodeRelease.Release
+            $ReleaseCode = $LatestCodeRelease.Code
+        }
+        $Version = $Release.tag_name
+        # Code releases publish complete digests in their Release body.
+        $ChecksumPattern = "(?m)^([0-9a-fA-F]{64})[ `t]+" + [regex]::Escape($BinaryName) + "`r?$"
+        $ChecksumMatch = [regex]::Match("$($Release.body)", $ChecksumPattern)
+        if (-not $ChecksumMatch.Success) {
+            throw "Missing or invalid SHA256 for $BinaryName"
+        }
+        $ExpectedSha256 = $ChecksumMatch.Groups[1].Value.ToLowerInvariant()
+        $DownloadUrl = "https://github.com/$Repo/releases/download/$Version/$BinaryName"
     }
-
-    $Latest = $Release.tag_name
-    if (-not $Latest) {
-        throw "Failed to fetch release tag"
-    }
-    Write-Host "Using version: $Latest"
+    Write-Host "Using version: $Version"
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
-    # Download binary
-    $BinaryUrl = "https://github.com/$Repo/releases/download/$Latest/$BinaryName"
+    # Download next to the destination and move it into place only once the
+    # checksum and any advertised size match, so a bad download never replaces
+    # a working omp.
     Write-Host "Downloading $BinaryName..."
     $OutPath = Join-Path $InstallDir "omp.exe"
     $Attempt = "$(Get-Date -UFormat %s).$PID"
@@ -335,30 +386,41 @@ function Install-Binary {
     $BackupPath = "$OutPath.$Attempt.bak"
     $BackupReady = $false
     try {
-        Invoke-WebRequest -Uri $BinaryUrl -OutFile $NewPath -TimeoutSec 900
-        $VersionOutput = (& $NewPath --version 2>&1 | Out-String).Trim()
+        Invoke-WebRequest -Uri $DownloadUrl -OutFile $NewPath -TimeoutSec 900
+        if ($null -ne $ExpectedSize) {
+            $ActualSize = (Get-Item -LiteralPath $NewPath).Length
+            if ($ActualSize -ne $ExpectedSize) {
+                throw "Size mismatch for ${BinaryName}: expected $ExpectedSize, got $ActualSize"
+            }
+        }
+        $ActualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $NewPath).Hash.ToLowerInvariant()
+        if ($ActualSha256 -ne $ExpectedSha256) {
+            throw "Checksum mismatch for ${BinaryName}: expected $ExpectedSha256, got $ActualSha256"
+        }
+        $VersionOutput = (Invoke-Native { & $NewPath --version 2>&1 } | Out-String).Trim()
         if ($LASTEXITCODE -ne 0) {
             throw "Downloaded omp cannot start: $VersionOutput"
         }
-        if ($VersionOutput -notmatch "\+code\.$ReleaseCode$") {
+        if ($null -ne $ReleaseCode -and $VersionOutput -notmatch "\+code\.$ReleaseCode$") {
             throw "Downloaded omp reports an unexpected release code: $VersionOutput"
         }
 
-        if (Test-Path $OutPath) {
-            Move-Item -Path $OutPath -Destination $BackupPath
+        if (Test-Path -LiteralPath $OutPath) {
+            Move-Item -LiteralPath $OutPath -Destination $BackupPath
             $BackupReady = $true
         }
-        Move-Item -Path $NewPath -Destination $OutPath
+        Move-Item -LiteralPath $NewPath -Destination $OutPath
         if ($BackupReady) {
-            Remove-Item -Force $BackupPath -ErrorAction SilentlyContinue
+            Remove-Item -Force -LiteralPath $BackupPath -ErrorAction SilentlyContinue
         }
     } catch {
-        Remove-Item -Force $NewPath -ErrorAction SilentlyContinue
         if ($BackupReady) {
-            Remove-Item -Force $OutPath -ErrorAction SilentlyContinue
-            Move-Item -Path $BackupPath -Destination $OutPath -ErrorAction SilentlyContinue
+            Remove-Item -Force -LiteralPath $OutPath -ErrorAction SilentlyContinue
+            Move-Item -LiteralPath $BackupPath -Destination $OutPath
         }
         throw
+    } finally {
+        Remove-Item -Force -LiteralPath $NewPath -ErrorAction SilentlyContinue
     }
 
     Write-Host ""

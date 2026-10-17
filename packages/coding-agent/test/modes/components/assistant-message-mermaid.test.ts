@@ -81,17 +81,18 @@ describe("AssistantMessageComponent transcript lifecycle", () => {
 		// Without viewport pressure an unfinalized block is never offered for
 		// retirement, so a later revision stays fully recoverable.
 		expect(transcript.peekFinalizedBatch(80, 20)).toBeUndefined();
-		// With no spare rows the container retires the block's current rows into
-		// scrollback; what it retires must be the revised render, because rows
-		// written to terminal history cannot be retracted.
-		const pressured = transcript.peekFinalizedBatch(80, 0);
-		const pressuredRows = Bun.stripANSI(pressured?.rows.join("\n") ?? "");
-		expect(pressuredRows).toContain("Revised opening paragraph");
-		expect(pressuredRows).not.toContain("First completed paragraph");
+		// A revised block has no append-only prefix to commit, even under
+		// pressure: terminal history cannot retract a later revision.
+		expect(transcript.peekFinalizedBatch(80, 0)).toBeUndefined();
 
 		component.markTranscriptBlockFinalized();
 		const batch = transcript.peekFlushBatch(80);
-		expect(Bun.stripANSI(batch?.rows.join("\n") ?? "")).toContain("Revised opening paragraph");
+		if (!batch) throw new Error("Expected finalized revised content");
+		const retired = Bun.stripANSI(batch.rows.join("\n"));
+		expect(retired).toContain("Revised opening paragraph");
+		expect(retired).not.toContain("First completed paragraph");
+		transcript.acknowledgeFinalizedBatch(batch.id);
+		expect(transcript.peekFlushBatch(80)).toBeUndefined();
 	});
 
 	it("retires the frozen thinking prefix into history while still streaming", () => {

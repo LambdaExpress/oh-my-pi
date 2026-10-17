@@ -70,10 +70,18 @@ describe("forked session artifact namespace", () => {
 			try {
 				const readTool = session.getToolByName("read");
 				if (!readTool) throw new Error("Expected SDK read tool");
-				for (let index = 0; index < 5; index++) await manager.saveArtifact(`parent-${index}`, "bash");
+				const inheritedArtifacts = new Map<string, string>();
+				for (let index = 0; index < 5; index++) {
+					const content = `parent-${index}`;
+					const id = await manager.saveArtifact(content, "bash");
+					if (!id) throw new Error("Expected persisted parent artifact");
+					inheritedArtifacts.set(id, content);
+				}
 				const template = '<!DOCTYPE html>\n<html lang="zh-CN">\n<title>Parent template</title>\n</html>\n';
-				expect(await manager.saveArtifact(template, "bash")).toBe("5");
-				manager.appendMessage({ role: "user", content: "Inspect artifact://5", timestamp: 1 });
+				const templateId = await manager.saveArtifact(template, "bash");
+				if (!templateId) throw new Error("Expected persisted template artifact");
+				inheritedArtifacts.set(templateId, template);
+				manager.appendMessage({ role: "user", content: `Inspect artifact://${templateId}`, timestamp: 1 });
 				await manager.ensureOnDisk();
 				const parentFile = manager.getSessionFile()!;
 				const parentHistory = await Bun.file(parentFile).text();
@@ -84,15 +92,17 @@ describe("forked session artifact namespace", () => {
 				// Initialize the active child allocator and consume IDs without writing
 				// files, just as streaming tools can do before publishing their output.
 				const childArtifacts = manager.getArtifactManager()!;
-				for (let index = 0; index < 5; index++) await manager.allocateArtifactPath("eval");
+				for (let index = 0; index < inheritedArtifacts.size - 1; index++) {
+					await manager.allocateArtifactPath("eval");
+				}
 				await copySessionArtifacts(fork.oldSessionFile, fork.newSessionFile);
 
 				// This tool was built before the fork. Its SDK allocation callback must
-				// use the active child's namespace, including the newly copied ID 5.
+				// use the active child's namespace, including the inherited high-water mark.
 				const initial = await readTool.execute("route-spill", { path: `${server.url.origin}/route:raw` });
 				const artifactId = resultText(initial).match(/\bartifact:\/\/(\d+)/u)?.[1];
 				if (!artifactId) throw new Error("Expected URL read to spill to an artifact");
-				expect(Number(artifactId)).toBeGreaterThan(5);
+				expect(Number(artifactId)).toBeGreaterThan(Number(templateId));
 				const artifactPath = await manager.getArtifactPath(artifactId);
 				if (!artifactPath) throw new Error("Expected spilled artifact file");
 				expect(path.dirname(artifactPath)).toBe(childArtifacts.dir);
@@ -135,13 +145,12 @@ describe("forked session artifact namespace", () => {
 					expect(await Bun.file((await manager.getArtifactPath(id!))!).text()).toBe(contents[index]);
 				}
 
-				expect(resultText(await readTool.execute("inherited-template", { path: "artifact://5:raw:1-25" }))).toBe(
-					template,
-				);
-				for (let index = 0; index < 6; index++) {
-					const expected = index === 5 ? template : `parent-${index}`;
-					expect(await Bun.file((await parentArtifacts.getPath(String(index)))!).text()).toBe(expected);
-					expect(await Bun.file((await childArtifacts.getPath(String(index)))!).text()).toBe(expected);
+				expect(
+					resultText(await readTool.execute("inherited-template", { path: `artifact://${templateId}:raw:1-25` })),
+				).toBe(template);
+				for (const [id, expected] of inheritedArtifacts) {
+					expect(await Bun.file((await parentArtifacts.getPath(id))!).text()).toBe(expected);
+					expect(await Bun.file((await childArtifacts.getPath(id))!).text()).toBe(expected);
 				}
 				expect(await Bun.file(parentFile).text()).toBe(parentHistory);
 			} finally {

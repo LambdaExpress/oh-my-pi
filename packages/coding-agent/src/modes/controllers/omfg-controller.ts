@@ -39,6 +39,8 @@ const MAX_ATTEMPTS = 3;
 const PROJECT_OPTION = "This project (.omp/rules)";
 const GLOBAL_OPTION = "Global — all projects (~/.omp/agent/rules)";
 const AMEND_OPTION = "Amend with feedback…";
+/** Keep /omfg prompts in the composer slot: a picker sheet would cover the candidate rule above it. */
+const OMFG_DIALOG = { inline: true } as const;
 
 export class OmfgController {
 	#activeRequest: OmfgRequest | undefined;
@@ -107,6 +109,7 @@ export class OmfgController {
 					const shouldSave = await this.ctx.showHookConfirm(
 						t("Validation"),
 						t("Couldn't confirm this rule matches the conversation. Save anyway?"),
+						OMFG_DIALOG,
 					);
 					if (!this.#isActiveRequest(request)) return;
 					if (!shouldSave) {
@@ -223,11 +226,11 @@ export class OmfgController {
 
 		for (;;) {
 			request.component.setStatus("saving", t("Choose where to save or amend the TTSR rule…"));
-			const location = await this.ctx.showHookSelector(t("Save TTSR rule where?"), [
-				PROJECT_OPTION,
-				GLOBAL_OPTION,
-				AMEND_OPTION,
-			]);
+			const location = await this.ctx.showHookSelector(
+				t("Save TTSR rule where?"),
+				[PROJECT_OPTION, GLOBAL_OPTION, AMEND_OPTION],
+				OMFG_DIALOG,
+			);
 			if (!this.#isActiveRequest(request)) return { kind: "aborted" };
 			if (!location) {
 				request.component.markAborted();
@@ -252,6 +255,7 @@ export class OmfgController {
 				const shouldOverwrite = await this.ctx.showHookConfirm(
 					t("Overwrite TTSR rule?"),
 					t("{path} already exists. Overwrite it?", { path: shortenPath(target.filePath) }),
+					OMFG_DIALOG,
 				);
 				if (!this.#isActiveRequest(request)) return { kind: "aborted" };
 				if (!shouldOverwrite) {

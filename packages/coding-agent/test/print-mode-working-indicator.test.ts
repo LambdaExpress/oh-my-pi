@@ -72,6 +72,7 @@ function createDelayedSession(
 			buildSessionContext: () => ({ messages: [] }),
 			getEntries: () => [],
 			onPersistenceError: () => () => {},
+			onPersistenceNotice: () => () => {},
 			appendModeChange: (mode: string, data?: Record<string, unknown>) => {
 				modeChanges.push({ mode, data });
 				return "mode-change";
@@ -126,9 +127,11 @@ function createDelayedSession(
 			messages.push(finalMessage);
 			return true;
 		},
+		disableStopTimeTodoReminders: () => {},
 		prepareForHeadlessAdvisorDrain: () => {
 			advisorDrainPrepared = true;
 		},
+		waitForIdle: async () => {},
 		waitForAdvisorCatchup: async () => {
 			if (!advisorDrainPrepared) throw new Error("advisor catch-up started before headless delivery was armed");
 		},
@@ -308,6 +311,7 @@ describe("print mode working indicator", () => {
 				buildSessionContext: () => ({ messages: [] }),
 				getEntries: () => [],
 				onPersistenceError: () => () => {},
+				onPersistenceNotice: () => () => {},
 			},
 			settings: Settings.isolated(),
 			extensionRunner: undefined,
@@ -319,7 +323,9 @@ describe("print mode working indicator", () => {
 				messages.push(message);
 				return true;
 			},
+			disableStopTimeTodoReminders: () => {},
 			prepareForHeadlessAdvisorDrain: () => {},
+			waitForIdle: async () => {},
 			waitForAdvisorCatchup: async (timeoutMs: number) => {
 				catchupTimeoutMs = timeoutMs;
 				markCatchupStarted();
@@ -370,6 +376,7 @@ describe("print mode working indicator", () => {
 				buildSessionContext: () => ({ messages: [] }),
 				getEntries: () => [],
 				onPersistenceError: () => () => {},
+				onPersistenceNotice: () => () => {},
 			},
 			settings: Settings.isolated(),
 			extensionRunner: undefined,
@@ -379,7 +386,9 @@ describe("print mode working indicator", () => {
 				return true;
 			},
 			setTextOutputCommitted: () => {},
+			disableStopTimeTodoReminders: () => {},
 			prepareForHeadlessAdvisorDrain: () => {},
+			waitForIdle: async () => {},
 			waitForAdvisorCatchup: async (timeoutMs: number) => {
 				catchupTimeoutMs = timeoutMs;
 				markCatchupStarted();
@@ -415,6 +424,7 @@ describe("print mode working indicator", () => {
 				buildSessionContext: () => ({ messages: [] }),
 				getEntries: () => [],
 				onPersistenceError: () => () => {},
+				onPersistenceNotice: () => () => {},
 			},
 			settings: Settings.isolated(),
 			extensionRunner: undefined,
@@ -423,7 +433,9 @@ describe("print mode working indicator", () => {
 				messages.push(message);
 				return true;
 			},
+			disableStopTimeTodoReminders: () => {},
 			prepareForHeadlessAdvisorDrain: () => {},
+			waitForIdle: async () => {},
 			waitForAdvisorCatchup: async () => true,
 			dispose: async () => {
 				disposed = true;

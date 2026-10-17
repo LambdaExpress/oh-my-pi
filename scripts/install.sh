@@ -5,10 +5,16 @@ set -e
 # Usage: curl -fsSL https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/release/scripts/install.sh | sh
 #
 # Options:
-#   --source       Install via bun (installs bun if needed)
-#   --binary       Always install prebuilt binary
-#   --ref <ref>    Install specific tag/commit/branch
+#   --source       Install via bun (installs bun if needed; defaults to dev)
+#   --binary       Always install prebuilt binary (the default)
+#   --ref <ref>    Any tag/commit/branch in source mode; code-N or v<version>
+#                  in binary mode
 #   -r <ref>       Shorthand for --ref
+#
+# Default/code-N binaries come from the fork's GitHub Releases. Explicit
+# v<version> refs or PI_BUILD_URL select the build service (default
+# https://build.stencil.so). Both verify sha256 before replacing an install.
+# Build-service files must also match the host asset name and exact byte size.
 
 REPO="LambdaExpress/oh-my-pi"
 PACKAGE="@oh-my-pi/pi-coding-agent"
@@ -24,6 +30,10 @@ else
             ;;
     esac
 fi
+BUILD_URL="${PI_BUILD_URL:-https://build.stencil.so}"
+while [ "${BUILD_URL%/}" != "$BUILD_URL" ]; do
+    BUILD_URL="${BUILD_URL%/}"
+done
 MIN_BUN_VERSION="1.3.14"
 
 # Parse arguments
@@ -85,9 +95,7 @@ has_bun() {
     command -v bun >/dev/null 2>&1
 }
 
-# Normalized host architecture (x64|arm64). On macOS this uses
-# `sysctl hw.optional.arm64` so it stays correct inside a Rosetta session,
-# where `uname -m` reports the translated x86_64.
+# Normalized host architecture, including native Apple Silicon under Rosetta.
 host_arch() {
     if [ "$(uname -s)" = "Darwin" ]; then
         if [ "$(sysctl -in hw.optional.arm64 2>/dev/null || /usr/sbin/sysctl -in hw.optional.arm64 2>/dev/null)" = "1" ]; then
@@ -104,13 +112,10 @@ host_arch() {
     esac
 }
 
-# Bun's own architecture (x64|arm64), or empty when it can't be determined.
 bun_arch() {
     bun -e 'process.stdout.write(process.arch)' 2>/dev/null
 }
 
-# True when Bun's architecture matches the host. If Bun's arch can't be read,
-# assume a match rather than block the install.
 bun_arch_matches_host() {
     ba="$(bun_arch)"
     [ -z "$ba" ] && return 0
@@ -120,29 +125,24 @@ bun_arch_matches_host() {
 version_ge() {
     current="$1"
     minimum="$2"
-
     current_major="${current%%.*}"
     current_rest="${current#*.}"
     current_minor="${current_rest%%.*}"
     current_patch="${current_rest#*.}"
     current_patch="${current_patch%%.*}"
-
     minimum_major="${minimum%%.*}"
     minimum_rest="${minimum#*.}"
     minimum_minor="${minimum_rest%%.*}"
     minimum_patch="${minimum_rest#*.}"
     minimum_patch="${minimum_patch%%.*}"
-
     if [ "$current_major" -ne "$minimum_major" ]; then
         [ "$current_major" -gt "$minimum_major" ]
         return $?
     fi
-
     if [ "$current_minor" -ne "$minimum_minor" ]; then
         [ "$current_minor" -gt "$minimum_minor" ]
         return $?
     fi
-
     [ "$current_patch" -ge "$minimum_patch" ]
 }
 
@@ -152,7 +152,6 @@ require_bun_version() {
         echo "Failed to read bun version"
         exit 1
     fi
-
     version_clean=${version_raw%%-*}
     if ! version_ge "$version_clean" "$MIN_BUN_VERSION"; then
         echo "Bun ${MIN_BUN_VERSION} or newer is required. Current version: ${version_clean}"
@@ -161,12 +160,10 @@ require_bun_version() {
     fi
 }
 
-# Check if git is available
 has_git() {
     command -v git >/dev/null 2>&1
 }
 
-# Install bun
 install_bun() {
     echo "Installing bun..."
     if command -v bash >/dev/null 2>&1; then
@@ -180,12 +177,10 @@ install_bun() {
     require_bun_version
 }
 
-# Check if git-lfs is available
 has_git_lfs() {
     command -v git-lfs >/dev/null 2>&1
 }
 
-# Install via bun
 install_via_bun() {
     echo "Installing via bun..."
     if [ -n "$REF" ]; then
@@ -193,27 +188,21 @@ install_via_bun() {
             echo "git is required for --ref when installing from source"
             exit 1
         fi
-
         TMP_DIR="$(mktemp -d)"
         trap 'rm -rf "$TMP_DIR"' EXIT
-
         if git clone --depth 1 --branch "$REF" "https://github.com/${REPO}.git" "$TMP_DIR" >/dev/null 2>&1; then
             :
         else
             git clone "https://github.com/${REPO}.git" "$TMP_DIR"
             (cd "$TMP_DIR" && git checkout "$REF")
         fi
-
-        # Pull LFS files
         if has_git_lfs; then
             (cd "$TMP_DIR" && git lfs pull)
         fi
-
         if [ ! -d "$TMP_DIR/packages/coding-agent" ]; then
             echo "Expected package at ${TMP_DIR}/packages/coding-agent"
             exit 1
         fi
-
         bun install -g "$TMP_DIR/packages/coding-agent" || {
             echo "Failed to install from source"
             exit 1
@@ -229,82 +218,174 @@ install_via_bun() {
     echo "Run 'omp' to get started!"
 }
 
-# Install binary from GitHub releases
+# String field in one-line JSON; escaped quotes cannot fake a key.
+json_string() {
+    sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p"
+}
+
+# Select the answer's top-level file, not another target in build.files[].
+json_file_object() {
+    sed -n 's/.*"file"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p'
+}
+
+# Match the service's positive safe-integer JSON number contract.
+json_file_size() {
+    sed -n 's/.*"size"[[:space:]]*:[[:space:]]*\([^,}]*\).*/\1/p' | LC_ALL=C awk '
+        {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            if ($0 !~ /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/) exit
+            size = $0 + 0
+            if (size > 0 && size <= 9007199254740991 && size == int(size)) printf "%.0f\n", size
+        }
+    '
+}
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d ' ' -f 1
+    else
+        shasum -a 256 "$1" | cut -d ' ' -f 1
+    fi
+}
+
 install_binary() {
-    # Detect platform
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+        echo "sha256sum or shasum is required to verify the downloaded binary"
+        exit 1
+    fi
     OS="$(uname -s)"
     ARCH="$(host_arch)"
-
     case "$OS" in
         Linux)  PLATFORM="linux" ;;
         Darwin) PLATFORM="darwin" ;;
         *)      echo "Unsupported OS: $OS"; exit 1 ;;
     esac
-
     case "$ARCH" in
         x64|arm64) ;;
-        *)         echo "Unsupported architecture: $ARCH"; exit 1 ;;
+        *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
     esac
-
     if [ "$PLATFORM" = "linux" ]; then
         if [ -f /etc/alpine-release ] || { command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; }; then
             PLATFORM="linux-musl"
         fi
     fi
-
     BINARY="omp-${PLATFORM}-${ARCH}"
-    # Get release tag
-    if [ -n "$REF" ]; then
-        echo "Fetching release $REF..."
-        if RELEASE_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "https://api.github.com/repos/${REPO}/releases/tags/${REF}"); then
-            LATEST=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
-        else
-            echo "Release tag not found: $REF"
+
+    USE_BUILD_SERVICE=false
+    case "$REF" in
+        code-*) ;;
+        v*) USE_BUILD_SERVICE=true ;;
+        "") if [ -n "${PI_BUILD_URL:-}" ]; then USE_BUILD_SERVICE=true; fi ;;
+        *)
+            echo "Binary installs take a release tag (code-N or v<version>) for --ref, got: $REF"
             echo "For branch/commit installs, use --source with --ref."
+            exit 1
+            ;;
+    esac
+    RELEASE_CODE=""
+    EXPECTED_SIZE=""
+    if [ "$USE_BUILD_SERVICE" = true ]; then
+        SERVICE_PLATFORM="$PLATFORM"
+        if [ "$SERVICE_PLATFORM" = "darwin" ]; then SERVICE_PLATFORM="macos"; fi
+        TARGET_ARCH="$ARCH"
+        if [ "$TARGET_ARCH" = "x64" ]; then TARGET_ARCH="x86_64"; fi
+        TARGET="${SERVICE_PLATFORM}-${TARGET_ARCH}"
+        if [ -n "$REF" ]; then
+            if ! printf '%s\n' "$REF" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+                echo "Binary installs take a release tag (v<version>) for --ref, got: $REF"
+                echo "For branch/commit installs, use --source with --ref."
+                exit 1
+            fi
+            echo "Fetching omp ${REF#v}..."
+            API_URL="${BUILD_URL}/api/products/omp/versions/${REF#v}/${TARGET}"
+        else
+            echo "Fetching latest release..."
+            API_URL="${BUILD_URL}/api/products/omp/latest/${TARGET}?channel=stable"
+        fi
+        if ! BUILD_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "$API_URL"); then
+            echo "Failed to resolve an omp build for ${TARGET} from ${API_URL}"
+            exit 1
+        fi
+        BUILD_JSON=$(printf '%s' "$BUILD_JSON" | tr -d '\r\n')
+        VERSION=$(printf '%s\n' "$BUILD_JSON" | json_string version)
+        FILE_JSON=$(printf '%s\n' "$BUILD_JSON" | json_file_object)
+        ANSWERED_BINARY=$(printf '%s\n' "$FILE_JSON" | json_string name)
+        EXPECTED_SIZE=$(printf '%s\n' "$FILE_JSON" | json_file_size)
+        EXPECTED_SHA256=$(printf '%s\n' "$FILE_JSON" | json_string sha256)
+        # Go escapes ampersands in presigned URLs as \u0026.
+        DOWNLOAD_URL=$(printf '%s\n' "$BUILD_JSON" | json_string download | sed 's/\\u0026/\&/g')
+        if [ -z "$VERSION" ] || [ -z "$DOWNLOAD_URL" ]; then
+            echo "Unexpected answer from ${API_URL}"
+            exit 1
+        fi
+        if [ "$ANSWERED_BINARY" != "$BINARY" ]; then
+            echo "Answered file ${ANSWERED_BINARY} is not ${BINARY}"
+            exit 1
+        fi
+        if [ -z "$EXPECTED_SIZE" ]; then
+            echo "Missing or invalid size for ${BINARY}"
             exit 1
         fi
     else
-        echo "Fetching latest code release..."
-        RELEASE_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "https://api.github.com/repos/${REPO}/releases?per_page=100")
-        LATEST=$(printf '%s\n' "$RELEASE_JSON" \
-            | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"code-[0-9][0-9]*"' \
-            | sed -E 's/.*"(code-[0-9]+)"/\1/' \
-            | sort -t- -k2,2nr \
-            | sed -n '1p')
+        if [ -n "$REF" ]; then
+            LATEST="$REF"
+        else
+            echo "Fetching latest code release..."
+            RELEASES_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "https://api.github.com/repos/${REPO}/releases?per_page=100")
+            LATEST=$(printf '%s\n' "$RELEASES_JSON" \
+                | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"code-[0-9][0-9]*"' \
+                | sed -E 's/.*"(code-[0-9]+)"/\1/' \
+                | sort -t- -k2,2nr \
+                | sed -n '1p')
+        fi
+        if ! printf '%s\n' "$LATEST" | grep -Eq '^code-[1-9][0-9]*$'; then
+            echo "Failed to find a valid code-N release tag"
+            echo "For branch/commit installs, use --source with --ref."
+            exit 1
+        fi
+        RELEASE_CODE="${LATEST#code-}"
+        if ! RELEASE_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "https://api.github.com/repos/${REPO}/releases/tags/${LATEST}"); then
+            echo "Release tag not found: $LATEST"
+            exit 1
+        fi
+        VERSION="$LATEST"
+        # Code releases publish complete digests in their Release body.
+        CHECKSUMS=$(printf '%s\n' "$RELEASE_JSON" | json_string body | sed 's/\\r//g; s/\\n/\
+/g')
+        EXPECTED_SHA256=$(printf '%s\n' "$CHECKSUMS" | while read -r digest asset; do
+            if [ "$asset" = "$BINARY" ]; then printf '%s\n' "$digest"; fi
+        done)
+        DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${LATEST}/${BINARY}"
     fi
-
-    RELEASE_CODE="${LATEST#code-}"
-    case "$LATEST" in
-        code-*) ;;
-        *)
-            echo "Failed to find a valid code-N release tag"
-            exit 1
-            ;;
-    esac
-    case "$RELEASE_CODE" in
-        ""|0|*[!0-9]*)
-            echo "Failed to find a valid code-N release tag"
-            exit 1
-            ;;
-    esac
-    echo "Using version: $LATEST"
+    if ! printf '%s\n' "$EXPECTED_SHA256" | grep -Eq '^[0-9a-f]{64}$' || [ "${#EXPECTED_SHA256}" -ne 64 ]; then
+        echo "Missing or invalid SHA256 for ${BINARY}"
+        exit 1
+    fi
+    echo "Using version: $VERSION"
 
     mkdir -p "$INSTALL_DIR"
-    # Download binary
-    BINARY_URL="https://github.com/${REPO}/releases/download/${LATEST}/${BINARY}"
-    echo "Downloading ${BINARY}..."
     TARGET_PATH="${INSTALL_DIR}/omp"
     ATTEMPT="$(date +%s).$$"
     NEW_PATH="${TARGET_PATH}.${ATTEMPT}.new"
     BACKUP_PATH="${TARGET_PATH}.${ATTEMPT}.bak"
-    curl -fsSL --connect-timeout 10 --speed-limit 1024 --speed-time 30 "$BINARY_URL" -o "$NEW_PATH"
+    trap 'rm -f "$NEW_PATH"' EXIT
+    echo "Downloading ${BINARY}..."
+    curl -fsSL --connect-timeout 10 --speed-limit 1024 --speed-time 30 "$DOWNLOAD_URL" -o "$NEW_PATH"
+    if [ -n "$EXPECTED_SIZE" ]; then
+        ACTUAL_SIZE=$(wc -c < "$NEW_PATH" | tr -d '[:space:]')
+        if [ "$ACTUAL_SIZE" != "$EXPECTED_SIZE" ]; then
+            echo "Size mismatch for ${BINARY}: expected ${EXPECTED_SIZE} bytes, got ${ACTUAL_SIZE}"
+            exit 1
+        fi
+    fi
+    ACTUAL_SHA256="$(sha256_of "$NEW_PATH")"
+    if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+        echo "Checksum mismatch for ${BINARY}: expected ${EXPECTED_SHA256}, got ${ACTUAL_SHA256}"
+        exit 1
+    fi
     chmod +x "$NEW_PATH"
-
-    # Verify the freshly installed binary can actually start before reporting
-    # success. Bun's musl-target binaries link libstdc++/libgcc dynamically,
-    # which stock Alpine/musl systems do not ship, so the download succeeds while
-    # the binary exits 127 with relocation errors. Never claim success for a
-    # binary that cannot run.
+    # Smoke the staged executable before touching the installed one. Musl
+    # binaries may download successfully but fail without libstdc++/libgcc.
     if ! SMOKE_OUTPUT="$("$NEW_PATH" --version 2>&1)"; then
         echo ""
         echo "✗ Downloaded omp cannot start:"
@@ -318,15 +399,12 @@ install_binary() {
                 echo "    (install the libstdc++ and libgcc runtime packages for your distro)"
             fi
         fi
-        rm -f "$NEW_PATH"
         exit 1
     fi
-    if ! printf '%s\n' "$SMOKE_OUTPUT" | grep -q "+code\.${RELEASE_CODE}$"; then
+    if [ -n "$RELEASE_CODE" ] && ! printf '%s\n' "$SMOKE_OUTPUT" | grep -q "+code\.${RELEASE_CODE}$"; then
         echo "Downloaded omp reports an unexpected release code: $SMOKE_OUTPUT"
-        rm -f "$NEW_PATH"
         exit 1
     fi
-
     HAD_BACKUP=0
     if [ -e "$TARGET_PATH" ]; then
         mv "$TARGET_PATH" "$BACKUP_PATH"
@@ -334,27 +412,20 @@ install_binary() {
     fi
     if ! mv "$NEW_PATH" "$TARGET_PATH"; then
         if [ "$HAD_BACKUP" -eq 1 ]; then mv "$BACKUP_PATH" "$TARGET_PATH"; fi
-        rm -f "$NEW_PATH"
         exit 1
     fi
     if [ "$HAD_BACKUP" -eq 1 ]; then rm -f "$BACKUP_PATH"; fi
-
     echo ""
     echo "✓ Installed omp to $TARGET_PATH"
-
-    # Check if in PATH
     case ":$PATH:" in
         *":$INSTALL_DIR:"*) echo "Run 'omp' to get started!" ;;
         *) echo "Add ${INSTALL_DIR} to your PATH, then run 'omp'" ;;
     esac
 }
 
-# Main logic
 case "$MODE" in
     source)
-        if ! has_bun; then
-            install_bun
-        fi
+        if ! has_bun; then install_bun; fi
         require_bun_version
         if ! bun_arch_matches_host; then
             echo "Error: bun reports architecture '$(bun_arch)' but this host is '$(host_arch)'."
@@ -365,13 +436,8 @@ case "$MODE" in
         fi
         install_via_bun
         ;;
-    binary)
-        install_binary
-        ;;
     *)
-        # The fork's update sequence exists only in code-N GitHub releases.
-        # Never let a pre-existing Bun installation route the bootstrap through
-        # the upstream npm package; source installs remain explicitly opt-in.
+        # Never let an existing Bun route the default through upstream npm.
         install_binary
         ;;
 esac

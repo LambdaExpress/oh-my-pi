@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
-import { closeModelCacheSharedDb } from "@oh-my-pi/pi-catalog/model-cache";
+import { closeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
@@ -72,7 +72,7 @@ describe("tools.approvalMode setting", () => {
 		// (~2s per attempt) and overran this hook's 5s budget. Release both, then remove;
 		// a failure here must fail the run rather than leak the temp dir silently.
 		session.modelRegistry.authStorage.close();
-		closeModelCacheSharedDb();
+		closeModelCache();
 		removeSyncWithRetries(tempDir);
 	});
 

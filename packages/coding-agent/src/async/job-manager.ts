@@ -127,6 +127,8 @@ export interface AsyncJobRecord {
 	toolCallId?: string;
 	progress?: AsyncJobProgress;
 	settledAt?: number;
+	/** Latest progress text the running job reported (a bash job's output tail). */
+	progressText?: string;
 	/**
 	 * Registry id of the agent that registered the job (e.g. "Main",
 	 * "AuthLoader"). Used by scoped cancel/list APIs so a subagent's teardown
@@ -142,6 +144,8 @@ export interface AsyncJobRecord {
 	 * id differs from the agent id (vibe turn jobs, tan clones).
 	 */
 	agentId?: string;
+	/** The process the job runs, when it spawns one. */
+	process?: AsyncJobProcess;
 	/**
 	 * Job is registered but parked behind a caller-managed gate (e.g. a task
 	 * batch semaphore). Queued jobs do not count toward the running-job limit
@@ -171,6 +175,19 @@ export interface AsyncJob extends AsyncJobRecord {
 	 * outlive the job row it was kept alive for.
 	 */
 	retainedArtifactsCleanup?: () => Promise<void>;
+}
+
+/**
+ * The process a job runs, for job inspectors (the jobs sheet): set by bodies
+ * that spawn one (bash), absent for in-process work (eval, task).
+ */
+export interface AsyncJobProcess {
+	/** Full command line; the job label is cut to 120 characters. */
+	readonly command: string;
+	/** Directory the command started in. */
+	readonly cwd: string;
+	/** Live pids the command spawned, in spawn order; empty before it starts and after it ends. */
+	pids(): readonly number[];
 }
 
 /** Delivery callback for a settled job's result text. */
@@ -268,6 +285,8 @@ export interface AsyncJobRegisterOptions {
 	queued?: boolean;
 	/** Register the job as backing a foreground call; see {@link AsyncJob.foreground}. */
 	foreground?: boolean;
+	/** The process the job runs; see {@link AsyncJob.process}. */
+	process?: AsyncJobProcess;
 }
 
 /**
@@ -289,7 +308,7 @@ export interface AsyncJobFilter {
 export class AsyncJobManager {
 	static #instance: AsyncJobManager | undefined;
 
-	/** Process-global instance shared by internal URL protocol handlers and tools. */
+	/** Legacy pointer to the first live root; child routing uses the parent's scoped manager instead. */
 	static instance(): AsyncJobManager | undefined {
 		return AsyncJobManager.#instance;
 	}
@@ -476,6 +495,7 @@ export class AsyncJobManager {
 			ownerId: options?.ownerId,
 			scopeId: options?.scopeId,
 			agentId: options?.agentId,
+			process: options?.process,
 			queued: options?.queued === true,
 			...(options?.foreground ? { foreground: true } : {}),
 		};
@@ -485,6 +505,7 @@ export class AsyncJobManager {
 		const reportProgress = async (text: string, details?: AsyncJobDetails): Promise<void> => {
 			if (job.scopeId !== undefined && this.#retiredScopes.has(job.scopeId)) return;
 			job.progress = { text, details, updatedAt: Date.now() };
+			job.progressText = text;
 			if (details) job.latestDetails = details;
 			this.#notifyJobChange(job);
 			if (!options?.onProgress) return;
@@ -1229,8 +1250,9 @@ export class AsyncJobManager {
 		// #suppressedDeliveries; evicting now would clear that marker (#evictJob)
 		// before the queue's isStale check drains it, letting the already-consumed
 		// result inject a duplicate async-result follow-up. A parked entry keeps
-		// the full retention window instead. Clamping inside #scheduleEviction
-		// keeps a shorter configured retention the effective cap.
+		// the row until its delivery settles (see #scheduleEviction), which then
+		// arms the consumed grace. Clamping inside #scheduleEviction keeps a
+		// shorter configured retention the effective cap.
 		const deliveryPending =
 			this.#deliveries.some(delivery => delivery.jobId === jobId) ||
 			this.#inFlightDeliveries.some(delivery => delivery.jobId === jobId);
@@ -1409,6 +1431,13 @@ export class AsyncJobManager {
 	 * retention window; a consumed result passes the shorter
 	 * {@link #consumedResultEvictionMs}. The delay is clamped to the configured
 	 * retention so an explicit short retention always stays the effective cap.
+	 * A timer that fires while a suppressed job's delivery is in flight (its
+	 * async-result entry parked on a busy owner's yield queue) evicts only once
+	 * that attempt settles: the parked entry's isStale check resolves through
+	 * the suppression marker #evictJob clears, so evicting mid-park would
+	 * re-inject a result a foreground snapshot already consumed. Unsuppressed
+	 * in-flight deliveries keep the bounded lifecycle, so a receipt that never
+	 * settles cannot pin the row and its retained artifacts.
 	 */
 	#scheduleEviction(jobId: string, delayMs: number = this.#retentionMs): void {
 		if (this.#disposed) return;
@@ -1422,7 +1451,16 @@ export class AsyncJobManager {
 		const delay = Math.max(0, Math.min(this.#retentionMs, delayMs));
 		clearTimeout(this.#evictionTimers.get(jobId));
 		const timer = setTimeout(() => {
-			this.#evictJob(jobId);
+			const inFlight = this.#inFlightDeliveries.find(delivery => delivery.jobId === jobId)?.promise;
+			if (!inFlight || !this.isDeliverySuppressed(jobId)) {
+				this.#evictJob(jobId);
+				return;
+			}
+			// The settled attempt may re-arm this job's timer (consumed grace);
+			// only evict when nothing replaced this one in the meantime.
+			void inFlight.then(() => {
+				if (this.#evictionTimers.get(jobId) === timer) this.#evictJob(jobId);
+			});
 		}, delay);
 		timer.unref();
 		this.#evictionTimers.set(jobId, timer);

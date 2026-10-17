@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "bun:test";
+import { EventEmitter } from "node:events";
 import * as os from "node:os";
 import { runInNewContext } from "node:vm";
 import { loadPuppeteerInWorker } from "@oh-my-pi/pi-coding-agent/tools/browser/launch";
@@ -39,6 +40,14 @@ async function createHandleWorker(createHandle: () => ElementHandle): Promise<Ha
 	// Worker initialization uses the real device and network descriptor registries,
 	// even when its connection is provided by this in-process fixture.
 	await loadPuppeteerInWorker(os.tmpdir());
+	const observedHandle = createHandle();
+	const page = observedHandle.frame.page();
+	const frame = Object.assign(observedHandle.frame, {
+		_loaderId: "loader-handle-timeout",
+		client: new EventEmitter(),
+		mainRealm: () => ({ evaluate: async () => undefined }),
+		page: () => page,
+	});
 	const target = {
 		_targetId: "target-handle-timeout",
 		page: async () => page,
@@ -47,17 +56,18 @@ async function createHandleWorker(createHandle: () => ElementHandle): Promise<Ha
 		setTimeout: () => locator,
 		waitHandle: async () => createHandle(),
 	};
-	const frame = { mainRealm: () => ({ evaluate: async () => undefined }) };
-	const page: Record<string, unknown> = {
+	const pageEvents = new EventEmitter();
+	Object.assign(page, {
 		target: () => target,
+		browserContext: () => ({ id: "context-handle-timeout" }),
 		url: () => "data:text/html,handle-timeout",
 		title: async () => "Handle timeout fixture",
 		viewport: () => ({ width: 390, height: 844, deviceScaleFactor: 1 }),
 		isClosed: () => false,
-		on() {},
-		once() {},
-		off() {},
-		removeAllListeners() {},
+		on: pageEvents.on.bind(pageEvents),
+		once: pageEvents.once.bind(pageEvents),
+		off: pageEvents.off.bind(pageEvents),
+		removeAllListeners: pageEvents.removeAllListeners.bind(pageEvents),
 		mainFrame: () => frame,
 		frames: () => [frame],
 		evaluate: async () => "Handle timeout fixture user agent",
@@ -67,11 +77,15 @@ async function createHandleWorker(createHandle: () => ElementHandle): Promise<Ha
 			throw new Error("Fixture uses page event capture, not CDP");
 		},
 		setRequestInterception: async () => {},
-		evaluateHandle: async () => ({ asElement: () => createHandle(), dispose: async () => {} }),
+		evaluateHandle: async (_fn: unknown, ref: string) => {
+			if (ref !== "e5") throw new Error(`Unknown fixture ARIA ref ${ref}`);
+			return { asElement: () => createHandle(), dispose: async () => {} };
+		},
 		locator: () => locator,
-	};
+	});
 	const browser = {
 		targets: () => [target],
+		wsEndpoint: () => "ws://127.0.0.1/devtools/browser/test",
 		connected: true,
 		disconnect() {},
 	};
@@ -83,8 +97,8 @@ async function createHandleWorker(createHandle: () => ElementHandle): Promise<Ha
 			mode: "attach",
 			browserWSEndpoint: "ws://127.0.0.1/devtools/browser/test",
 			safeDir: os.tmpdir(),
+			uploadDir: os.tmpdir(),
 			targetId: "target-handle-timeout",
-			timeoutMs: 1_000,
 		},
 	});
 	try {
@@ -94,7 +108,7 @@ async function createHandleWorker(createHandle: () => ElementHandle): Promise<Ha
 		await transport.closed.promise;
 		throw error;
 	}
-	core.cacheElement(82, createHandle());
+	core.observeElement({ frame, backendNodeId: 82, loaderId: frame._loaderId }, observedHandle);
 	return transport;
 }
 
@@ -121,21 +135,33 @@ async function runHandleCode(
 }
 
 function createActionNode() {
-	return {
+	const attributes = new Map<string, string>();
+	const root = {};
+	return Object.assign(new EventTarget(), {
 		isConnected: true,
 		value: "old",
 		focused: false,
+		getAttribute: (name: string) => attributes.get(name) ?? null,
+		matches(selector: string) {
+			if (selector !== ":disabled") throw new Error(`Unsupported fixture selector ${selector}`);
+			return attributes.has("disabled");
+		},
 		focus() {
 			this.focused = true;
 		},
 		scrollIntoView() {},
 		getBoundingClientRect: () => ({ left: 0, right: 10, top: 0, bottom: 10, width: 10, height: 10 }),
-	};
+		getClientRects() {
+			return [this.getBoundingClientRect()];
+		},
+		getRootNode: () => root,
+	});
 }
 
 // Execute page callbacks in an isolated realm rather than patching Bun's global DOM state.
 function createHandleEvaluator(node: object) {
-	return async (fn: (element: never) => unknown, ...args: unknown[]) =>
+	const pageEvents = new EventTarget();
+	const evaluate = async (fn: (element: never) => unknown, ...args: unknown[]) =>
 		runInNewContext(`(${fn.toString()})(node, ...args)`, {
 			node,
 			args,
@@ -143,7 +169,25 @@ function createHandleEvaluator(node: object) {
 			innerHeight: 844,
 			document: { elementFromPoint: () => node },
 			getComputedStyle: () => ({ display: "block", visibility: "visible", pointerEvents: "auto", opacity: "1" }),
+			addEventListener: pageEvents.addEventListener.bind(pageEvents),
+			removeEventListener: pageEvents.removeEventListener.bind(pageEvents),
 		});
+	return {
+		evaluate,
+		async evaluateHandle(fn: (element: never) => unknown, ...args: unknown[]) {
+			const value = await evaluate(fn, ...args);
+			let disposed = false;
+			return {
+				async evaluate(callback: (value: never) => unknown) {
+					if (disposed) throw new Error("Fixture JSHandle is disposed");
+					return runInNewContext(`(${callback.toString()})(value)`, { value });
+				},
+				async dispose() {
+					disposed = true;
+				},
+			};
+		},
+	};
 }
 
 // Regression coverage for the "weird timeouts" failure mode: interactive `tab.*` helpers
@@ -189,14 +233,13 @@ describe("browser direct handle action deadlines", () => {
 		const createHandle = (): ElementHandle => {
 			const keyboard = { type: () => stalled.promise };
 			const mouse = { click: () => stalled.promise };
-			const evaluate = createHandleEvaluator(node);
+			const evaluator = createHandleEvaluator(node);
 			return {
-				click: () => stalled.promise,
-				type: () => stalled.promise,
+				...evaluator,
 				// Text replacement is a DOM operation, independent of keyboard
 				// dispatch. Let focus/geometry probes finish while its write stalls.
 				evaluate: (fn: (element: never) => unknown, ...args: unknown[]) =>
-					typeof args[0] === "string" ? stalled.promise : evaluate(fn, ...args),
+					typeof args[0] === "string" ? stalled.promise : evaluator.evaluate(fn, ...args),
 				boundingBox: async () => ({ x: 0, y: 0, width: 10, height: 10 }),
 				frame: { page: () => ({ keyboard, mouse }) },
 				dispose: async () => {},
@@ -208,7 +251,7 @@ describe("browser direct handle action deadlines", () => {
 			createHandle,
 			`const messages = [];
 			for (const [getHandle, action] of [
-				[() => tab.id(82), handle => handle.click()],
+				[() => tab.id(1), handle => handle.click()],
 				[() => tab.ref("e5"), handle => handle.type("text")],
 				[() => tab.waitFor("#button"), handle => handle.fill("text")],
 			]) {
@@ -224,7 +267,7 @@ describe("browser direct handle action deadlines", () => {
 		if (!result.ok) throw new Error(result.error.message);
 		const messages = result.payload.returnValue as string[];
 		expect(messages).toHaveLength(3);
-		const actions = ["tab.id(82).click()", 'tab.ref("e5").type()', 'tab.waitFor("#button").fill()'];
+		const actions = ["tab.id(1).click()", 'tab.ref("e5").type()', 'tab.waitFor("#button").fill()'];
 		for (const [index, action] of actions.entries()) {
 			expect(messages[index]).toContain(action);
 			expect(messages[index]).toContain(`${actionTimeoutMs}ms`);
@@ -237,16 +280,14 @@ describe("browser direct handle action deadlines", () => {
 		const node = createActionNode();
 		const createHandle = (): ElementHandle =>
 			({
-				click: () => stalled.promise,
-				type: async () => {},
-				evaluate: createHandleEvaluator(node),
+				...createHandleEvaluator(node),
 				boundingBox: async () => ({ x: 0, y: 0, width: 10, height: 10 }),
 				frame: { page: () => ({ mouse: { click: () => stalled.promise } }) },
 				dispose: async () => {},
 			}) as unknown as ElementHandle;
 		const result = await runHandleCode(
 			createHandle,
-			`try { await (await tab.id(82)).click(); } catch {}
+			`try { await (await tab.id(1)).click(); } catch {}
 			await wait(10_000);`,
 			1_100,
 		);
@@ -254,7 +295,7 @@ describe("browser direct handle action deadlines", () => {
 		expect(result.ok).toBe(false);
 		if (result.ok) throw new Error("Expected the cell wait to time out");
 		expect(result.error.message).toContain("wait(10000ms)");
-		expect(result.error.message).not.toContain("tab.id(82).click()");
+		expect(result.error.message).not.toContain("tab.id(1).click()");
 	});
 
 	it("completes prompt handle actions without false timeouts", async () => {
@@ -262,14 +303,22 @@ describe("browser direct handle action deadlines", () => {
 		const createHandle = (): ElementHandle => {
 			const keyboard = {
 				async type(text: string) {
+					if (!node.focused) throw new Error("Fixture input is not focused");
 					node.value += text;
 				},
 			};
-			const mouse = { click: async () => {} };
+			const mouse = {
+				async click(_x: number, _y: number, options?: { button?: string; count?: number }) {
+					for (let index = 0; index < (options?.count ?? 1); index++) {
+						for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
+							node.dispatchEvent(new Event(type));
+						}
+						node.dispatchEvent(new Event(options?.button === "right" ? "auxclick" : "click"));
+					}
+				},
+			};
 			const handle: ElementHandle = {
-				click: async () => {},
-				type: async () => {},
-				evaluate: createHandleEvaluator(node),
+				...createHandleEvaluator(node),
 				boundingBox: async () => ({ x: 0, y: 0, width: 10, height: 10 }),
 				frame: { page: () => ({ keyboard, mouse }) },
 				dispose: async () => {},
@@ -282,7 +331,7 @@ describe("browser direct handle action deadlines", () => {
 		const cellTimeoutMs = 30_000;
 		const result = await runHandleCode(
 			createHandle,
-			`await (await tab.id(82)).click({ button: "right", count: 2 });
+			`await (await tab.id(1)).click({ button: "right", count: 2 });
 			await (await tab.ref("e5")).type("abc", { delay: 7 });
 			return await (await tab.ref("e5")).evaluate(element => element.value);`,
 			cellTimeoutMs,

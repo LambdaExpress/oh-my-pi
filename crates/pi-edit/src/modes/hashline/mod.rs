@@ -117,14 +117,6 @@ fn header_parts(input: &str) -> Vec<(String, usize, usize)> {
 		.collect()
 }
 
-fn added_lines(body: &str) -> String {
-	body
-		.lines()
-		.filter_map(|line| line.strip_prefix('+').filter(|_| !line.starts_with("+++ ")))
-		.collect::<Vec<_>>()
-		.join("\n")
-}
-
 fn inspect_input(input: &str) -> Inspection {
 	let headers = header_parts(input);
 	let paths = headers.iter().map(|(path, ..)| path.clone()).collect();
@@ -133,7 +125,8 @@ fn inspect_input(input: &str) -> Inspection {
 		let body_end = headers
 			.get(index + 1)
 			.map_or(input.len(), |(_, start, _)| *start);
-		let digest = added_lines(&input[*body_start..body_end]);
+		let digest =
+			super::added_lines(input[*body_start..body_end].lines(), false).unwrap_or_default();
 		if digest.is_empty() {
 			continue;
 		}
@@ -169,5 +162,11 @@ mod tests {
 			inspect_input("[*** Update File: src/a.ts#ABCD]\nPUT 1.=1:\n+new\n[src/b.ts]\nCUT 2.=2");
 		assert_eq!(inspected.paths, ["src/a.ts", "src/b.ts"]);
 		assert_eq!(inspected.entries, [("src/a.ts".into(), "new".into())]);
+	}
+
+	#[test]
+	fn inspect_keeps_metadata_shaped_payload_lines() {
+		let inspected = inspect_input("[a.txt]\nPUT 1.=1:\n+++ literal");
+		assert_eq!(inspected.entries, [("a.txt".into(), "++ literal".into())]);
 	}
 }

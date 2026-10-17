@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { McpProtocolHandler } from "../../src/internal-urls/mcp-protocol";
 import { parseInternalUrl } from "../../src/internal-urls/parse";
+import * as mcpClient from "../../src/mcp/client";
 import { MCPTransportError } from "../../src/mcp/errors";
 import { MCPManager } from "../../src/mcp/manager";
 
@@ -67,6 +68,40 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
 	);
 }
 
+function errorCauses(error: unknown): Error[] {
+	if (!(error instanceof Error)) return [];
+	return [
+		error,
+		...errorCauses(error.cause),
+		...(error instanceof AggregateError ? error.errors.flatMap(errorCauses) : []),
+	];
+}
+
+function observeResourceReadiness(manager: MCPManager) {
+	const connection = Promise.withResolvers<void>();
+	const catalog = Promise.withResolvers<void>();
+	const waitForPendingConnections = manager.waitForPendingConnections.bind(manager);
+	const ensureServerResources = manager.ensureServerResources.bind(manager);
+	const connectionSpy = vi.spyOn(manager, "waitForPendingConnections").mockImplementation((...args) => {
+		const pending = waitForPendingConnections(...args);
+		connection.resolve();
+		return pending;
+	});
+	const catalogSpy = vi.spyOn(manager, "ensureServerResources").mockImplementation((...args) => {
+		const pending = ensureServerResources(...args);
+		catalog.resolve();
+		return pending;
+	});
+	return {
+		connection: connection.promise,
+		catalog: catalog.promise,
+		restore() {
+			connectionSpy.mockRestore();
+			catalogSpy.mockRestore();
+		},
+	};
+}
+
 describe("MCP resource deadlines", () => {
 	it("bounds an advertised silent resource independently of a six-minute tool timeout", async () => {
 		const { manager, received, handler } = await setup();
@@ -96,20 +131,26 @@ describe("MCP resource deadlines", () => {
 		});
 		expect(await received).toEqual({ method: "initialize" });
 
-		vi.useFakeTimers();
-		const result = rejection(handler.resolve(parseInternalUrl("mcp://test://connected")));
-		vi.advanceTimersByTime(30_000);
-		const error = await result;
-		expect((error as Error).cause).toMatchObject({ failure: "timeout", stage: "connect", retryable: false });
-		expect((error as Error).message).toContain("fixture");
-		expect(manager.getConnectionStatus("fixture")).toBe("connecting");
+		const readiness = observeResourceReadiness(manager);
+		try {
+			vi.useFakeTimers();
+			const result = rejection(handler.resolve(parseInternalUrl("mcp://test://connected")));
+			await readiness.connection;
+			vi.advanceTimersByTime(30_000);
+			const error = await result;
+			expect((error as Error).cause).toMatchObject({ failure: "timeout", stage: "connect", retryable: false });
+			expect((error as Error).message).toContain("fixture");
+			expect(manager.getConnectionStatus("fixture")).toBe("connecting");
 
-		vi.useRealTimers();
-		await Bun.write(releasePath, "ready");
-		await manager.waitForPendingConnections();
-		await manager.ensureServerResources("fixture");
-		const connected = await handler.resolve(parseInternalUrl("mcp://test://connected"));
-		expect(connected.content).toBe("The connected resource is available.");
+			vi.useRealTimers();
+			await Bun.write(releasePath, "ready");
+			await manager.waitForPendingConnections();
+			await manager.ensureServerResources("fixture");
+			const connected = await handler.resolve(parseInternalUrl("mcp://test://connected"));
+			expect(connected.content).toBe("The connected resource is available.");
+		} finally {
+			readiness.restore();
+		}
 	});
 
 	it("reports catalog unavailability rather than inventing an empty resource list", async () => {
@@ -118,35 +159,75 @@ describe("MCP resource deadlines", () => {
 		process.env.OMP_MCP_TIMEOUT_MS = "50";
 
 		const error = await rejection(handler.resolve(parseInternalUrl("mcp://test://connected")));
-		expect((error as Error).cause).toBeInstanceOf(AggregateError);
-		const failures = ((error as Error).cause as AggregateError).errors;
-		expect(failures.some((failure: Error) => (failure.cause as MCPTransportError)?.failure === "timeout")).toBe(true);
+		const failures = errorCauses(error);
+		expect(failures.some(failure => failure instanceof MCPTransportError && failure.failure === "timeout")).toBe(
+			true,
+		);
 		expect((error as Error).message).not.toContain("No MCP server has resource");
 		expect((error as Error).message).not.toContain("(none)");
 	});
 
 	it("preserves a settled startup failure instead of claiming the server has no resources", async () => {
-		const { handler } = await setup("unavailable");
-		const error = await rejection(handler.resolve(parseInternalUrl("mcp://test://connected")));
-		expect((error as Error).cause).toBeInstanceOf(AggregateError);
-		expect((error as Error).message).toContain("-32001");
-		expect((error as Error).message).toContain("Back-end application unavailable");
-		expect((error as Error).message).not.toContain("No MCP server has resource");
-		expect((error as Error).message).not.toContain("(none)");
+		const connect = mcpClient.connectToServer;
+		let startupFailure: unknown;
+		const connectSpy = vi.spyOn(mcpClient, "connectToServer").mockImplementation(async (...args) => {
+			try {
+				return await connect(...args);
+			} catch (error) {
+				startupFailure = error;
+				throw error;
+			}
+		});
+		try {
+			const { manager, handler } = await setup("unavailable");
+			await manager.waitForStartup(0);
+			if (!(startupFailure instanceof Error)) throw new Error("Expected the original startup error");
+			expect(startupFailure).toMatchObject({ code: -32001, failure: "json_rpc" });
+
+			const error = await rejection(handler.resolve(parseInternalUrl("mcp://test://connected")));
+			if (!(error instanceof Error)) throw new Error("Expected the resource-read failure");
+			expect(errorCauses(error)).toContain(startupFailure);
+			expect(error.message).toContain("-32001");
+			expect(error.message).toContain("Back-end application unavailable");
+			expect(error.message).not.toContain("No MCP server has resource");
+			expect(error.message).not.toContain("(none)");
+		} finally {
+			connectSpy.mockRestore();
+		}
 	});
 
 	it.each(["read", "catalog", "initialize"])("preserves caller cancellation during %s", async mode => {
-		const { manager, received, handler } = await setup(mode);
+		using temp = TempDir.createSync("@mcp-resource-cancellation-");
+		const releasePath = path.join(temp.path(), "ready");
+		const { manager, received, handler } = await setup(mode, 360_000, {
+			SILENT_MCP_RELEASE_PATH: releasePath,
+		});
 		if (mode === "read") await manager.ensureServerResources("fixture");
-		const caller = new AbortController();
-		const reason = new Error("The caller cancelled this resource read");
-		const result = rejection(
-			handler.resolve(parseInternalUrl(mode === "read" ? "mcp://test://silent" : "mcp://test://connected"), {
-				signal: caller.signal,
-			}),
-		);
-		await received;
-		caller.abort(reason);
-		expect(await result).toBe(reason);
+		const readiness = observeResourceReadiness(manager);
+		try {
+			const caller = new AbortController();
+			const reason = new Error("The caller cancelled this resource read");
+			const result = rejection(
+				handler.resolve(parseInternalUrl(mode === "read" ? "mcp://test://silent" : "mcp://test://connected"), {
+					signal: caller.signal,
+				}),
+			);
+			await received;
+			if (mode === "catalog") await readiness.catalog;
+			if (mode === "initialize") await readiness.connection;
+			caller.abort(reason);
+			expect(await result).toBe(reason);
+			expect(manager.getConnectionStatus("fixture")).toBe(mode === "initialize" ? "connecting" : "connected");
+
+			if (mode === "initialize") {
+				await Bun.write(releasePath, "ready");
+				await manager.waitForPendingConnections();
+				await manager.ensureServerResources("fixture");
+				const connected = await handler.resolve(parseInternalUrl("mcp://test://connected"));
+				expect(connected.content).toBe("The connected resource is available.");
+			}
+		} finally {
+			readiness.restore();
+		}
 	});
 });

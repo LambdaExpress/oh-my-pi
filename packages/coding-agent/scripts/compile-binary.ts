@@ -4,6 +4,7 @@ import * as path from "node:path";
 // Deep import: the pi-utils barrel loads the host native addon, which is
 // absent on cross-compiling release runners.
 import { USER_AGENT } from "@oh-my-pi/pi-utils/dirs";
+import { embeddedAddonFiles, type NativeEmbedTarget } from "../../natives/scripts/embed-native";
 import { generateCollabWebEmbed, resetCollabWebEmbed } from "./embed-collab-web";
 import { buildDocsIndexPayload } from "./generate-docs-index";
 import { createJsonParsePlugin } from "./json-parse-plugin";
@@ -24,6 +25,11 @@ export interface CodingAgentCompileOptions {
 	readonly transformersVersion: string;
 	/** Fork release code baked into `omp --version` and self-update verification. */
 	readonly releaseCode?: string;
+	/**
+	 * Native addon target embedded for the runtime loader to extract; `null`
+	 * compiles without one (probe builds that never load the addon).
+	 */
+	readonly native: NativeEmbedTarget | null;
 	/** Optional cross-compilation runtime target. */
 	readonly target?: Bun.Build.CompileTarget;
 	/** Optional unmodified Bun executable used as the standalone runtime template. */
@@ -152,7 +158,9 @@ async function createWindowsCompileIcon(repoRoot: string): Promise<string> {
 export async function compileCodingAgent(options: CodingAgentCompileOptions): Promise<string> {
 	const previousCodesignSetting = Bun.env.BUN_NO_CODESIGN_MACHO_BINARY;
 	const isWindowsTarget = options.target?.startsWith("bun-windows-") ?? process.platform === "win32";
-	const windowsIconPath = isWindowsTarget ? await createWindowsCompileIcon(options.repoRoot) : undefined;
+	// Native-less probe builds may use an isolated root without application assets.
+	const windowsIconPath =
+		isWindowsTarget && options.native ? await createWindowsCompileIcon(options.repoRoot) : undefined;
 	if (options.skipBuiltinCodesign) {
 		Bun.env.BUN_NO_CODESIGN_MACHO_BINARY = "1";
 	}
@@ -162,6 +170,7 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 			entrypoints: [options.entrypoint],
 			root: options.repoRoot,
 			external: [...COMPILED_EXTERNAL_DEPENDENCIES],
+			files: options.native ? await embeddedAddonFiles(options.native) : {},
 			define: {
 				"process.env.PI_COMPILED": JSON.stringify("true"),
 				"process.env.PI_TINY_TRANSFORMERS_VERSION": JSON.stringify(options.transformersVersion),
@@ -170,6 +179,9 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 			},
 			// Keep import.meta.resolve in bundled dependencies valid under bytecode.
 			format: "esm",
+			splitting: true,
+			// Discovery entry chunks can share a hash; include their source names to avoid collisions.
+			naming: { chunk: "chunks/[name]-[hash].[ext]" },
 			minify: {
 				identifiers: options.minifyIdentifiers ?? false,
 				keepNames: true,

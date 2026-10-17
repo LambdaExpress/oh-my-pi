@@ -85,11 +85,14 @@ async function dispatchExec(
 		requestContextTools?: McpToolDefinition[];
 		requestContextRules?: CursorRule[];
 		externalToolExecutor?: boolean;
+		/** Continue an assistant message an earlier frame already wrote to. */
+		output?: AssistantMessage;
+		state?: BlockState;
 	} = {},
 ): Promise<{ frames: AgentClientMessage[]; output: AssistantMessage; results: ToolResultMessage[] }> {
-	const output = cursorAssistantMessage();
+	const output = options.output ?? cursorAssistantMessage();
 	const stream = new AssistantMessageEventStream();
-	const state = newBlockState();
+	const state = options.state ?? newBlockState();
 	const written: Buffer[] = [];
 	const h2Request = {
 		write: (chunk: Buffer) => {
@@ -313,10 +316,11 @@ describe("Cursor stream teardown", () => {
 		expect(state.currentToolCall).toBeNull();
 	});
 
-	it("salvages a truncated streamed argument buffer into partial arguments", async () => {
+	it("reparses a truncated streamed argument buffer on teardown into a parse error", async () => {
 		// The other half of the same contract: blocks that *do* stream their args
-		// must still be reparsed on teardown, or a cut-short call renders with no
-		// arguments at all.
+		// must still be reparsed on teardown. A cut-short buffer keeps its raw text in
+		// the parse-error arguments, so the call shows what streamed but never runs
+		// from an auto-closed preview.
 		const output = cursorAssistantMessage();
 		const stream = new AssistantMessageEventStream();
 		const state = newBlockState();
@@ -343,7 +347,7 @@ describe("Cursor stream teardown", () => {
 
 		flushOpenToolCalls(output, stream, state);
 
-		expect(block.arguments).toEqual({ path: "/repo/a.ts" });
+		expect(block.arguments).toEqual({ __parseError: expect.any(String), __rawJson: '{"path":"/repo/a.ts"' });
 	});
 
 	it("pairs a server-owned call the transport cut short", async () => {
@@ -375,6 +379,47 @@ describe("Cursor stream teardown", () => {
 
 		const block = output.content.find((b): b is ToolCallState => b.type === "toolCall");
 		if (!block) throw new Error("expected an open tool-call block");
+		expect(paired).toHaveLength(0);
+
+		flushOpenToolCalls(output, stream, state);
+
+		expect(paired).toHaveLength(1);
+		expect(paired[0].toolCallId).toBe(block.id);
+		expect(paired[0].isError).toBe(true);
+	});
+
+	it("pairs a hosted web-fetch call the transport cut short", async () => {
+		// Hosted `web_fetch` blocks get the same `kCursorExecResolved` stamp at
+		// start as todo/connect-scm, so only their completion frame pairs a
+		// result. Without the interrupted result here a transport that died
+		// mid-fetch left the call dangling and stripped from rebuilt
+		// transcripts, exactly like the server-owned calls above.
+		const output = cursorAssistantMessage();
+		const stream = new AssistantMessageEventStream();
+		const paired: ToolResultMessage[] = [];
+		const state = newBlockState({ onToolResult: result => void paired.push(result) });
+
+		processInteractionUpdate(
+			{
+				message: {
+					case: "toolCallStarted",
+					value: {
+						callId: "envelope-fetch",
+						toolCall: {
+							tool: { case: "webFetchToolCall", value: { args: { url: "https://example.com" } } },
+						},
+					},
+				},
+			},
+			output,
+			stream,
+			state,
+			{ sawTokenDelta: false },
+		);
+
+		const block = output.content.find((b): b is ToolCallState => b.type === "toolCall");
+		if (!block) throw new Error("expected an open tool-call block");
+		expect(block.name).toBe("web_fetch");
 		expect(paired).toHaveLength(0);
 
 		flushOpenToolCalls(output, stream, state);
@@ -1647,6 +1692,40 @@ describe("Cursor modern exec frames: server-resolved tool calls leave a paired b
 		);
 
 		expect(output.content.filter(block => block.type === "toolCall")).toHaveLength(0);
+	});
+});
+
+describe("Cursor legacy read frame: re-dispatch", () => {
+	it("answers a re-sent frame for the same call without recording a second block", async () => {
+		// Issue #15749: after a parallel shell created the file, Cursor re-sent
+		// `readArgs` with the same `toolCallId` and a new `execId`. Recording it as
+		// a second call made every rebuilt history replay that id twice.
+		let reads = 0;
+		const handlers: CursorExecHandlers = {
+			async read() {
+				reads++;
+				return reads === 1 ? toolResult("not found", { isError: true }) : toolResult("hello");
+			},
+		};
+		const frame = (execId: string) =>
+			create(ExecServerMessageSchema, {
+				id: 1,
+				execId,
+				message: { case: "readArgs", value: create(ReadArgsSchema, { path: "/tmp/race.txt", toolCallId: "c1" }) },
+			});
+
+		const first = await dispatchExec(frame("exec-a"), { execHandlers: handlers });
+		const second = await dispatchExec(frame("exec-b"), {
+			execHandlers: handlers,
+			output: first.output,
+			state: newBlockState(),
+		});
+
+		const answer = soleResult(second.frames);
+		if (answer.case !== "readResult") throw new Error(`got ${answer.case}`);
+		expect(answer.value.result.case).toBe("success");
+		expect(second.output.content.filter(block => block.type === "toolCall").map(block => block.id)).toEqual(["c1"]);
+		expect(second.results.map(result => result.content)).toEqual([[{ type: "text", text: "hello" }]]);
 	});
 });
 

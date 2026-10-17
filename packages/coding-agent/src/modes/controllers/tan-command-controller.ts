@@ -10,7 +10,7 @@ import * as sdk from "../../sdk";
 import type { AgentSession } from "../../session/agent-session";
 import { BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE } from "../../session/messages";
 import { SessionManager } from "../../session/session-manager";
-import { createMCPProxyTools, createSubagentSettings } from "../../task/executor";
+import { createMCPProxyTools, createSubagentSettings, followMCPTools } from "../../task/executor";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "../../tools/todo";
 import type { InteractiveModeContext } from "../types";
 
@@ -94,16 +94,18 @@ export class TanCommandController {
 		}
 
 		const parentSessionId = session.sessionId;
-		// Providers route on `promptCacheKey ?? sessionId`, so the parent's live
-		// requests may cache under a pinned key that differs from its session id
-		// (the parent being itself a fork/tan). Mirror exactly what the parent
-		// populated the cache under — same rule as advisor and handoff calls.
-		const parentPromptCacheKey = session.agent.promptCacheKey ?? parentSessionId;
+		// Explicit keys stay pinned; automatic candidates must remain model-gated
+		// if the clone later switches models or falls back during authentication.
+		const taskPromptCacheKey = this.ctx.sessionManager.getHeader()?.taskPromptCacheKey;
+		const parentPromptCacheKey =
+			session.agent.promptCacheKey ?? (taskPromptCacheKey === undefined ? parentSessionId : undefined);
 		const thinkingLevel = session.configuredThinkingLevel();
 		const systemPrompt = [...session.systemPrompt];
 		const toolNames = session.getEnabledToolNames();
-		const mountedXdevToolNames = session.getMountedXdevToolNames();
+		const inheritedToolNames = new Set(toolNames);
 		const preloadedCustomToolPaths = session.customToolPaths;
+		const activeToolNames = session.getActiveToolNames();
+		const mountedToolNames = session.getMountedXdevToolNames();
 		const modelRegistry = session.modelRegistry;
 		// Snapshot the parent's rebindable extensions and root policy at dispatch.
 		// The child rebinds these (skipping discovery) so it re-registers the
@@ -138,10 +140,6 @@ export class TanCommandController {
 		// artifacts in place — no copy needed.
 		const sessionDir = parentFile.slice(0, -6);
 		const settings = createSubagentSettings(this.ctx.settings);
-		const inheritedToolNames = new Set(toolNames);
-		const customTools = mcpManager
-			? createMCPProxyTools(mcpManager).filter(tool => inheritedToolNames.has(tool.name))
-			: undefined;
 		const enableLsp = cfgTaskEnableLsp.get(this.ctx.settings) !== false;
 		const agentRegistry = AgentRegistry.global();
 		const cloneId = `Tan-${Snowflake.next()}`;
@@ -162,9 +160,9 @@ export class TanCommandController {
 				// accumulated spend that session cost is otherwise derived from.
 				resetInheritedCost: true,
 				// The parent may be mid-turn: pair any tool call it left unresolved
-				// with a synthetic aborted result so the clone inherits a terminal
-				// transcript instead of rendering the parent's in-flight call as its
-				// own pending work (issue #11118).
+				// with an unknown-outcome result (the parent may still be running it)
+				// so the clone inherits a terminal transcript instead of rendering the
+				// parent's in-flight call as its own pending work (issue #11118).
 				repairInterruptedTail: true,
 			});
 
@@ -175,68 +173,78 @@ export class TanCommandController {
 					if (signal.aborted) throw new Error("Aborted before execution");
 
 					let clone: AgentSession | undefined;
+					// Mint proxies at clone time (not dispatch time) and subscribe first,
+					// so the clone follows MCP reloads within the parent's capability grant.
+					const mcpFollower = mcpManager ? followMCPTools(mcpManager, undefined, inheritedToolNames) : undefined;
 					try {
-						const created = await sdk.createAgentSession({
-							cwd,
-							agentScopeId: scopeId,
-							sessionManager: cloneManager,
-							model,
-							thinkingLevel,
-							systemPrompt,
-							toolNames,
-							providerSessionId: `${parentSessionId}:tan:${Snowflake.next()}`,
-							providerPromptCacheKey: parentPromptCacheKey,
-							modelRegistry,
-							authStorage: modelRegistry.authStorage,
-							settings,
-							hasUI: false,
-							enableMCP: false,
-							customTools,
-							preloadedCustomToolPaths,
-							enableLsp,
-							agentId: cloneId,
-							agentDisplayName: "tan",
-							parentTaskPrefix: cloneId,
-							parentAgentId: ownerId,
-							agentRegistry,
-							disableExtensionDiscovery: true,
-							// `[]` is truthy and would make the child pick bindPreparedExtensions([])
-							// over a populated path fallback, so collapse an empty list to undefined.
-							preloadedPreparedExtensions: parentPreparedExtensions?.length
-								? parentPreparedExtensions
-								: undefined,
-							preloadedExtensionPaths: parentExtensionPaths?.length ? [...parentExtensionPaths] : undefined,
-							extensionRoots: () => parentExtensionRoots,
-							localProtocolOptions,
-						});
-						clone = created.session;
-						// A background tan is headless, so tools that need to prompt the user
-						// never enter its registry (`ask` is built only for sessions that can
-						// prompt). The clone reports exactly what it built for the requested
-						// names, so request that subset and keep the exactness check over it:
-						// an interactive parent normally enables `ask`, and demanding an exact
-						// match with the full parent set failed every dispatch.
-						const hostableToolNames = new Set(clone.getEnabledToolNames());
-						const requestedToolNames = toolNames.filter(name => hostableToolNames.has(name));
-						const requestedMountedToolNames = mountedXdevToolNames.filter(name => hostableToolNames.has(name));
-						const unhostableToolNames = toolNames.filter(name => !hostableToolNames.has(name));
-						if (unhostableToolNames.length > 0) {
-							logger.warn("Tan clone cannot host every parent tool", { unhostableToolNames });
+						try {
+							const created = await sdk.createAgentSession({
+								cwd,
+								agentScopeId: scopeId,
+								sessionManager: cloneManager,
+								model,
+								thinkingLevel,
+								systemPrompt,
+								toolNames,
+								mountedToolNames,
+								advertiseHeadlessAsk: activeToolNames.includes("ask"),
+								providerSessionId: `${parentSessionId}:tan:${Snowflake.next()}`,
+								providerPromptCacheKey: parentPromptCacheKey,
+								taskPromptCacheKey,
+								modelRegistry,
+								authStorage: modelRegistry.authStorage,
+								settings,
+								hasUI: false,
+								enableMCP: false,
+								mcpTools: mcpManager
+									? createMCPProxyTools(mcpManager).filter(tool => inheritedToolNames.has(tool.name))
+									: undefined,
+								preloadedCustomToolPaths,
+								enableLsp,
+								agentId: cloneId,
+								agentDisplayName: "tan",
+								parentTaskPrefix: cloneId,
+								asyncJobManager: manager,
+								parentAgentId: ownerId,
+								agentRegistry,
+								disableExtensionDiscovery: true,
+								// `[]` is truthy and would make the child pick bindPreparedExtensions([])
+								// over a populated path fallback, so collapse an empty list to undefined.
+								preloadedPreparedExtensions: parentPreparedExtensions?.length
+									? parentPreparedExtensions
+									: undefined,
+								preloadedExtensionPaths: parentExtensionPaths?.length ? [...parentExtensionPaths] : undefined,
+								extensionRoots: () => parentExtensionRoots,
+								localProtocolOptions,
+							});
+							clone = created.session;
+							// Keep the parent's exact presentation wherever the real factories
+							// can host it. Headless/settings-gated built-ins may be unavailable;
+							// missing custom/MCP tools must still fail reconstruction, not vanish.
+							const unavailable = new Set(created.unavailableBuiltinToolNames);
+							const requestedToolNames = toolNames.filter(name => !unavailable.has(name));
+							const requestedMountedToolNames = mountedToolNames.filter(name => !unavailable.has(name));
+							const unhostableToolNames = toolNames.filter(name => unavailable.has(name));
+							if (unhostableToolNames.length > 0) {
+								logger.warn("Tan clone cannot host every parent tool", { unhostableToolNames });
+							}
+							await clone.setActiveToolPresentation(requestedToolNames, requestedMountedToolNames);
+							assertExactToolPresentation(
+								requestedToolNames,
+								requestedMountedToolNames,
+								clone.getEnabledToolNames(),
+								clone.getMountedXdevToolNames(),
+							);
+						} catch (error) {
+							mcpFollower?.dispose();
+							throw error;
 						}
-						await clone.setActiveToolPresentation(requestedToolNames, requestedMountedToolNames);
-						const actualToolNames = clone.getEnabledToolNames();
-						const actualMountedXdevToolNames = clone.getMountedXdevToolNames();
-						assertExactToolPresentation(
-							requestedToolNames,
-							requestedMountedToolNames,
-							actualToolNames,
-							actualMountedXdevToolNames,
-						);
+						mcpFollower?.bind(clone);
 						clone.sessionManager?.appendSessionInit?.({
-							systemPrompt: clone.systemPrompt ? clone.systemPrompt.join("\n\n") : systemPrompt.join("\n\n"),
+							systemPrompt: clone.systemPrompt ?? systemPrompt,
 							task: trimmedWork,
 							tools: clone.getEnabledToolNames(),
-							mountedXdevTools: actualMountedXdevToolNames,
+							mountedXdevTools: clone.getMountedXdevToolNames(),
 						});
 						const abortClone = () => {
 							void clone?.abort();

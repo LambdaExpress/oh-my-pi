@@ -350,6 +350,10 @@ function Session({ client, onLeave, onRejoin, onBack }: SessionProps): ReactNode
 			setRailOpen(true);
 		}
 	}, [closeRail, railOpen]);
+	const toggleSettings = useCallback((): void => {
+		if (!settingsOpen) setRailOpen(false);
+		setSettingsOpen(open => !open);
+	}, [settingsOpen]);
 
 	const subCount = useMemo(() => snap.agents.filter(a => a.kind === "sub").length, [snap.agents]);
 
@@ -449,12 +453,16 @@ function Session({ client, onLeave, onRejoin, onBack }: SessionProps): ReactNode
 	}, [title]);
 
 	const drawerAgent = selectedId != null ? snap.agents.find(a => a.id === selectedId) : undefined;
+	const closeDrawer = useCallback(() => setSelectedId(null), []);
 
 	return (
 		<div className="sh-app">
 			<div inert={railOpen && railOverlay ? true : undefined}>
 				<HeaderBar
-					snapshot={snap}
+					header={snap.header}
+					state={snap.state}
+					phase={snap.phase}
+					readOnly={snap.readOnly}
 					subCount={subCount}
 					railOpen={railOpen}
 					agentsButtonRef={agentsButtonRef}
@@ -462,10 +470,7 @@ function Session({ client, onLeave, onRejoin, onBack }: SessionProps): ReactNode
 					onLeave={onLeave}
 					onBack={onBack}
 					settingsOpen={settingsOpen}
-					onToggleSettings={() => {
-						if (!settingsOpen) setRailOpen(false);
-						setSettingsOpen(open => !open);
-					}}
+					onToggleSettings={toggleSettings}
 				/>
 			</div>
 			{settingsOpen && (
@@ -533,18 +538,28 @@ function Session({ client, onLeave, onRejoin, onBack }: SessionProps): ReactNode
 					onNewLink={onLeave}
 				/>
 			) : (
-				<Composer client={client} snapshot={snap} />
+				<Composer
+					client={client}
+					phase={snap.phase}
+					readOnly={snap.readOnly}
+					state={snap.state}
+					models={snap.models}
+					uiRequest={snap.uiRequest}
+					working={snap.working}
+					queuedMessageCount={snap.state?.queuedMessageCount ?? 0}
+				/>
 			)}
 			{drawerAgent && (
 				<>
-					<div className="ag-drawer-backdrop" onClick={() => setSelectedId(null)} />
+					<div className="ag-drawer-backdrop" onClick={closeDrawer} />
 					<AgentDrawer
 						agent={drawerAgent}
 						progress={snap.progress.get(drawerAgent.id)}
+						lifecycle={snap.lifecycle.get(drawerAgent.id)}
 						client={client}
 						readOnly={snap.readOnly}
 						host={toolHost}
-						onClose={() => setSelectedId(null)}
+						onClose={closeDrawer}
 					/>
 				</>
 			)}

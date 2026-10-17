@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { callTool } from "@oh-my-pi/pi-coding-agent/mcp/client";
 import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
@@ -18,6 +18,7 @@ const originalStartup = Bun.env.OMP_MCP_STARTUP_TIMEOUT_MS;
 const originalStrict = Bun.env.OMP_MCP_REQUIRE_READY;
 
 afterEach(async () => {
+	vi.useRealTimers();
 	await Promise.all(managers.splice(0).map(manager => manager.disconnectAll()));
 	if (originalTimeout === undefined) delete Bun.env.OMP_MCP_TIMEOUT_MS;
 	else Bun.env.OMP_MCP_TIMEOUT_MS = originalTimeout;
@@ -48,7 +49,26 @@ async function startServers(): Promise<{ manager: MCPManager; elapsedMs: number 
 		},
 		{},
 	);
-	return { manager, elapsedMs: Date.now() - start };
+	const elapsedMs = Date.now() - start;
+	// The startup window (250 ms) can close before a CPU-starved runner finishes
+	// even the instant handshakes; every scenario assumes only slowstart lags.
+	await waitForTools(manager, expectedTools.slice(0, 2));
+	return { manager, elapsedMs };
+}
+
+/** Resolve once every named tool is registered, however late its server's handshake lands. */
+async function waitForTools(manager: MCPManager, names: string[]): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	const check = () => {
+		if (names.every(name => manager.getTools().some(tool => tool.name === name))) resolve();
+	};
+	const unsubscribe = manager.addToolsChangedListener(check);
+	check();
+	try {
+		await promise;
+	} finally {
+		unsubscribe();
+	}
 }
 
 function printSession(manager: MCPManager, refreshGate?: Promise<void>, onRefreshStarted?: () => void) {
@@ -64,6 +84,7 @@ function printSession(manager: MCPManager, refreshGate?: Promise<void>, onRefres
 			getHeader: () => undefined,
 			getEntries: () => [],
 			onPersistenceError: () => () => {},
+			onPersistenceNotice: () => () => {},
 		},
 		refreshMCPTools: async (tools: Array<{ name: string }>) => {
 			onRefreshStarted?.();
@@ -74,7 +95,9 @@ function printSession(manager: MCPManager, refreshGate?: Promise<void>, onRefres
 			prompted = [...offered];
 		},
 		getLastAssistantMessage: () => undefined,
+		disableStopTimeTodoReminders: () => {},
 		prepareForHeadlessAdvisorDrain: () => {},
+		waitForIdle: async () => {},
 		setTextOutputCommitted: () => {},
 		waitForAdvisorCatchup: async () => true,
 		dispose: async () => {
@@ -186,22 +209,61 @@ describe("headless MCP readiness", () => {
 		using tempDir = TempDir.createSync("@omp-mcp-reconnect-readiness-");
 		const manager = new MCPManager(tempDir.path());
 		managers.push(manager);
+		const initializing = Promise.withResolvers<void>();
+		manager.addNotificationListener((_server, method, params) => {
+			if (
+				method === "notifications/fixture/initialize" &&
+				(params as { firstLaunch?: boolean } | undefined)?.firstLaunch
+			) {
+				initializing.resolve();
+			}
+		});
+		const callbackStarted = Promise.withResolvers<void>();
+		const releaseCallback = Promise.withResolvers<void>();
+		manager.setOnToolsChanged(async () => {
+			callbackStarted.resolve();
+			await releaseCallback.promise;
+		});
 		Bun.env.OMP_MCP_TIMEOUT_MS = "200";
-		await manager.connectServers(
-			{
-				recover: {
-					type: "stdio",
-					command: process.execPath,
-					args: [path.join(import.meta.dir, "fixtures", "delayed-tool-mcp.ts"), tempDir.join("first-launch")],
-				},
-			},
-			{},
-		);
+		vi.useFakeTimers();
 		try {
-			const status = await manager.waitForStartup(2_000);
+			const loading = manager.connectServers(
+				{
+					recover: {
+						type: "stdio",
+						command: process.execPath,
+						args: [path.join(import.meta.dir, "fixtures", "delayed-tool-mcp.ts"), tempDir.join("first-launch")],
+					},
+				},
+				{},
+				undefined,
+				0,
+			);
+			// Expire the existing deadline only after the real child receives initialize.
+			// Process boot time must not decide whether the first-launch marker is written.
+			await initializing.promise;
+			vi.advanceTimersByTime(200);
+			const initial = await loading;
+			expect(initial.errors.get("recover")).toBe('Connection to MCP server "recover" timed out after 200ms');
+			await callbackStarted.promise;
+			vi.useRealTimers();
+
+			let ready = false;
+			const readiness = manager.waitForStartup(2_000).then(status => {
+				ready = true;
+				return status;
+			});
+			const nextTurn = Promise.withResolvers<void>();
+			setImmediate(nextTurn.resolve);
+			await nextTurn.promise;
+			expect(ready).toBe(false);
+			releaseCallback.resolve();
+			const status = await readiness;
 			expect(status).toEqual({ connected: ["recover"], pending: [], failed: [] });
 			expect(manager.getTools().map(tool => tool.name)).toContain("mcp__recover_late_tool");
 		} finally {
+			vi.useRealTimers();
+			releaseCallback.resolve();
 			await manager.disconnectAll();
 		}
 	}, 3_000);

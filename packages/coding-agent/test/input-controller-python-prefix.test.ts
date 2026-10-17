@@ -49,7 +49,6 @@ function createContext() {
 			isBashRunning: false,
 			isEvalRunning: false,
 			extensionRunner: undefined,
-			maybeStartTitleGeneration: vi.fn(),
 			previewPromptExpansion: (text: string) => text,
 			prompt,
 			queuedMessageCount: 0,

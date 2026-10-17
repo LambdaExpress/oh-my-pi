@@ -37,12 +37,15 @@ describe("print mode disposes the session before terminating", () => {
 			sessionManager: {
 				buildSessionContext: () => ({ messages: [] }),
 				getEntries: () => [],
-				// Print mode subscribes to store failures (issue #11493).
+				// Print mode subscribes to store failures (issue #11493) and session moves.
 				onPersistenceError: () => () => {},
+				onPersistenceNotice: () => () => {},
 			},
 			state: { messages: [errorMsg] },
 			getLastAssistantMessage: () => errorMsg,
+			disableStopTimeTodoReminders: () => {},
 			prepareForHeadlessAdvisorDrain: () => {},
+			waitForIdle: async () => {},
 			setTextOutputCommitted: () => {},
 			waitForAdvisorCatchup: async () => {
 				order.push("catchup");
@@ -76,9 +79,7 @@ describe("print mode disposes the session before terminating", () => {
 		expect(stderrLines.join("")).toContain("boom");
 	});
 
-	// Bun on Windows terminates a SIGTERM'd process through TerminateProcess and
-	// never runs JS signal listeners, so the postmortem teardown this asserts is
-	// unreachable there (the child always dies with code 1 and no marker).
+	// Windows cannot deliver a catchable SIGTERM via process.kill: libuv terminates the process outright.
 	it.skipIf(process.platform === "win32")("disposes an active print session before SIGTERM exits", async () => {
 		using tempDir = TempDir.createSync("@omp-print-signal-");
 		const marker = tempDir.join("disposed");
@@ -120,9 +121,12 @@ describe("print mode disposes the session before terminating", () => {
 				buildSessionContext: () => ({ messages: [] }),
 				getEntries: () => [],
 				onPersistenceError: () => () => {},
+				onPersistenceNotice: () => () => {},
 			},
 			getLastAssistantMessage: () => abortedMsg,
+			disableStopTimeTodoReminders: () => {},
 			prepareForHeadlessAdvisorDrain: () => {},
+			waitForIdle: async () => {},
 			setTextOutputCommitted: () => {},
 			waitForAdvisorCatchup: async () => true,
 			// Mimic a real mid-turn signal: the postmortem teardown fires (which

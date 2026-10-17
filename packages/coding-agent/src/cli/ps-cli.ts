@@ -31,6 +31,7 @@ import {
 	tableCells,
 } from "@oh-my-pi/pi-tui/apps/ps-data";
 import { runPsTop, type PsTopHost } from "@oh-my-pi/pi-tui/apps/ps-top";
+import { isSharedBrowserDaemonName, restartSharedBrowser } from "../tools/browser/shared-daemon";
 import { collectReports, KILL_GRACE_MS, scopeClient } from "./ps-data";
 
 export type PsAction = "list" | "info" | "logs" | "stop" | "kill" | "restart";
@@ -62,6 +63,17 @@ export interface PsCommandArgs {
 	};
 }
 
+/**
+ * Restart a supervised daemon. The project-shared browsers restart through
+ * their profile claim so Chromium does not reopen the previous process's pages.
+ */
+async function restartDaemon(client: DaemonBrokerClient, name: string): Promise<DaemonSnapshot> {
+	if (isSharedBrowserDaemonName(name)) return restartSharedBrowser(client, name);
+	const result = await client.request({ op: "restart", name });
+	if (result.op !== "restart") throw new Error(`Unexpected broker response ${result.op}`);
+	return result.daemon;
+}
+
 function createPsTopHost(): PsTopHost {
 	const clients = new Map<string, DaemonBrokerClient>();
 	let closed = false;
@@ -69,7 +81,6 @@ function createPsTopHost(): PsTopHost {
 		const cached = clients.get(scope.runtimeDir);
 		if (cached) return cached;
 		const client = await scopeClient(scope);
-		if (!client) throw new Error("Scope is not addressable from this machine");
 		if (closed) {
 			client.close();
 			throw new Error("Process monitor closed");
@@ -81,12 +92,13 @@ function createPsTopHost(): PsTopHost {
 		collectReports,
 		async act(scope, name, verb) {
 			const client = await clientFor(scope);
-			const result = await client.request(
-				verb === "restart"
-					? { op: "restart", name }
-					: { op: "stop", name, timeoutMs: verb === "kill" ? KILL_GRACE_MS : 5_000 },
-			);
-			if (result.op !== "restart" && result.op !== "stop") throw new Error(`Unexpected response ${result.op}`);
+			if (verb === "restart") return restartDaemon(client, name);
+			const result = await client.request({
+				op: "stop",
+				name,
+				timeoutMs: verb === "kill" ? KILL_GRACE_MS : 5_000,
+			});
+			if (result.op !== "stop") throw new Error(`Unexpected response ${result.op}`);
 			return result.daemon;
 		},
 		async describe(scope, name) {
@@ -262,12 +274,9 @@ async function runAction(cmd: PsCommandArgs, name: string): Promise<void> {
 				printDaemonResult(cmd, cmd.action === "kill" ? t("Killed") : t("Stopped"), result.daemon);
 				return;
 			}
-			case "restart": {
-				const result = await client.request({ op: "restart", name });
-				if (result.op !== "restart") throw new Error(`Unexpected broker response ${result.op}`);
-				printDaemonResult(cmd, t("Restarted"), result.daemon);
+			case "restart":
+				printDaemonResult(cmd, t("Restarted"), await restartDaemon(client, name));
 				return;
-			}
 			default:
 				throw new Error(`Unhandled action ${cmd.action}`);
 		}

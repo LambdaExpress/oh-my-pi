@@ -74,7 +74,7 @@ describe("apply_patch rendering", () => {
 		} satisfies AgentTool;
 		const sessionTools = new SessionTools(
 			{
-				agent: { state: { tools: [editTool] } },
+				agent: { state: { tools: [editTool], messages: [] } },
 				settings: Settings.instance,
 				model: () => undefined,
 				evalPreludes: () => [],

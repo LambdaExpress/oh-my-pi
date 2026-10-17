@@ -12,6 +12,7 @@ export function getExtraHelpText(): string {
   FOUNDRY_BASE_URL           - ${t("Anthropic Foundry base URL (e.g., https://<foundry-host>)")}
   ANTHROPIC_FOUNDRY_API_KEY  - ${t("Anthropic token used as Authorization: Bearer <token> in Foundry mode")}
   ANTHROPIC_CUSTOM_HEADERS   - ${t('Extra headers for Foundry or any custom ANTHROPIC_BASE_URL gateway (e.g., "user-id: USERNAME")')}
+  CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS - ${t("Omit pre-release Anthropic fields (context_management, beta tool fields, task budgets, thinking.block_binding) for gateways that reject them")}
   CLAUDE_CODE_CLIENT_CERT    - ${t("Client certificate (PEM path or inline PEM) for mTLS")}
   CLAUDE_CODE_CLIENT_KEY     - ${t("Client private key (PEM path or inline PEM) for mTLS")}
   NODE_EXTRA_CA_CERTS        - ${t("CA bundle path (or inline PEM) for server certificate validation")}

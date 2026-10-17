@@ -843,10 +843,10 @@ export function resolveAssistantErrorPresentation(
 		return { kind: "full", text: resolveAbortLabel(message, retryAttempt), isError: true };
 	}
 	if (message.stopReason === "error") {
-		return { kind: "full", text: message.errorMessage || "Error", isError: true };
+		return { kind: "full", text: t(message.errorMessage || "Error"), isError: true };
 	}
 	if (message.errorMessage && shouldRenderAbortReason(message)) {
-		return { kind: "full", text: message.errorMessage, isError: true };
+		return { kind: "full", text: t(message.errorMessage), isError: true };
 	}
 	return { kind: "none" };
 }

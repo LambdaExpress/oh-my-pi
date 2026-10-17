@@ -1,5 +1,13 @@
 import type { Terminal, TerminalAppearance } from "@oh-my-pi/pi-tui/terminal";
-import { CELL_U32, CellFlags, type GraphicsPlacement, KittyTerminal, loadModuleSync } from "kitty-vt-wasm";
+import {
+	CELL_U32,
+	CellFlags,
+	type Cell,
+	decodeCell,
+	type GraphicsPlacement,
+	KittyTerminal,
+	loadModuleSync,
+} from "kitty-vt-wasm";
 
 // ---------------------------------------------------------------------------
 // Shared kitty VT engine
@@ -68,6 +76,10 @@ const OSC_SEQUENCE = /\x1b\][\s\S]*?(?:\x07|\x1b\\)/g;
 const CELL_FG = 3;
 const CELL_BG = 4;
 const CELL_FLAGS = 6;
+
+type TerminalCellSnapshot = Omit<Cell, "hyperlinkId"> & {
+	hyperlink: ReturnType<KittyTerminal["hyperlink"]>;
+};
 
 /**
  * Virtual terminal for testing, backed by kitty's WASM VT engine.
@@ -296,6 +308,28 @@ export class VirtualTerminal implements Terminal {
 		return lines;
 	}
 
+	/** Full-buffer cell attributes with hyperlink targets instead of engine-local pool ids. */
+	getScrollBufferCells(): TerminalCellSnapshot[][] {
+		const capped = this.#cappedBaseY();
+		const historyLen = this.#term.scrollbackLength;
+		const rows: TerminalCellSnapshot[][] = [];
+		for (let row = 0; row < capped + this.#rows; row++) {
+			const words =
+				row < capped
+					? this.#term.scrollbackLineCells(historyLen - capped + row)
+					: this.#term.lineCells(row - capped);
+			const cells: TerminalCellSnapshot[] = [];
+			if (words) {
+				for (let offset = 0; offset < words.length; offset += CELL_U32) {
+					const { hyperlinkId, ...cell } = decodeCell(words, offset);
+					cells.push({ ...cell, hyperlink: this.#term.hyperlink(hyperlinkId) });
+				}
+			}
+			rows.push(cells);
+		}
+		return rows;
+	}
+
 	/**
 	 * Columns in a viewport row whose cells carry a non-default background color.
 	 * Used by the SGR-bleed oracle: background attributes must appear only on
@@ -403,14 +437,18 @@ export class VirtualTerminal implements Terminal {
 	}
 
 	/**
-	 * Strip synchronized-output markers and OSC strings before the engine sees
+	 * Strip synchronized-output markers and non-grid OSC strings before the engine sees
 	 * them. Mode 2026 would buffer a frame until its end marker, but the tests
 	 * assert on readback between writes of a frame; OSC payloads (titles,
-	 * notifications, clipboard) have no grid effect the oracles read.
+	 * notifications, clipboard) have no grid effect the oracles read. OSC 8
+	 * hyperlinks do affect cell attributes and must reach the real parser.
 	 */
 	#stripSynchronizedOutput(data: string): string {
 		if (!data.includes(SYNC_OUTPUT_BEGIN) && !data.includes(SYNC_OUTPUT_END) && !data.includes("\x1b]")) return data;
-		return data.replaceAll(SYNC_OUTPUT_BEGIN, "").replaceAll(SYNC_OUTPUT_END, "").replace(OSC_SEQUENCE, "");
+		return data
+			.replaceAll(SYNC_OUTPUT_BEGIN, "")
+			.replaceAll(SYNC_OUTPUT_END, "")
+			.replace(OSC_SEQUENCE, sequence => (sequence.startsWith("\x1b]8;") ? sequence : ""));
 	}
 
 	#atBottom(): boolean {

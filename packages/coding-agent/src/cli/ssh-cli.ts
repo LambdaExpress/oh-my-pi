@@ -185,7 +185,7 @@ async function handleList(cmd: SSHCommandArgs): Promise<void> {
 	}
 
 	if (hasProject) {
-		process.stdout.write(chalk.bold(`${t("Project SSH Hosts (.omp/ssh.json):")}\n`));
+		process.stdout.write(chalk.bold(`${t("Project SSH Hosts ({path}):", { path: projectPath })}\n`));
 		printHosts(projectHosts);
 	}
 
@@ -194,7 +194,7 @@ async function handleList(cmd: SSHCommandArgs): Promise<void> {
 	}
 
 	if (hasUser) {
-		process.stdout.write(chalk.bold(`${t("User SSH Hosts (~/.omp/agent/ssh.json):")}\n`));
+		process.stdout.write(chalk.bold(`${t("User SSH Hosts ({path}):", { path: userPath })}\n`));
 		printHosts(userHosts);
 	}
 }

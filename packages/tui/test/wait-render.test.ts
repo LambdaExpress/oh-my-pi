@@ -9,6 +9,8 @@ import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-containe
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { prompt } from "@oh-my-pi/pi-utils";
 import taskSummaryTemplate from "../../coding-agent/src/prompts/tools/task-summary.md" with { type: "text" };
+import { bashToolRenderer } from "@oh-my-pi/pi-tui/tools/bash";
+import { formatArtifactErrorNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { createIrcMessageCard, waitToolRenderer } from "@oh-my-pi/pi-tui/tools/wait";
 import { setLocale } from "../src/i18n";
 
@@ -217,7 +219,7 @@ describe("job renderer task-result preview", () => {
 		expect(output).toContain("25.0%");
 	});
 
-	describe("collapse and filter when turned into a result", () => {
+	describe("live and sealed waiting snapshots", () => {
 		const jobsData = [
 			{
 				id: "Job1",
@@ -260,7 +262,7 @@ describe("job renderer task-result preview", () => {
 			expect(output).toContain("waiting on 2 of 3 jobs");
 		});
 
-		it("shows only finished jobs when isPartial is false and it is a poll call", () => {
+		it("retains running and settled jobs after a poll is sealed", () => {
 			const result = {
 				content: [{ type: "text" as const, text: "" }],
 				details: { op: "wait" as const, jobs: jobsData },
@@ -271,13 +273,13 @@ describe("job renderer task-result preview", () => {
 				theme,
 			);
 			const output = Bun.stripANSI((component.render(120) as readonly string[]).join("\n"));
-			expect(output).not.toContain("Job1 running");
+			expect(output).toContain("Job1 running");
 			expect(output).toContain("Job2 completed");
-			expect(output).not.toContain("Job3 running");
-			expect(output).toContain("1 job settled");
+			expect(output).toContain("Job3 running");
+			expect(output).toContain("waiting on 2 of 3 jobs");
 		});
 
-		it("shows nothing when isPartial is false and all jobs are running and it is a poll call", () => {
+		it("retains the worker identity in a sealed all-running poll", () => {
 			const runningJobsOnly = [
 				{
 					id: "Job1",
@@ -297,8 +299,123 @@ describe("job renderer task-result preview", () => {
 				theme,
 			);
 			const lines = component.render(120) as readonly string[];
-			expect(lines).toHaveLength(0);
+			expect(Bun.stripANSI(lines.join("\n"))).toContain("Job1 running");
 		});
+
+		it("retains the running job in the sealed native wait card", () => {
+			const result = {
+				content: [{ type: "text" as const, text: "Still Running" }],
+				details: { op: "wait" as const, jobs: [jobsData[0]] },
+			};
+			const view = waitToolRenderer.describeResult!(result, { expanded: true, isPartial: false });
+			expect(view?.head).toEqual(expect.arrayContaining([expect.objectContaining({ t: "waiting on 1 job" })]));
+			expect(JSON.stringify(view?.body)).toContain("Job1 running");
+		});
+
+		it.each([true, false])("animates running native rows only while the poll is live (%s)", isPartial => {
+			const result = {
+				content: [{ type: "text" as const, text: "Still Running" }],
+				details: {
+					op: "wait" as const,
+					jobs: [jobsData[0], jobsData[1]],
+					agents: [{ id: "Worker", ageMs: 1_000, live: true }],
+				},
+			};
+			const view = waitToolRenderer.describeResult!(result, { expanded: true, isPartial });
+			const rows = view!.body!;
+			expect(rows[0]).toMatchObject({
+				c: [
+					{ k: "badge" },
+					{ k: "text", p: { spans: [isPartial ? { fx: "shimmer" } : { t: "Job1" }, expect.any(Object)] } },
+					{ k: "elapsed", p: isPartial ? { age: 1200 } : { age: 1200, stopped: 1200 } },
+				],
+			});
+			expect(rows[2]).toMatchObject({
+				c: [
+					expect.any(Object),
+					expect.any(Object),
+					{ k: "elapsed", p: isPartial ? { age: 1000 } : { age: 1000, stopped: 1000 } },
+				],
+			});
+			if (!isPartial) expect(JSON.stringify(view)).not.toContain('"fx":"shimmer"');
+			else {
+				expect(JSON.stringify(rows[0])).not.toContain('"stopped"');
+				expect(JSON.stringify(rows[2])).not.toContain('"stopped"');
+			}
+		});
+
+		it("keeps a settled native job to its one line: output and errors fill the call's own card", () => {
+			const result = {
+				content: [{ type: "text" as const, text: "" }],
+				details: {
+					op: "wait" as const,
+					jobs: [
+						{
+							id: "bg_2",
+							type: "bash" as const,
+							status: "failed" as const,
+							label: "hyperfine --runs 30 bench",
+							durationMs: 61_000,
+							toolCallId: "tool-bash",
+							exitCode: 1,
+							resultText: "Benchmark 1: calc_ir",
+							errorText: "Command exited with code 1",
+							meta: { artifactError: "write" as const },
+						},
+					],
+				},
+			};
+			const view = waitToolRenderer.describeResult!(result, { expanded: true, isPartial: false });
+			const [job] = view!.body!;
+			expect(job).toMatchObject({ k: "row", p: { role: "omp.wait.job", tone: "error" } });
+			const json = JSON.stringify(view);
+			expect(json).toContain("hyperfine --runs 30 bench");
+			expect(json).not.toContain("Benchmark 1");
+			expect(json).not.toContain("exited with code 1");
+			expect(json).not.toContain("artifact write failed");
+
+			const ownCard = bashToolRenderer.describeResult(
+				{
+					content: [{ type: "text", text: "Benchmark 1: calc_ir" }],
+					details: { exitCode: 1, meta: result.details.jobs[0].meta },
+					isError: true,
+				},
+				{ expanded: true, isPartial: false },
+				{ command: "hyperfine --runs 30 bench" },
+			);
+			expect(JSON.stringify(ownCard)).toContain("Benchmark 1: calc_ir");
+			expect(JSON.stringify(ownCard)).toContain(formatArtifactErrorNotice("write"));
+		});
+
+		it.each([{ meta: { artifactError: "write" as const } }, { artifactError: "write" as const }])(
+			"retains an unowned job's capture warning outside its native activity row (%j)",
+			capture => {
+				const result = {
+					content: [{ type: "text" as const, text: "" }],
+					details: {
+						op: "wait" as const,
+						jobs: [
+							{
+								id: "bg_legacy",
+								type: "bash" as const,
+								status: "failed" as const,
+								label: "legacy job",
+								durationMs: 1_000,
+								resultText: "do not duplicate the job output",
+								...capture,
+							},
+						],
+					},
+				};
+				const view = waitToolRenderer.describeResult(result, { expanded: true, isPartial: false });
+				const [job, warning] = view!.body!;
+				expect(job).toMatchObject({ k: "row", p: { role: "omp.wait.job" } });
+				expect(JSON.stringify(job)).not.toContain(formatArtifactErrorNotice("write"));
+				expect(warning).toMatchObject({ k: "text", p: { role: "omp.tool.notice" } });
+				expect(JSON.stringify(warning)).toContain(formatArtifactErrorNotice("write"));
+				expect(JSON.stringify(view)).not.toContain("do not duplicate the job output");
+			},
+		);
 
 		it("renders agent rows for running agents outside job control", () => {
 			const result = {

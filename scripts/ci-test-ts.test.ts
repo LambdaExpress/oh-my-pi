@@ -1,156 +1,95 @@
 import { describe, expect, test } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { ptree, TempDir } from "@oh-my-pi/pi-utils";
-import { describeChunkFailure, selectShard } from "./ci-test-ts";
+
+// Exercise the CLI in an isolated repository: upstream intentionally keeps
+// runner helpers private, and importing it would execute the real repo suite.
+async function createRunnerFixture(dir: TempDir, count: number, firstTest?: string): Promise<string[]> {
+	await Bun.write(dir.join("scripts/ci-test-ts.ts"), Bun.file(path.join(import.meta.dir, "ci-test-ts.ts")));
+	const names: string[] = [];
+	for (let index = 0; index < count; index++) {
+		const name = `native-case-${String(index).padStart(3, "0")}`;
+		names.push(name);
+		await Bun.write(
+			dir.join(`packages/coding-agent/test/${name}.test.ts`),
+			index === 0 && firstTest
+				? firstTest
+				: `import { test } from "bun:test";\nimport { appendFileSync } from "node:fs";\ntest(${JSON.stringify(name)}, () => appendFileSync(${JSON.stringify(dir.join("completed"))}, ${JSON.stringify(`${name}\n`)}));\n`,
+		);
+	}
+	return names;
+}
+
+function runFixture(dir: TempDir, env: Record<string, string> = {}) {
+	return ptree.exec([process.execPath, dir.join("scripts/ci-test-ts.ts"), "coding-agent-native"], {
+		cwd: dir.join("."),
+		env: {
+			...Bun.env,
+			PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH ?? ""}`,
+			CI: "1",
+			OMP_TEST_SHARD: "",
+			OMP_TEST_CONCURRENCY: "1",
+			OMP_TEST_CHUNK_TIMEOUT: "10",
+			NO_COLOR: "1",
+			...env,
+		},
+		timeout: 15_000,
+		detached: true,
+		allowNonZero: true,
+	});
+}
+
+async function completed(dir: TempDir): Promise<string[]> {
+	const file = Bun.file(dir.join("completed"));
+	if (!(await file.exists())) return [];
+	return (await file.text()).trim().split("\n").filter(Boolean).sort();
+}
 
 describe("test runner watchdog", () => {
-	// Parent fake timers cannot drive the real watchdog inside the isolated runner process.
+	// Fake timers cannot drive the watchdog in the isolated runner process.
 	test("kills a stalled chunk, reports failure, and continues the queue", async () => {
-		using dir = TempDir.createSync("omp-test-runner-watchdog-");
-		const started = dir.join("started");
-		const completed = dir.join("completed");
-		const continued = dir.join("continued");
-		const stalledCommand = [
-			process.execPath,
-			"-e",
-			`await Bun.write(${JSON.stringify(started)}, "started"); await Bun.sleep(60_000); await Bun.write(${JSON.stringify(completed)}, "completed");`,
-		];
-		const nextCommand = [process.execPath, "-e", `await Bun.write(${JSON.stringify(continued)}, "continued");`];
-		const commands = [
-			{ label: "stalled chunk", cwd: ".", command: stalledCommand },
-			{ label: "following chunk", cwd: ".", command: nextCommand },
-		];
-		const result = await ptree.exec(
-			[
-				process.execPath,
-				"-e",
-				`import { runTestCommandsInParallel } from ${JSON.stringify(import.meta.resolve("./ci-test-ts.ts"))}; await runTestCommandsInParallel(${JSON.stringify(commands)}, 1);`,
-			],
-			{
-				env: { ...Bun.env, OMP_TEST_CHUNK_TIMEOUT: "1", NO_COLOR: "1" },
-				timeout: 10_000,
-				detached: true,
-				allowNonZero: true,
-			},
+		using dir = TempDir.createSync("@omp-test-runner-watchdog-");
+		await createRunnerFixture(
+			dir,
+			11,
+			`import { test } from "bun:test";\ntest("stalled", async () => {\nawait Bun.write(${JSON.stringify(dir.join("started"))}, "started");\nawait Bun.sleep(60_000);\nawait Bun.write(${JSON.stringify(dir.join("unexpected-completion"))}, "completed");\n}, 120_000);\n`,
 		);
-
+		const result = await runFixture(dir, { OMP_TEST_CHUNK_TIMEOUT: "1" });
 		expect(result.exitCode).toBe(1);
-		expect(result.stdout).toContain("[watchdog]");
-		expect(await Bun.file(started).exists()).toBe(true);
-		expect(await Bun.file(completed).exists()).toBe(false);
-		expect(await Bun.file(continued).text()).toBe("continued");
-	}, 15_000);
-});
-
-async function spawnBunExitCode(exitCode: number): Promise<number> {
-	const proc = Bun.spawn([process.execPath, "-e", `process.exit(${exitCode})`], {
-		stdout: "ignore",
-		stderr: "ignore",
-	});
-	return await proc.exited;
-}
-
-// POSIX reports SIGKILL as 128 + 9. Windows has no equivalent signal-exit
-// convention, so drive the same observable runner input through a real child.
-async function spawnUnownedSigkillExitCode(): Promise<number> {
-	if (process.platform === "win32") return await spawnBunExitCode(137);
-	const proc = Bun.spawn([process.execPath, "-e", 'process.kill(process.pid, "SIGKILL")'], {
-		stdout: "ignore",
-		stderr: "ignore",
-	});
-	return await proc.exited;
-}
-
-// Re-hosts the sequential runner's failure tail: spawn, watchdog, attribute.
-// `runTestCommand` itself is not injectable (it builds argv from the repo
-// layout), so the decision under test is driven directly. A child-ready signal
-// deterministically triggers the same state change and kill as the watchdog.
-async function runWithWatchdog(): Promise<string> {
-	const proc = Bun.spawn(
-		[process.execPath, "-e", 'console.log("ready"); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)'],
-		{
-			stdout: "pipe",
-			stderr: "ignore",
-		},
-	);
-	const reader = proc.stdout.getReader();
-	const ready = await reader.read();
-	reader.releaseLock();
-	if (ready.done || !new TextDecoder().decode(ready.value).includes("ready")) {
-		throw new Error("Watchdog fixture child exited before becoming ready");
-	}
-	const timedOut = true;
-	proc.kill("SIGKILL");
-	const exitCode = await proc.exited;
-	return describeChunkFailure(exitCode, timedOut);
-}
-
-describe("describeChunkFailure", () => {
-	test("an exit 137 that the watchdog did not cause is attributed to the OOM killer", async () => {
-		const exitCode = await spawnUnownedSigkillExitCode();
-		expect(exitCode).toBe(137);
-
-		const message = describeChunkFailure(exitCode, false);
-		expect(message).toContain("OOM killer");
-		expect(message).toContain("chunkSize");
-		// The old wording carried no cause at all; it must not come back.
-		expect(message).not.toBe("failed with exit code 137");
-	});
-
-	test("a watchdog kill is attributed to the watchdog, not to memory", async () => {
-		const message = await runWithWatchdog();
-		expect(message).toContain("chunk watchdog");
-		expect(message).toContain("OMP_TEST_CHUNK_TIMEOUT");
-		expect(message).not.toContain("OOM killer");
-	});
-
-	test("the two SIGKILL causes produce different messages from the same exit code", async () => {
-		const oomKilled = describeChunkFailure(137, false);
-		const watchdogKilled = describeChunkFailure(137, true);
-		expect(oomKilled).not.toBe(watchdogKilled);
-	});
-
-	test("an ordinary test failure keeps the plain wording", async () => {
-		const exitCode = await spawnBunExitCode(1);
-		expect(exitCode).toBe(1);
-		expect(describeChunkFailure(exitCode, false)).toBe("failed with exit code 1");
-	});
-
-	test("a bun crash exit keeps the plain wording so the retry log still reads naturally", () => {
-		expect(describeChunkFailure(134, false)).toBe("failed with exit code 134");
-		expect(describeChunkFailure(139, false)).toBe("failed with exit code 139");
-	});
-
-	test("the watchdog message reports the configured timeout", () => {
-		const previous = Bun.env.OMP_TEST_CHUNK_TIMEOUT;
-		Bun.env.OMP_TEST_CHUNK_TIMEOUT = "42";
-		try {
-			expect(describeChunkFailure(137, true)).toContain("42s");
-		} finally {
-			if (previous === undefined) delete Bun.env.OMP_TEST_CHUNK_TIMEOUT;
-			else Bun.env.OMP_TEST_CHUNK_TIMEOUT = previous;
-		}
-	});
+		expect(await Bun.file(dir.join("started")).text()).toBe("started");
+		expect(await Bun.file(dir.join("unexpected-completion")).exists()).toBe(false);
+		expect(await completed(dir)).toContain("native-case-010");
+	}, 20_000);
 });
 
 describe("OMP_TEST_SHARD", () => {
-	test("shards partition every chunk exactly once, balanced to within one", () => {
-		const chunks = Array.from({ length: 79 }, (_, i) => i);
-		const shards = [1, 2, 3].map(i => selectShard(chunks, `${i}/3`));
-		expect(shards.flat().sort((a, b) => a - b)).toEqual(chunks);
-		const sizes = shards.map(s => s.length);
-		expect(Math.max(...sizes) - Math.min(...sizes)).toBeLessThanOrEqual(1);
-		expect(selectShard(chunks, "1/1")).toEqual(chunks);
-		expect(selectShard(chunks, undefined)).toEqual(chunks);
-	});
-
-	test("rejects malformed specs instead of running an empty or partial shard", () => {
-		for (const spec of ["0/2", "3/2", "1/0", "2", "a/b", "1/2/3"]) {
-			expect(() => selectShard([1, 2, 3], spec)).toThrow("Invalid OMP_TEST_SHARD");
+	test("partitions every test chunk exactly once through the public CLI", async () => {
+		using dir = TempDir.createSync("@omp-test-runner-shards-");
+		const names = await createRunnerFixture(dir, 21);
+		const parallelEnv = { OMP_TEST_CONCURRENCY: "3" };
+		const whole = await runFixture(dir, parallelEnv);
+		expect(whole.exitCode, whole.stdout + whole.stderr).toBe(0);
+		expect(await completed(dir)).toEqual(names);
+		await fs.rm(dir.join("completed"));
+		for (let index = 1; index <= 3; index++) {
+			const result = await runFixture(dir, { ...parallelEnv, OMP_TEST_SHARD: `${index}/3` });
+			expect(result.exitCode, result.stdout + result.stderr).toBe(0);
 		}
-	});
+		expect(await completed(dir)).toEqual(names);
+		await fs.rm(dir.join("completed"));
+		const single = await runFixture(dir, { ...parallelEnv, OMP_TEST_SHARD: "1/1" });
+		expect(single.exitCode, single.stdout + single.stderr).toBe(0);
+		expect(await completed(dir)).toEqual(names);
+	}, 60_000);
 
-	test("rejects a shard that selects no chunks", () => {
-		expect(() => selectShard([1], "2/2")).toThrow("selects no chunks");
-		expect(() => selectShard([], "1/1")).toThrow("selects no chunks");
-	});
+	test("rejects malformed and empty shard selections without executing tests", async () => {
+		using dir = TempDir.createSync("@omp-test-runner-invalid-shard-");
+		await createRunnerFixture(dir, 1);
+		for (const spec of ["0/2", "3/2", "1/0", "2", "a/b", "1/2/3", "2/2"]) {
+			const result = await runFixture(dir, { OMP_TEST_SHARD: spec });
+			expect(result.exitCode, spec).not.toBe(0);
+			expect(await completed(dir)).toEqual([]);
+		}
+	}, 60_000);
 });

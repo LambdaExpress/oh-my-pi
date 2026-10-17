@@ -313,7 +313,8 @@ for (const uncertainIdentity of [false, true]) {
 for (const journalMode of ["WAL", "DELETE"] as const) {
 	test(`a failed ${journalMode} snapshot retains uncopied evidence and the failed connection`, async () => {
 		await using dir = await TempDir.create("@omp-sqlite-incomplete-snapshot-");
-		const dbPath = dir.join("store.db");
+		const dbName = "Store.db";
+		const dbPath = dir.join(dbName);
 		using seed = new Database(dbPath);
 		seed.run("CREATE TABLE entries (value TEXT)");
 		seed.run("INSERT INTO entries VALUES ('seed')");
@@ -356,7 +357,7 @@ for (const journalMode of ["WAL", "DELETE"] as const) {
 			copy.mockRestore();
 			await expect(
 				openSqliteDatabase(
-					dbPath,
+					process.platform === "win32" ? dir.join(dbName.toLowerCase()) : dbPath,
 					db => {
 						try {
 							db.run("INSERT INTO entries VALUES ('arrival')");
@@ -372,7 +373,7 @@ for (const journalMode of ["WAL", "DELETE"] as const) {
 					? [{ value: "committed-wal" }, { value: "seed" }]
 					: [{ value: "seed" }, { value: "uncommitted" }],
 			);
-			expect(await backupNames(dir.path())).toEqual([]);
+			expect(await backupNames(dir.path(), dbName)).toEqual([]);
 			if (!partialPath) throw new Error("the failed copy did not leave partial evidence");
 			expect(fs.readFileSync(partialPath)).toEqual(sidecarEvidence.subarray(0, 32));
 			// The caller preserves the full live evidence before explicitly releasing its retained handle.

@@ -1,4 +1,8 @@
 //! The `kill` builtin, moved from `pi-shell`.
+//!
+//! Signal 0 probes existence without delivering a signal. Shell-only traps
+//! (`EXIT`, `DEBUG`, `ERR`, `RETURN`) are not deliverable, including on Windows
+//! where every supported real signal terminates its target.
 
 use std::io::Write;
 
@@ -169,6 +173,28 @@ impl builtins::Command for KillCommand {
 					had_failure = true;
 					continue;
 				};
+				// A job running inside the shell has no process to deliver the signal
+				// to; a signal that would end a process ends the job instead.
+				if job.has_internal_tasks() {
+					let delivered = match signal {
+						KillSignal::Probe => true,
+						KillSignal::Signal(signal) if ends_process(signal) => {
+							job.abort_internal_tasks();
+							true
+						},
+						KillSignal::Signal(_) => false,
+					};
+					if !delivered {
+						writeln!(
+							context.stderr(),
+							"{}: {}: failed to send signal",
+							context.command_name,
+							operand
+						)?;
+						had_failure = true;
+					}
+					continue;
+				}
 				#[cfg(unix)]
 				{
 					let mut targets: Vec<i32> = job
@@ -591,25 +617,88 @@ mod tests {
 
 	/// bash maps exit statuses above 128 back to the terminating signal:
 	/// `kill -l 137` prints `KILL`, while 128 and 265 stay invalid.
-	/// Windows has named termination operations, not Unix signal numbers.
-	#[cfg(unix)]
+	/// Windows exposes these same numbers for its supported termination operations.
 	#[test]
 	fn list_maps_exit_statuses_above_128() {
 		assert!(matches!(printed_signal("137"), Ok(PrintedSignal::Name("KILL"))));
 		assert!(matches!(printed_signal("9"), Ok(PrintedSignal::Name("KILL"))));
 		assert!(matches!(printed_signal("129"), Ok(PrintedSignal::Name("HUP"))));
+		assert!(matches!(printed_signal("143"), Ok(PrintedSignal::Name("TERM"))));
+		assert!(matches!(printed_signal("15"), Ok(PrintedSignal::Name("TERM"))));
+		assert!(matches!(printed_signal("KILL"), Ok(PrintedSignal::Number(9))));
+		assert!(matches!(printed_signal("TERM"), Ok(PrintedSignal::Number(15))));
 		assert!(printed_signal("128").is_err());
 		assert!(printed_signal("265").is_err());
 	}
 
 	#[cfg(windows)]
 	#[test]
-	fn list_rejects_unix_signal_numbers() {
-		// The Windows backend cannot translate numeric signals or Unix
-		// signal-death statuses into named termination operations.
-		for operand in ["9", "137", "129", "128", "265"] {
+	fn list_rejects_numbers_without_windows_signal_mappings() {
+		// These numbers have no cross-POSIX mapping in the Windows backend;
+		// neither their direct forms nor their exit-status forms are valid.
+		for operand in ["7", "10", "12", "16", "135", "138", "140", "144"] {
 			assert!(printed_signal(operand).is_err(), "operand {operand:?} must be rejected");
 		}
+	}
+
+	#[test]
+	fn delivery_accepts_real_signals_and_a_separate_zero_probe() {
+		assert!(matches!(KillSignal::parse("0"), Ok(KillSignal::Probe)));
+		for spec in ["9", "15", "KILL", "TERM"] {
+			assert!(
+				matches!(KillSignal::parse(spec), Ok(KillSignal::Signal(TrapSignal::Signal(_)))),
+				"spec {spec:?} must be deliverable"
+			);
+		}
+		for spec in ["EXIT", "DEBUG", "ERR", "RETURN", "NOSUCH", "-1", "2147483647"] {
+			assert!(KillSignal::parse(spec).is_err(), "spec {spec:?} must be rejected");
+		}
+	}
+
+	#[test]
+	#[ignore = "spawned as the native process-control operand"]
+	fn native_signal_child() {
+		if std::env::var_os("PI_BUILTINS_KILL_CHILD").is_some() {
+			std::thread::sleep(std::time::Duration::from_secs(30));
+		}
+	}
+
+	#[tokio::test]
+	async fn probes_and_invalid_signals_spare_the_child_before_numeric_kill() {
+		use std::{process::Stdio, time::Duration};
+
+		let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+			.args(["--ignored", "--exact", "kill::tests::native_signal_child"])
+			.env("PI_BUILTINS_KILL_CHILD", "1")
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.kill_on_drop(true)
+			.spawn()
+			.unwrap();
+		let pid = child.id().unwrap();
+		let cwd = std::env::temp_dir();
+		let (code, _, err) = crate::host::run_script(&format!("kill -0 {pid}"), "", &cwd).await;
+		assert_eq!((code, err.as_str()), (0, ""));
+		assert!(child.try_wait().unwrap().is_none(), "signal 0 must not terminate its target");
+
+		for spec in ["EXIT", "DEBUG", "ERR", "RETURN", "2147483647"] {
+			let (code, _, err) =
+				crate::host::run_script(&format!("kill -s {spec} {pid}"), "", &cwd).await;
+			assert_eq!(code, 2, "{spec}: {err}");
+			assert!(err.contains("invalid signal name"), "{spec}: {err}");
+			assert!(
+				child.try_wait().unwrap().is_none(),
+				"invalid signal {spec:?} must not terminate its target"
+			);
+		}
+
+		let (code, _, err) = crate::host::run_script(&format!("kill -9 {pid}"), "", &cwd).await;
+		assert_eq!((code, err.as_str()), (0, ""));
+		let status = tokio::time::timeout(Duration::from_secs(1), child.wait())
+			.await
+			.expect("numeric KILL must terminate the native child")
+			.unwrap();
+		assert!(!status.success(), "the native child must be terminated, not finish normally");
 	}
 }
 
@@ -623,14 +712,17 @@ enum KillSignal {
 
 impl KillSignal {
 	fn parse(value: &str) -> std::result::Result<Self, brush_core::Error> {
-		if let Ok(number) = value.parse::<i32>() {
+		let signal = if let Ok(number) = value.parse::<i32>() {
 			if number == 0 {
-				Ok(Self::Probe)
-			} else {
-				TrapSignal::try_from(number).map(Self::Signal)
+				return Ok(Self::Probe);
 			}
+			TrapSignal::try_from(number)?
 		} else {
-			TrapSignal::try_from(value).map(Self::Signal)
+			TrapSignal::try_from(value)?
+		};
+		match signal {
+			TrapSignal::Signal(_) => Ok(Self::Signal(signal)),
+			_ => Err(brush_core::ErrorKind::InvalidSignal(value.to_owned()).into()),
 		}
 	}
 
@@ -639,6 +731,35 @@ impl KillSignal {
 	}
 }
 
+/// Whether `signal`'s default action ends the process it is sent to — the only
+/// effect `kill` can give a job that runs inside the shell. Stop, continue, and
+/// default-ignored signals leave such a job alone.
+fn ends_process(signal: TrapSignal) -> bool {
+	#[cfg(unix)]
+	{
+		match i32::try_from(signal) {
+			Ok(
+				libc::SIGCHLD
+				| libc::SIGCONT
+				| libc::SIGSTOP
+				| libc::SIGTSTP
+				| libc::SIGTTIN
+				| libc::SIGTTOU
+				| libc::SIGURG
+				| libc::SIGWINCH,
+			) => false,
+			#[cfg(target_os = "macos")]
+			Ok(libc::SIGINFO | libc::SIGIO) => false,
+			Ok(number) => number > 0,
+			Err(_) => false,
+		}
+	}
+	// Every signal `kill` sends on Windows terminates the process.
+	#[cfg(not(unix))]
+	{
+		matches!(signal, TrapSignal::Signal(_))
+	}
+}
 
 /// Resolves a signal name or number to its number.
 ///

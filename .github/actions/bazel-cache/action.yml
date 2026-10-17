@@ -1,52 +1,30 @@
 name: "Compose bazel cache config"
 description: >
-   Selects the CI cache backend and emits a bazelrc fragment. A shell probe
-   exposes the backend through step outputs before any action condition
-   uses it.
+   Emits a bazelrc fragment using the cluster remote cache when credentials
+   are available. Hosted release jobs with an explicit scope restore a disk
+   cache; inputless callers without credentials build uncached.
 
-   omp-kata jobs use the cluster remote cache. GitHub-hosted jobs use an
-   actions/cache-backed disk cache seeded by the bazel-cache-warm workflow
-   on the same runner image — cross-host action keys never hit, so the disk
-   cache is hosted-only and its key carries a schema version (v1 was
-   poisoned by a kata-produced export that silently missed every action).
-
-   The default v3 key is <config hash>-<source hash>: config covers toolchain
-   and build settings, source covers crates/** + BUILD.bazel. Callers whose
-   repository/toolchain cache would exceed the GitHub quota can persist only
-   the action disk cache; that profile has a distinct key so it never collides
-   with a full-cache reservation. Restores fall back to the config-scoped
-   prefix, then to a bare scope+os+arch prefix:
-   the config hash covers Cargo.toml/Cargo.lock, which every release
-   version bump rewrites, so without the bare fallback each release built
-   the darwin addons fully cold (~40-50 min on macos-15-intel; CI run
-   30357804722). A stale-config archive is safe — bazel keys every
-   action by content digest, so mismatched entries just miss — and the
-   refreshed archive is saved after the build (an exact hit suppresses
-   the save — without the source component the first archive for a config
-   generation would permanently shadow newer source states). Restored
-   entries untouched for 14 days are pruned before the build so
-   ever-seeding archives don't grow without bound.
-
-   Only main saves. actions/cache entries are scoped to the ref that saved
-   them: a tag or branch run can read main's archives, but whatever it saves
-   is readable only by that same ref, while still counting against the
-   shared 10 GB repo quota. A tag-dispatched release saved a ~5 GB darwin
-   archive under refs/tags/v18.2.10 and GitHub's LRU eviction then dropped
-   main's darwin archives, so the next release built cold.
+   Scoped v3 keys cover toolchain/build config and source separately. The
+   action-only profile excludes downloaded repositories/toolchains from the
+   archive and uses a distinct key. Restores fall back to the config prefix,
+   then scope+os+arch, then an optional sibling scope on the same runner image.
+   Bazel's content-addressed action keys safely reject stale entries. Only
+   main saves refreshed archives; tag/branch archives would consume the shared
+   quota without seeding other refs. Disk entries untouched for 14 days are
+   pruned, but repository-cache contents retain upstream archive mtimes and
+   must never be pruned file-by-file.
 
 inputs:
    scope:
-      description: Disk-cache key discriminator shared by compatible consumers
-      required: true
+      description: Optional disk-cache discriminator for compatible hosted consumers; empty disables the hosted cache
+      required: false
+      default: ""
    persist-repository-cache:
       description: Include downloaded repositories and toolchains in the GitHub cache archive
       required: false
       default: "true"
    fallback-scope:
-      description: >
-         Optional scope whose newest archive is the last restore fallback
-         (e.g. the sibling darwin target on the same runner image, which
-         shares every exec-config action). Empty disables it.
+      description: Optional scope whose newest archive seeds this one on the same runner image
       required: false
       default: ""
 
@@ -61,7 +39,7 @@ outputs:
       description: Newline-separated paths that restore and save must share
       value: ${{ steps.backend.outputs.cache-paths }}
    save-needed:
-      description: Whether this run should save a new exact-key disk-cache archive (hosted, inexact restore, on main)
+      description: Whether a scoped hosted run on main needs to save a new exact-key archive
       value: ${{ steps.compose.outputs.save-needed }}
    remote:
       description: Whether the shell probe selected the cluster remote cache
@@ -76,10 +54,13 @@ runs:
         env:
            CONFIG_HASH: ${{ hashFiles('Cargo.toml', 'Cargo.lock', 'MODULE.bazel', 'MODULE.bazel.lock', 'rust-toolchain.toml', 'rustfmt.toml', '.bazelrc', '.bazelignore', '.bazelversion', 'bazel/**') }}
            SOURCE_HASH: ${{ hashFiles('crates/**', 'BUILD.bazel') }}
+           CACHE_SCOPE: ${{ inputs.scope }}
+           FALLBACK_SCOPE: ${{ inputs.fallback-scope }}
+           PERSIST_REPOSITORY_CACHE: ${{ inputs.persist-repository-cache }}
         run: |
            set -euo pipefail
            remote=false
-           case "${{ inputs.persist-repository-cache }}" in
+           case "$PERSIST_REPOSITORY_CACHE" in
              true) profile="" ;;
              false) profile="-action-only" ;;
              *)
@@ -93,13 +74,15 @@ runs:
                exit 1
              fi
              remote=true
+           elif [ -z "$CACHE_SCOPE" ]; then
+             echo "::notice title=Bazel cache::No cluster remote-cache credentials on this runner; building uncached."
            fi
-           key="bazel-disk-v3${profile}-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-$CONFIG_HASH-$SOURCE_HASH"
-           prefix="bazel-disk-v3${profile}-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-$CONFIG_HASH-"
-           bare_prefix="bazel-disk-v3${profile}-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-"
+           key="bazel-disk-v3${profile}-${CACHE_SCOPE}-${{ runner.os }}-${{ runner.arch }}-$CONFIG_HASH-$SOURCE_HASH"
+           prefix="bazel-disk-v3${profile}-${CACHE_SCOPE}-${{ runner.os }}-${{ runner.arch }}-$CONFIG_HASH-"
+           bare_prefix="bazel-disk-v3${profile}-${CACHE_SCOPE}-${{ runner.os }}-${{ runner.arch }}-"
            fallback_prefix=""
-           if [ -n "${{ inputs.fallback-scope }}" ]; then
-             fallback_prefix="bazel-disk-v3${profile}-${{ inputs.fallback-scope }}-${{ runner.os }}-${{ runner.arch }}-"
+           if [ -n "$FALLBACK_SCOPE" ]; then
+             fallback_prefix="bazel-disk-v3${profile}-${FALLBACK_SCOPE}-${{ runner.os }}-${{ runner.arch }}-"
            fi
            {
              echo "remote=$remote"
@@ -109,7 +92,7 @@ runs:
              echo "cache-fallback-prefix=$fallback_prefix"
              echo "cache-paths<<EOF"
              echo "$HOME/.cache/omp-bazel-disk"
-             if [ "${{ inputs.persist-repository-cache }}" = true ]; then
+             if [ "$PERSIST_REPOSITORY_CACHE" = true ]; then
                echo "$HOME/.cache/omp-bazel-repo"
              fi
              echo "EOF"
@@ -117,20 +100,12 @@ runs:
 
       - name: Restore bazel disk cache
         id: restore
-        if: steps.backend.outputs.remote != 'true'
+        if: steps.backend.outputs.remote != 'true' && inputs.scope != ''
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-           # Full-profile consumers restore both the action cache and downloaded
-           # repositories/toolchains. Action-only consumers restore just the
-           # expensive compilation outputs and recreate repositories locally.
-           # Save sites consume the same output so cache versions stay aligned.
+           # Restore and save consume the same profile-specific path list.
            path: ${{ steps.backend.outputs.cache-paths }}
            key: ${{ steps.backend.outputs.cache-key }}
-           # Order matters: exact key, same-config prefix, then any archive for
-           # this scope+os+arch. The bare fallback is what keeps release version
-           # bumps (Cargo.toml/Cargo.lock churn -> new CONFIG_HASH) from going
-           # fully cold; bazel's content-addressed action keys make a
-           # stale-config archive a partial hit, never a wrong output.
            restore-keys: |
               ${{ steps.backend.outputs.cache-prefix }}
               ${{ steps.backend.outputs.cache-bare-prefix }}
@@ -141,28 +116,25 @@ runs:
         shell: bash
         env:
            REMOTE: ${{ steps.backend.outputs.remote }}
+           CACHE_SCOPE: ${{ inputs.scope }}
            RESTORE_HIT: ${{ steps.restore.outputs.cache-hit }}
            ON_MAIN: ${{ github.ref == 'refs/heads/main' }}
         run: |
            set -euo pipefail
            save_needed=false
-           if [ "$REMOTE" != "true" ] && [ "$RESTORE_HIT" != "true" ] && [ "$ON_MAIN" = "true" ]; then
+           if [ "$REMOTE" != "true" ] && [ -n "$CACHE_SCOPE" ] && [ "$RESTORE_HIT" != "true" ] && [ "$ON_MAIN" = "true" ]; then
              save_needed=true
            fi
 
            rc="$RUNNER_TEMP/bazel-cache.rc"
            if [ "$REMOTE" = "true" ]; then
-             # Mask the derived credential BEFORE writing the rc: config=ci
-             # enables --announce_rc, which prints --remote_header verbatim.
-             # Mask lines inside the redirected block below would land in the
-             # rc file itself and mask nothing.
+             # Mask credentials before --announce_rc can print remote_header.
              raw_auth="${BAZEL_REMOTE_USER}:${BAZEL_REMOTE_PASSWORD}"
              auth="$(printf %s "$raw_auth" | base64 | tr -d '\n')"
              echo "::add-mask::$raw_auth"
              echo "::add-mask::$auth"
              {
-               # The PVC mount lives outside $HOME. Pods are single-job and
-               # use RUNNER_TEMP for Bazel's output root.
+               # The PVC lives outside HOME; pods use a per-job output root.
                echo "startup --output_user_root=$RUNNER_TEMP/bazel-root"
                echo "common --config=ci"
                echo "common --repository_cache=/opt/bazel-repo-cache"
@@ -173,27 +145,18 @@ runs:
                echo "common --remote_header='authorization=Basic ${auth}'"
                echo "common --remote_download_toplevel"
              } > "$rc"
-           else
+           elif [ -n "$CACHE_SCOPE" ]; then
              mkdir -p "$HOME/.cache/omp-bazel-disk" "$HOME/.cache/omp-bazel-repo"
-             # Seeding from stale archives means entries dead source
-             # generations wrote would otherwise ride along forever; drop
-             # anything untouched for 14 days (tar preserves mtimes across
-             # the actions/cache round trip, so age survives restores).
-             # DISK CACHE ONLY: never prune omp-bazel-repo file-by-file —
-             # extracted repo contents keep upstream-archive mtimes (often
-             # months old), so an mtime sweep guts contents-cache entries
-             # while bazel still trusts their recorded_inputs, materializing
-             # hollow external repos ("BUILD file not found" — v17.2.0
-             # release run 30519253683). The repo cache is bounded by the
-             # GitHub cache TTL/LRU at the archive level instead.
+             # Repository contents keep archive mtimes; prune only disk actions.
              find "$HOME/.cache/omp-bazel-disk" -type f -mtime +14 -delete 2>/dev/null || true
              {
                echo "common --config=ci"
                echo "common --disk_cache=$HOME/.cache/omp-bazel-disk"
                echo "common --repository_cache=$HOME/.cache/omp-bazel-repo"
              } > "$rc"
+           else
+             echo "common --config=ci" > "$rc"
            fi
-
            {
              echo "rc=$rc"
              echo "save-needed=$save_needed"

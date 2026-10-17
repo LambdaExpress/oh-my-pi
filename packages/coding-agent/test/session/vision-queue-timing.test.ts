@@ -190,7 +190,7 @@ describe("vision-backed queued message timing", () => {
 		await Promise.resolve();
 
 		expect(enqueueSettled).toBe(true);
-		expect(session.getQueuedMessages()).toEqual({ steering: ["queued image"], followUp: [] });
+		expect(session.getQueuedMessages()).toEqual({ steering: ["queued image"], followUp: [], liveSteered: 0 });
 		expect(session.queuedUserMessageCount).toBe(1);
 		expect(session.queuedMessageCount).toBe(1);
 		expect(session.hasRunnableQueuedMessages).toBe(false);
@@ -231,6 +231,6 @@ describe("vision-backed queued message timing", () => {
 		await running?.catch(() => undefined);
 
 		expect(session.agent.hasQueuedMessages()).toBe(false);
-		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [] });
+		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [], liveSteered: 0 });
 	});
 });

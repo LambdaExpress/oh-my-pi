@@ -14,10 +14,20 @@ import {
 import { formatTokenCount, refreshStatusLine } from "./builtin-modes";
 import { buildContextReportText } from "./helpers/context-report";
 import { formatCoarseDuration } from "@oh-my-pi/pi-tui/chrome/format";
+import { truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
+import { buildJobTree, jobTreeGuide, jobTreeIndent } from "@oh-my-pi/pi-tui/overlays/job-tree";
+import { theme } from "@oh-my-pi/pi-tui/theme";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { handleMcpAcp } from "./helpers/mcp";
+import { markdownFenceFor } from "../utils/markdown-fence";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
-import { describeRedeemOutcome, toResetUsageAccounts } from "./helpers/reset-usage";
+import {
+	describeRedeemOutcome,
+	formatResetUsageAccountLine,
+	oneLine,
+	resolveResetUsageTarget,
+	toResetUsageAccounts,
+} from "./helpers/reset-usage";
 import type { ResetUsageAccount } from "@oh-my-pi/pi-tui/overlays/reset-usage-selector";
 import { matchSessionPinAccounts, toSessionPinAccounts } from "./helpers/session-pin";
 import {
@@ -31,65 +41,24 @@ import { handleTodoAcp } from "./helpers/todo";
 import { buildUsageReportText } from "./helpers/usage-report";
 import type { SlashCommandRuntime, SlashCommandSpec } from "./types";
 
-function normalizeResetProvider(value: string): string | undefined {
-	switch (value.trim().toLowerCase()) {
-		case "anthropic":
-		case "claude":
-			return "anthropic";
-		case "openai-codex":
-		case "codex":
-			return "openai-codex";
-		default:
-			return undefined;
-	}
-}
-
 async function handleUsageResetCommand(
 	arg: string,
 	session: AgentSession,
 	output: SlashCommandRuntime["output"],
 ): Promise<boolean> {
-	const safe = (value: string): string => sanitizeText(value.replace(/[\r\n\t]+/g, " "));
 	let accounts: ResetUsageAccount[];
 	try {
 		accounts = toResetUsageAccounts(await session.listResetCredits());
 	} catch (error) {
-		await output(t("Could not load saved resets: {error}", { error: safe(errorMessage(error)) }));
+		await output(t("Could not load saved resets: {error}", { error: oneLine(errorMessage(error)) }));
 		return false;
 	}
 	if (accounts.length === 0) {
 		await output(t("No provider accounts found. Use /login to add one."));
 		return false;
 	}
-	const targetArg = arg.trim();
-	if (!targetArg) {
-		const lines = [t("Saved rate-limit resets:")];
-		for (const account of accounts) {
-			let detail: string;
-			if (account.error) {
-				detail = t("unavailable ({error})", { error: safe(account.error) });
-			} else {
-				detail = t("{available} saved, {redeemable} usable now", {
-					available: account.availableCount,
-					redeemable: account.redeemableCount,
-				});
-				if (account.expiresAt) {
-					detail = t("{detail}, expires {date}", { detail, date: safe(account.expiresAt) });
-				}
-				if (account.redeemableCount === 0 && account.unavailableReason) {
-					detail = t("{detail} ({reason})", { detail, reason: safe(account.unavailableReason) });
-				}
-			}
-			lines.push(
-				t("- {label} [{providerLabel} · {provider}/{credentialId}]: {detail}", {
-					label: safe(account.label),
-					providerLabel: safe(account.providerLabel),
-					provider: account.provider,
-					credentialId: account.target.credentialId,
-					detail: `${detail}${account.active ? ` ${t("(active)")}` : ""}`,
-				}),
-			);
-		}
+	if (!arg.trim()) {
+		const lines = [t("Saved rate-limit resets:"), ...accounts.map(formatResetUsageAccountLine)];
 		lines.push(
 			"",
 			t("Spend one with `/usage reset <provider>/<credential id>` or `/usage reset <provider>/active`."),
@@ -97,51 +66,59 @@ async function handleUsageResetCommand(
 		await output(lines.join("\n"));
 		return false;
 	}
-
-	const slash = targetArg.indexOf("/");
-	if (slash <= 0) {
-		await output(t("Choose an account with `/usage reset <provider>/<credential id>`."));
+	const resolved = resolveResetUsageTarget(accounts, arg, "/usage reset");
+	if ("error" in resolved) {
+		await output(resolved.error);
 		return false;
 	}
-	const requestedProvider = normalizeResetProvider(targetArg.slice(0, slash));
-	const requestedAccount = targetArg
-		.slice(slash + 1)
-		.trim()
-		.toLowerCase();
-	if (!requestedProvider) {
-		await output(
-			t('Unknown reset provider "{name}". Use anthropic or openai-codex.', {
-				name: safe(targetArg.slice(0, slash)),
-			}),
-		);
-		return false;
-	}
-	const requestedCredentialId = /^\d+$/.test(requestedAccount) ? Number(requestedAccount) : undefined;
-	const target = accounts.find(account => {
-		if (account.provider !== requestedProvider) return false;
-		if (requestedAccount === "active") return account.active;
-		return requestedCredentialId !== undefined && account.target.credentialId === requestedCredentialId;
-	});
-	if (!target) {
-		await output(
-			t('No stored account matches "{name}". List choices with `/usage reset`.', { name: safe(targetArg) }),
-		);
-		return false;
-	}
-	if (target.redeemableCount <= 0) {
-		const reason = target.unavailableReason ? ` (${safe(target.unavailableReason)})` : "";
-		await output(
-			t("{label} [{providerLabel}]: no saved resets usable right now{reason}.", {
-				label: safe(target.label),
-				providerLabel: safe(target.providerLabel),
-				reason,
-			}),
-		);
-		return false;
-	}
-	const outcome = await session.redeemResetCredit(target.target);
-	await output(safe(describeRedeemOutcome(outcome, target.label)));
+	const outcome = await session.redeemResetCredit(resolved.account.target);
+	await output(oneLine(describeRedeemOutcome(outcome, resolved.account.label)));
 	return outcome.ok;
+}
+
+/**
+ * `/jobs kill <id>|all`: cancel one running background job this session owns,
+ * or every running one. Routes through the same owner-scoped
+ * `AgentSession.cancelAsyncJob` the jobs sheet's `x`-to-cancel and
+ * `proc://<id>/kill` use, so it can only touch jobs `/jobs` lists.
+ */
+async function handleJobsKillCommand(
+	arg: string,
+	session: AgentSession,
+	output: SlashCommandRuntime["output"],
+): Promise<void> {
+	const target = arg.trim();
+	if (!target) {
+		await output(t("Usage: /jobs kill <id>|all"));
+		return;
+	}
+	const snapshot = session.getAsyncJobSnapshot({ recentLimit: 0 });
+	if (!snapshot) {
+		await output(t("Async background jobs are unavailable in this session."));
+		return;
+	}
+	if (target === "all") {
+		let cancelled = 0;
+		for (const job of snapshot.running) {
+			if (session.cancelAsyncJob(job.id)) cancelled += 1;
+		}
+		await output(
+			cancelled === 0
+				? t("No running background jobs to cancel.")
+				: t("Cancelled {count} background job{s}.", { count: cancelled, s: cancelled === 1 ? "" : "s" }),
+		);
+		return;
+	}
+	const safeTarget = truncateToWidth(sanitizeText(target).replace(/\s+/g, " ").trim(), 60);
+	if (!snapshot.running.some(job => job.id === target)) {
+		await output(t('No running background job with id "{id}".', { id: safeTarget }));
+		return;
+	}
+	await output(
+		session.cancelAsyncJob(target)
+			? t("Cancelled background job {id}.", { id: safeTarget })
+			: t("Could not cancel background job {id}.", { id: safeTarget }),
+	);
 }
 
 async function handleSessionPinCommand(
@@ -294,7 +271,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			{ name: "delete", description: "Delete current session and return to selector" },
 			{
 				name: "pin",
-				description: "Pin the current provider to a stored OAuth account",
+				description: "Pin a stored OAuth account to the current provider for this session",
 				usage: "[account]",
 			},
 		],
@@ -368,6 +345,12 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		icon: "jobs",
 		description: "Show async background jobs status",
 		acpDescription: "Show background jobs",
+		acpInputHint: "[full|kill <id>|kill all]",
+		subcommands: [
+			{ name: "full", description: "Show full, untruncated command lines" },
+			{ name: "kill", description: "Cancel a running background job", usage: "<id>|all" },
+		],
+		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
 			const snapshot = runtime.ctx.session.getAsyncJobSnapshot({ recentLimit: 5 });
 			if (!snapshot || (snapshot.running.length === 0 && snapshot.recent.length === 0)) return t("Jobs: none");
@@ -376,9 +359,16 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				recent: snapshot.recent.length,
 			});
 		},
-		handle: async (_command, runtime) => {
-			const snapshot = runtime.session.getAsyncJobSnapshot({ recentLimit: 5 });
-			if (!snapshot || (snapshot.running.length === 0 && snapshot.recent.length === 0)) {
+		handle: async (command, runtime) => {
+			const { verb, rest } = parseSubcommand(command.args);
+			if (verb === "kill") {
+				await handleJobsKillCommand(rest, runtime.session, runtime.output);
+				return commandConsumed();
+			}
+			if (rest || (verb && verb !== "full")) return usage(t("Usage: /jobs [full|kill <id>|kill all]"), runtime);
+			const full = verb === "full";
+			const tree = runtime.session.getAsyncJobTree();
+			if (!tree || (tree.running.length === 0 && tree.recent.length === 0)) {
 				await runtime.output(
 					t(
 						"No background jobs running. (Background jobs run async tools — e.g. long-running bash, debug, or task subagents that would otherwise tie up a turn. They appear here while alive and briefly after (until their result is delivered; at most ~5 minutes).)",
@@ -386,29 +376,49 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				);
 				return commandConsumed();
 			}
+			// One fenced block keeps the tree rails aligned; the fence outgrows any run inside a command.
 			const now = Date.now();
-			const lines: string[] = [t("Background Jobs"), t("Running: {count}", { count: snapshot.running.length })];
-			if (snapshot.running.length > 0) {
-				lines.push("", t("Running Jobs"));
-				for (const job of snapshot.running) {
-					lines.push(`  [${job.id}] ${job.type} (${job.status}) — ${formatCoarseDuration(now - job.startTime)}`);
-					lines.push(`    ${job.label}`);
+			const rows: string[] = [];
+			for (const row of buildJobTree([...tree.running, ...tree.recent], tree.agents, tree.rootId)) {
+				const guide = jobTreeGuide(row, theme);
+				if (row.kind === "agent") {
+					rows.push(`${guide}${row.agent.id}`);
+					continue;
 				}
+				const { job } = row;
+				// A spawned subagent's task job takes the agent's id as its id and label: name it once.
+				const agent = row.agent && row.agent.id !== job.id ? ` ${row.agent.id}` : "";
+				rows.push(
+					`${guide}[${job.id}] ${job.type} (${job.status}) — ${formatCoarseDuration((job.endTime ?? now) - job.startTime)}${agent}`,
+				);
+				const text = sanitizeText(full ? (job.command ?? job.label) : job.label);
+				if (text === job.id) continue;
+				const indent = jobTreeIndent(row, theme);
+				for (const line of full ? text.split("\n") : [text]) rows.push(`${indent}${line}`);
 			}
-			if (snapshot.recent.length > 0) {
-				lines.push("", t("Recent Jobs"));
-				for (const job of snapshot.recent) {
-					lines.push(
-						`  [${job.id}] ${job.type} (${job.status}) — ${formatCoarseDuration((job.endTime ?? now) - job.startTime)}`,
-					);
-					lines.push(`    ${job.label}`);
-				}
-			}
-			await runtime.output(lines.join("\n"));
+			const body = rows.join("\n");
+			const fence = markdownFenceFor(body);
+			await runtime.output(
+				[
+					t("Background Jobs"),
+					t("Running: {count}", { count: tree.running.length }),
+					"",
+					`${fence}text`,
+					body,
+					fence,
+				].join("\n"),
+			);
 			return commandConsumed();
 		},
-		handleTui: async (_command, runtime) => {
-			await runtime.ctx.handleJobsCommand();
+		handleTui: async (command, runtime) => {
+			const { verb, rest } = parseSubcommand(command.args);
+			if (verb === "kill") {
+				await handleJobsKillCommand(rest, runtime.ctx.session, text => runtime.ctx.showStatus(text));
+			} else if (rest || (verb && verb !== "full")) {
+				runtime.ctx.showStatus(t("Usage: /jobs [full|kill <id>|kill all]"));
+			} else {
+				await runtime.ctx.handleJobsCommand({ full: verb === "full" });
+			}
 			clearSubmittedText(runtime);
 		},
 	},
@@ -642,10 +652,41 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "fork",
 		icon: "branch",
-		description: "Create a new fork from a previous message",
-		handleTui: async (_command, runtime) => {
+		description: "Fork this session, or open it in a multiplexer pane or window",
+		subcommands: [
+			{ name: "pane", description: "Open the fork in a new terminal pane" },
+			{ name: "window", description: "Open the fork in a new multiplexer window" },
+			{ name: "tab", description: "Alias for window" },
+		],
+		subcommandOptional: true,
+		allowArgs: true,
+		handleTui: async (command, runtime) => {
+			const args = command.args.trim();
+			let placement: "pane" | "window" | undefined;
+			if (args) {
+				const [keyword, ...extra] = args.split(/\s+/);
+				if (extra.length > 0) {
+					clearSubmittedText(runtime);
+					runtime.ctx.showError("Usage: /fork [pane|window|tab]");
+					return;
+				}
+				switch (keyword?.toLowerCase()) {
+					case "pane":
+						placement = "pane";
+						break;
+					case "window":
+					case "tab":
+						placement = "window";
+						break;
+					default:
+						clearSubmittedText(runtime);
+						runtime.ctx.showError("Usage: /fork [pane|window|tab]");
+						return;
+				}
+			}
 			clearSubmittedText(runtime);
-			await runtime.ctx.handleForkCommand();
+			if (placement) await runtime.ctx.handleForkCommand(placement);
+			else await runtime.ctx.handleForkCommand();
 		},
 	},
 	{

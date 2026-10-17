@@ -1,5 +1,7 @@
+import * as path from "node:path";
 import { toError } from "@oh-my-pi/pi-utils";
 import {
+	directChildKeyName,
 	SessionWriteConflictError,
 	type SessionStorage,
 	type SessionStorageStat,
@@ -243,19 +245,12 @@ export class IndexedSessionStorage implements SessionStorage {
 	}
 
 	listFilesSync(dir: string, pattern: string): string[] {
+		const resolvedDir = path.resolve(dir);
 		const out: string[] = [];
-		for (const path of this.#index.keys()) {
-			// Keys may use either separator: SessionManager builds them with
-			// path.join (host sep, backslashes on win32) while some tests and
-			// callers write POSIX-style keys. Accept both so list() never
-			// silently returns [] (session-listing swallows the miss).
-			if (!path.startsWith(dir) || path.length === dir.length) continue;
-			const sep = path[dir.length];
-			if (sep !== "/" && sep !== "\\") continue;
-			const name = path.slice(dir.length + 1);
-			if (name.includes("/") || name.includes("\\")) continue;
-			if (!matchesGlob(name, pattern)) continue;
-			out.push(path);
+		for (const key of this.#index.keys()) {
+			const name = directChildKeyName(resolvedDir, key);
+			if (name === undefined || !matchesGlob(name, pattern)) continue;
+			out.push(key);
 		}
 		return out;
 	}

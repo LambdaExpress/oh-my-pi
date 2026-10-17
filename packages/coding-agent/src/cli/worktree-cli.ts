@@ -169,6 +169,10 @@ export async function addWorktree(options: AddWorktreeOptions): Promise<void> {
 			chalk.dim(t("warning: worktree clone fell back to plain checkout: {error}", { error: result.cloneError })),
 		);
 	}
+	const hook = await vcs.runPostCheckoutHook(worktreePath, commit.sha);
+	process.stderr.write(hook.stdout);
+	process.stderr.write(hook.stderr);
+	if (hook.exitCode !== 0) process.exitCode = hook.exitCode;
 }
 
 export async function listWorktrees(options: ListWorktreesOptions): Promise<void> {

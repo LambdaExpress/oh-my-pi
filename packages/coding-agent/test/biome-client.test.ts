@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { BiomeClient } from "../src/lsp/clients/biome-client";
 import type { ServerConfig } from "../src/lsp/types";
+import { writeFakeExecutable } from "./helpers/fake-executable";
 
 const tempDirs: string[] = [];
 const repoRoot = path.resolve(import.meta.dir, "../../..");
@@ -43,26 +44,26 @@ async function createFakeBiomeConfig(
 	expectedInput: string,
 	formattedOutput: string,
 ): Promise<ServerConfig> {
-	const runner = path.join(tempDir, "fake-biome.ts");
 	const formattedOutputPath = path.join(tempDir, "formatted-output.ts");
 	await Bun.write(formattedOutputPath, formattedOutput);
-	await Bun.write(
-		runner,
-		`const [, , operation, writeFlag, target] = Bun.argv;
-if (operation !== "format") process.exit(7);
-if (writeFlag !== "--write") process.exit(8);
+	const command = writeFakeExecutable(
+		tempDir,
+		"biome",
+		`import * as fs from "node:fs";
+const [command, flag, target] = process.argv.slice(2);
+if (command !== "format") process.exit(7);
+if (flag !== "--write") process.exit(8);
 if (target !== ${JSON.stringify(path.join(tempDir, "example.ts"))}) process.exit(10);
-if (await Bun.file(target).text() !== ${JSON.stringify(expectedInput)}) process.exit(9);
-await Bun.write(target, await Bun.file(${JSON.stringify(formattedOutputPath)}).text());
+if (fs.readFileSync(target, "utf8") !== ${JSON.stringify(expectedInput)}) process.exit(9);
+fs.copyFileSync(${JSON.stringify(formattedOutputPath)}, target);
 `,
 	);
-	return biomeConfig(process.execPath, [runner]);
+	return biomeConfig(command);
 }
 
-function biomeConfig(command: string, args?: string[]): ServerConfig {
+function biomeConfig(command: string): ServerConfig {
 	return {
 		command: "biome",
-		args,
 		fileTypes: [".ts"],
 		rootMarkers: [],
 		resolvedCommand: command,
@@ -115,15 +116,11 @@ describe("BiomeClient format", () => {
 
 	test("returns the original content when Biome fails", async () => {
 		const tempDir = await makeTempDir();
-		const runner = path.join(tempDir, "biome-failure.ts");
-		await Bun.write(runner, "process.exit(1);\n");
+		const command = writeFakeExecutable(tempDir, "biome-failure", "process.exit(1);\n");
 		const targetFile = path.join(tempDir, "example.ts");
 		const content = "export const value = 1;\n";
 
-		const result = await new BiomeClient(biomeConfig(process.execPath, [runner]), tempDir).format(
-			targetFile,
-			content,
-		);
+		const result = await new BiomeClient(biomeConfig(command), tempDir).format(targetFile, content);
 
 		expect(result).toBe(content);
 	});
@@ -132,17 +129,14 @@ describe("BiomeClient format", () => {
 describe("BiomeClient lint", () => {
 	test("cancels a hung Biome process when diagnostics are aborted", async () => {
 		const tempDir = await makeTempDir();
-		const runner = path.join(tempDir, "biome-hang.ts");
-		await Bun.write(runner, "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60_000);\n");
+		// Never exits on its own: the timer keeps the hung stub alive until the abort kills it.
+		const command = writeFakeExecutable(tempDir, "biome-hang", "setInterval(() => {}, 60_000);\n");
 		const targetFile = path.join(tempDir, "example.ts");
 		const started = Date.now();
 
 		let rejected = false;
 		try {
-			await new BiomeClient(biomeConfig(process.execPath, [runner]), tempDir).lint(
-				targetFile,
-				AbortSignal.timeout(50),
-			);
+			await new BiomeClient(biomeConfig(command), tempDir).lint(targetFile, AbortSignal.timeout(50));
 		} catch {
 			rejected = true;
 		}

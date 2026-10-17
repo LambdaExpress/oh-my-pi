@@ -3,8 +3,8 @@
  * those bytes: the binary sniff, the rendered window and its byte accounting,
  * bracket context, and the whole-file snapshot hash. These tests pin the parts
  * of that contract a plausible rewrite would silently break — the decode the
- * snapshot tag is hashed from, exact on-disk byte counts, the raw terminal
- * newline sentinel, and the absence of a second whole-file read.
+ * snapshot tag is hashed from, exact on-disk byte counts, raw EOF terminators
+ * without a phantom line, and the absence of a second whole-file read.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
@@ -99,21 +99,45 @@ describe("read tool single-pass file access", () => {
 		expect(text).not.toContain(formatBytes(lineBytes + strayBytes * 2));
 	});
 
-	it("counts the terminal newline as an addressable line only in raw mode", async () => {
-		const filePath = path.join(tmpDir, "trailing.txt");
-		await fs.writeFile(filePath, "alpha\nbeta\n");
-		const tool = new ReadTool(createSession(tmpDir));
+	it.each(["alpha\nbeta\n", "\uFEFFalpha\r\nbeta\r\n"])(
+		"keeps raw and numbered line addresses within physical EOF for %j",
+		async content => {
+			const filePath = path.join(tmpDir, "trailing.txt");
+			await fs.writeFile(filePath, content);
+			const session: ToolSession = {
+				...createSession(tmpDir),
+				skills: [{ name: "physical-eof", description: "", filePath, baseDir: tmpDir, source: "test" }],
+			};
+			const finalLine = content.slice(content.indexOf("\n") + 1);
 
-		// Non-raw: the trailing LF closes line 2 rather than opening line 3.
-		expect(textOutput(await tool.execute("beyond", { path: `${filePath}:3` }))).toBe(
-			"Line 3 is beyond end of file (2 lines total). Use :1 to read from the start, or :2 to read the last line.",
-		);
-		// Raw: the sentinel is addressable, so line 3 exists and is empty.
-		expect(textOutput(await tool.execute("raw-sentinel", { path: `${filePath}:raw:3` }))).toBe("");
-		expect(textOutput(await tool.execute("raw-beyond", { path: `${filePath}:raw:4` }))).toContain(
-			"beyond end of file (3 lines total)",
-		);
-	});
+			for (const target of [filePath, "skill://physical-eof"]) {
+				const tool = new ReadTool(session);
+				const numbered = await tool.execute("numbered-tail", { path: `${target}:2-2` });
+				expect(numbered.details?.totalLines).toBe(2);
+				expect(numbered.details?.displayContent).toEqual({
+					text: finalLine.slice(0, -1),
+					startLine: 2,
+					lineNumbers: [2],
+				});
+				const numberedBeyond = await tool.execute("beyond", { path: `${target}:3` });
+				const rawBeyond = await tool.execute("raw-beyond", { path: `${target}:raw:3` });
+				expect(numberedBeyond.details?.displayContent).toBeUndefined();
+				expect(rawBeyond.details?.displayContent).toBeUndefined();
+
+				const rawFinalLine = await tool.execute("raw-final-line", { path: `${target}:raw:2-2` });
+				expect(textOutput(rawFinalLine)).toBe(finalLine);
+				expect(rawFinalLine.details?.totalLines).toBe(2);
+				expect(rawFinalLine.details?.displayContent?.lineNumbers).toEqual([2]);
+				expect(textOutput(await tool.execute("raw-final-open", { path: `${target}:raw:2-` }))).toBe(finalLine);
+				for (const selector of ["raw", "raw:1-25", "raw:-2"]) {
+					const result = await tool.execute(`raw-whole-${selector}`, { path: `${target}:${selector}` });
+					expect(textOutput(result)).toBe(content);
+					expect(result.details?.totalLines).toBe(2);
+					expect(result.details?.displayContent?.lineNumbers).toEqual([1, 2]);
+				}
+			}
+		},
+	);
 
 	it("does not re-read a file it already materialized", async () => {
 		// Bracket context and the snapshot hash each used to pull the whole file

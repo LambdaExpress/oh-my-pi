@@ -212,6 +212,7 @@ describe("InputController skill queue chip metadata", () => {
 			expect(fixture.session.getQueuedMessages()).toEqual({
 				steering: ["/skill:test-skill arg1 arg2"],
 				followUp: [],
+				liveSteered: 0,
 			});
 			expect(editor.getText()).toBe("");
 			expect(controller.restoreQueuedMessagesToEditor()).toBe(1);
@@ -703,14 +704,19 @@ describe("AgentSession derived queued custom display", () => {
 	});
 });
 
-function createStubInteractiveModeContextForUiHelpers(session: AgentSession) {
+function createStubInteractiveModeContextForUiHelpers(
+	session: AgentSession,
+	options?: { focusedAgentId?: string; compactionQueuedMessages?: CompactionQueuedMessage[] },
+) {
 	const editor = new CustomEditor(getEditorTheme());
 	const ctx = createInteractiveModeContext({
 		editor,
 		session,
 		settings: session.settings,
 		sessionManager: session.sessionManager,
-		compactionQueuedMessages: [],
+		viewSession: session,
+		focusedAgentId: options?.focusedAgentId,
+		compactionQueuedMessages: options?.compactionQueuedMessages ?? [],
 	});
 
 	return { ctx, editor, pendingMessagesContainer: ctx.pendingMessagesContainer };
@@ -754,6 +760,21 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		expect(Bun.stripANSI(pendingMessagesContainer.render(120).join("\n"))).not.toContain("/skill:test-skill");
 	});
 
+	it("does not advertise main compaction messages in a focused subagent view", async () => {
+		fixture = await createRealSession();
+		const compactionQueuedMessages: CompactionQueuedMessage[] = [{ text: "main compaction", mode: "steer" }];
+		const focused = createStubInteractiveModeContextForUiHelpers(fixture.session, {
+			focusedAgentId: "Worker",
+			compactionQueuedMessages,
+		});
+		new UiHelpers(focused.ctx).updatePendingMessagesDisplay();
+		expect(focused.pendingMessagesContainer.children).toHaveLength(0);
+
+		const main = createStubInteractiveModeContextForUiHelpers(fixture.session, { compactionQueuedMessages });
+		new UiHelpers(main.ctx).updatePendingMessagesDisplay();
+		expect(Bun.stripANSI(main.pendingMessagesContainer.render(120).join("\n"))).toContain("main compaction");
+	});
+
 	it("renders queued follow-up drafts in submission order", async () => {
 		fixture = await createRealSession();
 		const { session } = fixture;
@@ -786,7 +807,7 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 
 		expect(count).toBe(1);
 		expect(editor.getText()).toBe("/skill:test-skill arg1 arg2");
-		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [] });
+		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [], liveSteered: 0 });
 	});
 });
 

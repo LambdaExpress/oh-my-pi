@@ -28,10 +28,11 @@
  * into `layer`; their anchor keypaths are rewritten to wire ids.
  */
 import * as logger from "@oh-my-pi/pi-utils/logger";
-import { TSP_TEXT_KINDS, type TspKind, type TspNode, type TspOp } from "@oh-my-pi/pi-wire";
+import { TSP_TEXT_KINDS, type TspKind, type TspNode, type TspOp, type TspScrollBy } from "@oh-my-pi/pi-wire";
 import { type Component, Container, CURSOR_MARKER } from "../tui";
+import { getNativeBlob } from "./blobs";
 import { normalizeIconProps } from "./icons";
-import type { DescribeContext, NativeChild, NativeNode } from "./node";
+import type { DescribeContext, NativeChild, NativeNode, NativeRevealAt } from "./node";
 import { isNativeSettled } from "./settle";
 
 /** The regions a frame fills. */
@@ -58,6 +59,8 @@ const REGION_IDS = ["main", "dock", "layer"] as const;
 type RegionId = (typeof REGION_IDS)[number];
 const RESERVED_IDS: ReadonlySet<string> = new Set(REGION_IDS);
 const TEXT_KINDS: ReadonlySet<string> = new Set(TSP_TEXT_KINDS);
+/** Most `scroll` ops one node's coalesced key presses send in a frame. */
+const MAX_SCROLL_REPEAT = 32;
 let nextComponentId = 0;
 
 /** Stable base-36 wire id of a component instance (its root node's id). */
@@ -211,8 +214,13 @@ export class Reconciler {
 	#ops: TspOp[] = [];
 	#dels: Entry[] = [];
 	#settles: string[] = [];
-	/** Selected list items and added `reveal` nodes sent this frame, revealed once the frame's adds have landed. */
-	#reveals: [id: string, at: "start" | "end" | "nearest"][] = [];
+	/**
+	 * Selected list items, added `reveal` nodes and nodes whose reveal `n` moved this frame,
+	 * revealed once the frame's adds have landed.
+	 */
+	#reveals: [id: string, at: NativeRevealAt][] = [];
+	/** `scroll` requests whose `n` moved this frame, sent after the reveals. */
+	#scrolls: [id: string, by: TspScrollBy][] = [];
 	/** Wire ids `list.selected` keys resolved to (an unresolved key names no node to reveal). */
 	#selectedIds = new Set<string>();
 	#moves: PendingMove[] = [];
@@ -250,6 +258,7 @@ export class Reconciler {
 		this.#dels = [];
 		this.#settles = [];
 		this.#reveals = [];
+		this.#scrolls = [];
 		this.#selectedIds.clear();
 		this.#framePortals = [];
 		this.#rows = 0;
@@ -283,6 +292,7 @@ export class Reconciler {
 		this.#prevPortals = portals;
 		this.#regions = next;
 		for (const entry of this.#dels) this.#deleteEntry(entry);
+		this.#dels = [];
 		// Parked to survive a parent/child swap but absent from the new description.
 		for (const state of this.#parked) {
 			if (!state.parked) continue;
@@ -293,6 +303,7 @@ export class Reconciler {
 		this.#parked = [];
 		for (const id of this.#settles) this.#ops.push(["settle", id]);
 		for (const [id, at] of this.#reveals) this.#ops.push(["reveal", id, at]);
+		if (cx.feature("scroll")) for (const [id, by] of this.#scrolls) this.#ops.push(["scroll", id, by]);
 		const ops = this.#ops;
 		this.#ops = [];
 		return this.#gone.size === 0 ? ops : ops.filter(op => !this.#touchesGone(op));
@@ -339,6 +350,19 @@ export class Reconciler {
 		return { component: state.comp, keypath };
 	}
 
+	/**
+	 * The component that described wire node `id`, then each component whose
+	 * node contains it, innermost first (empty for an unknown id).
+	 */
+	owners(id: string): Component[] {
+		const dot = id.indexOf(".");
+		const out: Component[] = [];
+		for (let state = this.#byId.get(dot === -1 ? id : id.slice(0, dot)) ?? null; state; state = state.container) {
+			out.push(state.comp);
+		}
+		return out;
+	}
+
 	/** The key a list item node was described with (its key, else its child index). */
 	itemKey(id: string): string {
 		const dot = id.indexOf(".");
@@ -381,13 +405,31 @@ export class Reconciler {
 		return this.#findEditorIn(node, state.id, "", state.owner, depth);
 	}
 
-	#findEditorIn(node: NativeNode, id: string, keypath: string, owner: Owner, depth: number): string | null {
+	/**
+	 * The first editor under `node`. An `overlay`/`picker` child outside a hoisted
+	 * sheet is hoisted into `layer` under its `^` keypath (see {@link #entries}), so
+	 * a field in a sheet a dock component describes is found under that id.
+	 */
+	#findEditorIn(
+		node: NativeNode,
+		id: string,
+		keypath: string,
+		owner: Owner,
+		depth: number,
+		hoist = true,
+	): string | null {
 		if (node.k === "editor" || node.k === "input") return id;
-		for (const entry of this.#entries(node.c, keypath, owner, true, null)) {
-			const found =
-				entry.comp === undefined
-					? this.#findEditorIn(entry.node, entry.id, entry.keypath, owner, depth)
-					: this.#findEditorOf(entry.comp, depth + 1);
+		for (const entry of this.#entries(node.c, keypath, owner, false, null)) {
+			let found: string | null;
+			if (entry.comp !== undefined) {
+				found = this.#findEditorOf(entry.comp, depth + 1);
+			} else if (hoist && (entry.node.k === "overlay" || entry.node.k === "picker")) {
+				const path = entry.keypath;
+				const portalPath = keypath === "" ? `^${path}` : `${keypath}/^${path.slice(keypath.length + 1)}`;
+				found = this.#findEditorIn(entry.node, nodeId(owner.base, portalPath), portalPath, owner, depth, false);
+			} else {
+				found = this.#findEditorIn(entry.node, entry.id, entry.keypath, owner, depth, hoist);
+			}
 			if (found !== null) return found;
 		}
 		return null;
@@ -576,12 +618,25 @@ export class Reconciler {
 			this.#revisitNode(next, inner);
 			return;
 		}
+		const reveal = next.node.reveal;
+		if (typeof reveal === "object") {
+			const was = old.node.reveal;
+			if (reveal.n !== (typeof was === "object" ? was.n : undefined)) this.#reveals.push([next.id, reveal.at]);
+		}
 		if (old.node.k !== next.node.k) {
 			this.#dropSubtree(old);
 			this.#ops.push(["del", next.id]);
 			this.#ops.push(["add", next.id, parent, before, this.#materialize(next, inner)]);
 			this.#flushMoves();
 			return;
+		}
+		const scroll = next.node.scroll;
+		if (scroll && scroll.n !== old.node.scroll?.n) {
+			// Presses described in one frame coalesce: repeat the latest step once per
+			// press (an end once), so key repeat keeps its distance.
+			const jump = scroll.by === "start" || scroll.by === "end";
+			const presses = jump ? 1 : Math.min(Math.max(scroll.n - (old.node.scroll?.n ?? 0), 1), MAX_SCROLL_REPEAT);
+			for (let i = 0; i < presses; i++) this.#scrolls.push([next.id, scroll.by]);
 		}
 		const oldEntries = this.#entries(old.node.c, old.keypath, old.owner, old.hoist, null);
 		const newEntries = this.#entries(next.node.c, next.keypath, next.owner, next.hoist, inner);
@@ -645,24 +700,28 @@ export class Reconciler {
 			this.#ops.push(["text", id, "append", newText.slice(oldText.length)]);
 			return;
 		}
-		if ((kind === "editor" || kind === "input") && oldText.length > 0) {
+		// A streaming `md` node rewrites only its tail (the speculatively closed span it ends in), so an
+		// edit past a shared head splices too instead of resending the whole text.
+		if ((kind === "editor" || kind === "input" || kind === "md") && oldText.length > 0) {
 			const limit = Math.min(oldText.length, newText.length);
 			let prefix = 0;
 			while (prefix < limit && oldText.charCodeAt(prefix) === newText.charCodeAt(prefix)) prefix++;
-			let suffix = 0;
-			while (
-				suffix < limit - prefix &&
-				oldText.charCodeAt(oldText.length - 1 - suffix) === newText.charCodeAt(newText.length - 1 - suffix)
-			)
-				suffix++;
-			this.#ops.push([
-				"splice",
-				id,
-				prefix,
-				oldText.length - prefix - suffix,
-				newText.slice(prefix, newText.length - suffix),
-			]);
-			return;
+			if (kind !== "md" || prefix > 0) {
+				let suffix = 0;
+				while (
+					suffix < limit - prefix &&
+					oldText.charCodeAt(oldText.length - 1 - suffix) === newText.charCodeAt(newText.length - 1 - suffix)
+				)
+					suffix++;
+				this.#ops.push([
+					"splice",
+					id,
+					prefix,
+					oldText.length - prefix - suffix,
+					newText.slice(prefix, newText.length - suffix),
+				]);
+				return;
+			}
 		}
 		this.#ops.push(["text", id, "replace", newText]);
 	}
@@ -676,6 +735,8 @@ export class Reconciler {
 		owner: Owner,
 		entries: readonly Entry[],
 	): Readonly<Record<string, unknown>> | undefined {
+		// Dereferencing pins the blob through this synchronous reconcile/upload job, even after settling drops its node.
+		if (node.k === "image" && node.p?.blob) getNativeBlob(node.p.blob);
 		return normalizeIconProps(node.k, this.#resolveRefs(node, owner, entries));
 	}
 
@@ -716,7 +777,7 @@ export class Reconciler {
 
 	/** A full wire subtree for an entry; nested components get states (or pending moves when mounted elsewhere). */
 	#materialize(entry: NodeEntry, walk: Walk): TspNode {
-		if (entry.node.reveal) this.#reveals.push([entry.id, entry.node.reveal]);
+		if (typeof entry.node.reveal === "string") this.#reveals.push([entry.id, entry.node.reveal]);
 		const entries = this.#entries(entry.node.c, entry.keypath, entry.owner, entry.hoist, walk);
 		const children: TspNode[] = [];
 		for (let i = 0; i < entries.length; i++) {

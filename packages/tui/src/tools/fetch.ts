@@ -296,6 +296,11 @@ export function renderReadUrlResult(
 	let lastExpanded: boolean | undefined;
 	let contentPreviewLines: string[] | undefined;
 	let contentPreviewWindow: OutputBlockVisualWindow | undefined;
+	const dropPreview = () => {
+		lastExpanded = undefined;
+		contentPreviewLines = undefined;
+		contentPreviewWindow = undefined;
+	};
 	return framedToolCard(
 		uiTheme,
 		() => {
@@ -335,12 +340,6 @@ export function renderReadUrlResult(
 				applyBg: false,
 			};
 		},
-		{
-			onInvalidate: () => {
-				lastExpanded = undefined;
-				contentPreviewLines = undefined;
-				contentPreviewWindow = undefined;
-			},
-		},
+		{ onInvalidate: dropPreview, onReleaseRenderCaches: dropPreview },
 	);
 }

@@ -185,18 +185,20 @@ Start-Sleep -Seconds 30`,
 
 		expect(result.isError).toBeUndefined();
 		expect(result.details?.meta?.truncation).toBeUndefined();
-		expect(result.details?.meta?.limits?.columnTruncated).toEqual({
+		const columnLimit = result.details?.meta?.limits?.columnTruncated;
+		expect(columnLimit).toMatchObject({
 			maxColumn: 32,
 			unit: "bytes",
 			artifactId: "41",
+			lines: { first: 1, last: 1 },
 		});
 
 		const text = textOutput(result);
 		expect(text).not.toContain(wideLine);
 
 		const artifactUrl = text.match(/artifact:\/\/[^\s\]]+/u)?.[0];
-		expect(artifactUrl).toBe("artifact://41");
-		const artifactPath = artifactUrl ? artifactPaths.get(artifactUrl.slice("artifact://".length)) : undefined;
+		expect(artifactUrl).toBe("artifact://41:raw:1-1");
+		const artifactPath = columnLimit?.artifactId ? artifactPaths.get(columnLimit.artifactId) : undefined;
 		expect(artifactPath).toBeDefined();
 		expect((await fs.readFile(artifactPath!, "utf8")).trimEnd()).toBe(wideLine);
 	});

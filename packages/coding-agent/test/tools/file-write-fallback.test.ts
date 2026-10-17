@@ -331,8 +331,9 @@ describe("writeFileWithFallback", () => {
 				}),
 			);
 
+			// Bun on Windows reports its own parent mkdir's EEXIST for a file in the path.
 			await expect(writeFileWithFallback(path.join(blocker, "child.txt"), "payload")).rejects.toMatchObject({
-				code: expect.stringMatching(/^(ENOTDIR|ENOENT)$/),
+				code: expect.stringMatching(/^(ENOTDIR|ENOENT|EEXIST)$/),
 			});
 			expect(called).toBe(false);
 		});

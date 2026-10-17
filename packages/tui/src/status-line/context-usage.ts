@@ -9,11 +9,9 @@ import { t } from "../i18n";
 import type { Theme, ThemeColor } from "../theme";
 import { Container } from "../tui";
 import { Text } from "../components/text";
-import { Spacer } from "../components/spacer";
-import { DynamicBorder } from "../chrome/dynamic-border";
 import type { TspSpan, TspText } from "@oh-my-pi/pi-wire";
 import type { DescribeContext, NativeNode } from "../native/node";
-import { card, col, node, row, span, text } from "../native/describe";
+import { col, node, row, span, text } from "../native/describe";
 
 interface ContextSkill {
 	readonly name: string;
@@ -144,6 +142,7 @@ export function computeCompactionBoundaries(
 
 /** Stable inputs used to cache non-message token estimates. */
 export interface NonMessageTokenSource {
+	readonly model?: Model;
 	readonly systemPrompt?: readonly string[];
 	readonly agent?: {
 		readonly state?: {
@@ -273,30 +272,32 @@ export function estimateToolSchemaTokens(tools: ToolSchemaSource, tokenizer: Tok
 	return tokens;
 }
 
+/** Count schemas carried on every request, excluding server-side deferred catalogs. */
+export function estimateContextToolSchemaTokens(
+	tools: ToolSchemaSource,
+	tokenizer: Tokenizer,
+	model: Model | undefined,
+	sourceRevision = 0,
+): number {
+	return model?.toolSchemasInContext === false ? 0 : estimateToolSchemaTokens(tools, tokenizer, sourceRevision);
+}
+
 /**
  * Compute just the NON-MESSAGE token total: system prompt (with its skills
  * section subtracted, since skills are tokenized separately) + system context
  * (the rest of the system-prompt array) + tools + skills.
  *
  * Exposed so callers like `StatusLineComponent` can cache the non-message
- * total separately from the message total. Non-message inputs (skills,
- * tools, system prompt) change rarely; the message list grows on every
- * streaming turn. Splitting the two lets the caller refresh each on its own
- * cadence — non-message recomputed only when the inputs identity changes,
- * messages walked incrementally as new entries append.
+ * total separately from the growing message total. A model switch can change
+ * which tool schemas occupy context without changing the roster.
  */
-// Non-message inputs (system prompt, tools, skills) change rarely — at most
-// once per turn via setSystemPrompt/setTools — but the per-turn compaction and
-// threshold paths call these helpers several times: getContextBreakdown calls
-// both, and #estimateStoredContextTokens adds a third. Memoize on the identity
-// of the three input arrays so the expensive parts (system-prompt tokenization
-// and the per-tool JSON.stringify(toolWireSchema) inside estimateToolSchemaTokens)
-// run at most once per input change rather than per call. The identity keys are
-// the same stable references the StatusLineComponent cache already trusts
-// (setSystemPrompt/setTools replace the array reference rather than mutating it).
+// The per-turn threshold and compaction paths call these helpers repeatedly.
+// Cache by prompt, roster, skills, tokenizer, revision, and model schema policy;
+// setSystemPrompt/setTools replace their arrays rather than mutating them.
 interface NonMessageTokenCache {
 	systemPromptRef: readonly string[];
 	toolsRef: ToolSchemaSource;
+	toolSchemasInContext: boolean;
 	toolsRevision: number;
 	sourceRevision: number;
 	skillful: boolean;
@@ -329,6 +330,7 @@ function nonMessageTokenCacheEntry(
 	const cachedSession: CachedNonMessageTokenSource = session;
 	const systemPromptRef = session.systemPrompt ?? EMPTY_STRING_PARTS;
 	const toolsRef = session.agent?.state?.tools ?? EMPTY_TOOLS;
+	const toolSchemasInContext = session.model?.toolSchemasInContext !== false;
 	const toolsRevision = getToolSchemaMetadataRevision(toolsRef);
 	const skillsRef = session.renderedSkills ?? session.skills ?? EMPTY_SKILLS;
 	let entry = cachedSession[NON_MESSAGE_TOKEN_CACHE];
@@ -336,6 +338,7 @@ function nonMessageTokenCacheEntry(
 		entry &&
 		entry.systemPromptRef === systemPromptRef &&
 		entry.toolsRef === toolsRef &&
+		entry.toolSchemasInContext === toolSchemasInContext &&
 		entry.toolsRevision === toolsRevision &&
 		entry.sourceRevision === sourceRevision &&
 		entry.skillsRef === skillsRef &&
@@ -346,6 +349,7 @@ function nonMessageTokenCacheEntry(
 	entry = {
 		systemPromptRef,
 		toolsRef,
+		toolSchemasInContext,
 		toolsRevision,
 		sourceRevision,
 		skillful: true,
@@ -369,7 +373,7 @@ export function computeNonMessageTokens(
 	const tools = session.agent?.state?.tools ?? EMPTY_TOOLS;
 	const tokens =
 		tokenizer.countTokens(Array.from(systemPromptParts, part => part ?? "")) +
-		estimateToolSchemaTokens(tools, tokenizer, sourceRevision);
+		estimateContextToolSchemaTokens(tools, tokenizer, session.model, sourceRevision);
 	entry.tokens = tokens;
 	return tokens;
 }
@@ -401,7 +405,7 @@ export function computeNonMessageBreakdown(
 					renderedSkills(session.renderedSkills ?? session.skills ?? EMPTY_SKILLS, tools),
 					tokenizer,
 				);
-	const toolsTokens = estimateToolSchemaTokens(tools, tokenizer, sourceRevision);
+	const toolsTokens = estimateContextToolSchemaTokens(tools, tokenizer, session.model, sourceRevision);
 	const systemPromptParts = session.systemPrompt ?? EMPTY_STRING_PARTS;
 	const systemContextTokens = tokenizer.countTokens(Array.from(systemPromptParts.slice(1), part => part ?? ""));
 	const systemPromptTokens = Math.max(0, tokenizer.countTokens(systemPromptParts[0] ?? "") - skillsTokens);
@@ -771,39 +775,139 @@ function contextMeterParts(
 }
 
 /**
- * The `/context` frame for terminals that draw `meter`: a blocks meter
- * beside a legend `kv` (swatch · label → tokens · %), then a full-width bar
- * of the same parts marked where auto-compaction fires, then the snapcompact
- * estimate when one is on. The head names the model and window once.
+ * One line of the native `/context` breakdown: a swatch in the part's bar
+ * color, its name, its tokens and its share of the window; the exact count
+ * is its tooltip.
+ */
+function contextShareRow(
+	key: string,
+	role: string,
+	swatch: TspSpan,
+	label: string,
+	tokens: number,
+	window: number,
+): NativeNode {
+	return node(
+		"row",
+		{ role, align: "center", title: `${label} · ${tokens.toLocaleString("en-US")} tokens` },
+		[
+			text([swatch], { role: "omp.context.swatch", wrap: "none" }),
+			text(label, { role: "omp.context.label", grow: 1, wrap: "none", truncate: "end" }),
+			text(formatNumber(tokens), { role: "omp.context.tokens", wrap: "none" }),
+			text(percentString(tokens, window), { role: "omp.context.share", wrap: "none" }),
+		],
+		key,
+	);
+}
+
+/**
+ * The snapcompact estimate as a titled group of lines (what is imaged, how,
+ * and what it saves), or a note saying why it is inactive; `undefined` when
+ * no snapcompact setting is on.
+ */
+function describeSnapcompact(breakdown: ContextBreakdown): NativeNode | undefined {
+	const snap = breakdown.snapcompact;
+	if (!snap) return undefined;
+	const head = text([span("Snapcompact", "strong"), span(" · estimated savings on the wire", "dim")], {
+		role: "omp.context.snap.head",
+	});
+	if (!snap.visionCapable) {
+		const note = text("Inactive: the model has no image input.", { role: "omp.context.snap.note" });
+		return node("col", { role: "omp.context.snap" }, [head, note], "snapcompact");
+	}
+	const lines: { label: string; detail: string; value?: TspSpan }[] = [];
+	const sp = snap.systemPrompt;
+	if (sp) {
+		const label = `System prompt · ${sp.scope === "agents-md" ? "AGENTS.md" : "all"}`;
+		if (sp.applied) {
+			lines.push({
+				label,
+				detail: `${formatNumber(sp.textTokens)} text → ${sp.frames} frame${sp.frames === 1 ? "" : "s"} ≈ ${formatNumber(sp.imageTokens)}`,
+				value: span(`−${formatNumber(sp.savedTokens)}`, "success"),
+			});
+		} else {
+			const reason =
+				sp.reason === "budget"
+					? "image budget exhausted"
+					: sp.reason === "empty"
+						? "nothing to image"
+						: "frames would not save tokens";
+			lines.push({ label, detail: `Stays text: ${reason}` });
+		}
+	}
+	const tr = snap.toolResults;
+	if (tr) {
+		lines.push(
+			tr.swapped > 0
+				? {
+						label: "Tool results",
+						detail: `${tr.swapped} of ${tr.total} imaged · ${formatNumber(tr.textTokens)} text → ${tr.frames} frames ≈ ${formatNumber(tr.imageTokens)}`,
+						value: span(`−${formatNumber(tr.savedTokens)}`, "success"),
+					}
+				: { label: "Tool results", detail: `None imaged · ${tr.total} in history` },
+		);
+	}
+	if (snap.savedTokens > 0) {
+		lines.push({
+			label: "Next request",
+			detail: "tokens on the wire",
+			value: span(`~${formatNumber(Math.max(0, breakdown.usedTokens - snap.savedTokens))}`, "strong"),
+		});
+	}
+	const rows = lines.map((line, index) =>
+		node(
+			"row",
+			{ role: "omp.context.snap.row", align: "baseline" },
+			[
+				text(line.label, { role: "omp.context.label", wrap: "none" }),
+				text(line.detail, { role: "omp.context.detail", grow: 1, wrap: "none", truncate: "end" }),
+				...(line.value ? [text([line.value], { role: "omp.context.tokens", wrap: "none" })] : []),
+			],
+			`snap-${index}`,
+		),
+	);
+	return node("col", { role: "omp.context.snap" }, [head, ...rows], "snapcompact");
+}
+
+/**
+ * The `/context` body for terminals that draw `meter`: the tokens used as
+ * the figure that leads, beside the room left before auto-compaction; one
+ * stacked bar of the parts (categories, free space as the empty track, the
+ * hatched buffer) ticked where compaction fires; the breakdown in the bar's
+ * order with free space and the buffer under it; then the snapcompact
+ * estimate when one is on. {@link contextUsageHead} names the model.
  */
 function describeContextFrame(breakdown: ContextBreakdown): NativeNode {
 	const { contextWindow: window, usedTokens, freeTokens, autoCompactBufferTokens, thresholdTokens } = breakdown;
 	const parts = contextMeterParts(breakdown);
 	const used = Math.min(1, usedTokens / window);
-	const swatch = (token: string, glyph = "■"): TspSpan => span(glyph, token);
-	const figure = (tokens: number): TspText => [
-		span(formatNumber(tokens)),
-		span(`  ${percentString(tokens, window)}`, "dim"),
-	];
-	const items: { k: TspText; v: TspText }[] = [
-		{
-			k: [span(t("Used: {count}", { count: "" }), "strong")],
-			v: [
-				span(`${formatNumber(usedTokens)} / ${formatNumber(window).toLowerCase()}`),
-				span(`  ${percentString(usedTokens, window)}`, "dim"),
-			],
-		},
-	];
-	for (const category of breakdown.categories) {
-		items.push({ k: [swatch(category.color), span(` ${category.label}`)], v: figure(category.tokens) });
-	}
-	items.push({ k: [swatch("dim", "□"), span(` ${t("Free space:")}`)], v: figure(freeTokens) });
-	if (autoCompactBufferTokens > 0) {
-		items.push({
-			k: [swatch("warning", "▨"), span(` ${t("Autocompact buffer:")}`)],
-			v: figure(autoCompactBufferTokens),
-		});
-	}
+	const room =
+		thresholdTokens === undefined
+			? t("{tokens} free", { tokens: formatNumber(freeTokens) })
+			: usedTokens >= thresholdTokens
+				? t("Past auto-compaction at {percent}", { percent: percentString(thresholdTokens, window, 0) })
+				: t("{tokens} left before auto-compaction at {percent}", {
+						tokens: formatNumber(thresholdTokens - usedTokens),
+						percent: percentString(thresholdTokens, window, 0),
+					});
+	const summary = node(
+		"row",
+		{ role: "omp.context.summary", align: "baseline", wrap: true },
+		[
+			text(
+				[
+					span(formatNumber(usedTokens), "strong"),
+					span(
+						` ${t("of {tokens} tokens", { tokens: formatNumber(window) })} · ${percentString(usedTokens, window, 0)}`,
+						"dim",
+					),
+				],
+				{ role: "omp.context.used", grow: 1, wrap: "none" },
+			),
+			text(room, { role: "omp.context.room", wrap: "none" }),
+		],
+		"summary",
+	);
 	const marks =
 		thresholdTokens !== undefined
 			? [
@@ -817,52 +921,53 @@ function describeContextFrame(breakdown: ContextBreakdown): NativeNode {
 					},
 				]
 			: undefined;
-	const children = [
-		node(
-			"row",
-			{ role: "omp.context.body" },
-			[
-				node("meter", {
-					value: used,
-					style: "blocks",
-					size: "lg",
-					parts,
-					aria: t("Context usage by category"),
-				}),
-				node("kv", { items, layout: "grid", role: "omp.context.legend" }),
-			],
-			"body",
+	const bar = node(
+		"meter",
+		{
+			value: used,
+			style: "bar",
+			size: "lg",
+			parts,
+			...(marks ? { marks } : {}),
+			aria: t("Context usage by category"),
+		},
+		undefined,
+		"bar",
+	);
+	const shares = breakdown.categories.map(category =>
+		contextShareRow(
+			category.id,
+			"omp.context.cat",
+			span("■", category.color),
+			category.label,
+			category.tokens,
+			window,
 		),
-		node(
-			"meter",
-			{ value: used, style: "bar", size: "lg", parts, ...(marks ? { marks } : {}), grow: 1 },
-			undefined,
-			"bar",
-		),
-	];
-	const snap = buildSnapcompactParts(breakdown);
-	if (snap.length > 0) {
-		children.push(
-			node(
-				"section",
-				{},
-				snap.map((line, index) => node("text", { spans: line, wrap: "word" }, undefined, `snap-${index}`)),
-				"snapcompact",
+	);
+	shares.push(contextShareRow("free", "omp.context.cat.free", span("□", "dim"), t("Free space:"), freeTokens, window));
+	if (autoCompactBufferTokens > 0) {
+		shares.push(
+			contextShareRow(
+				"buffer",
+				"omp.context.cat.buffer",
+				span("▨", "warning"),
+				t("Autocompact buffer:"),
+				autoCompactBufferTokens,
+				window,
 			),
 		);
 	}
+	const children = [summary, bar, node("col", { role: "omp.context.cats" }, shares, "cats")];
+	const snap = describeSnapcompact(breakdown);
+	if (snap) children.push(snap);
+	return col(children, { role: "omp.context" });
+}
+
+/** The `/context` title: the model once one is selected (the body leads with its window). */
+export function contextUsageHead(breakdown: ContextBreakdown): TspText {
+	if (breakdown.contextWindow <= 0) return [span(t("Context Usage"), "strong")];
 	const modelName = breakdown.model?.name ?? breakdown.model?.id ?? "no model";
-	return card(
-		{
-			role: "omp.context",
-			head: [
-				span(t("Context"), "strong"),
-				span(` · ${modelName}`, "muted"),
-				span(` · ${formatNumber(window).toLowerCase()}`, "dim"),
-			],
-		},
-		children,
-	);
+	return [span(t("Context"), "strong"), span(` · ${modelName}`, "muted")];
 }
 
 /**
@@ -895,9 +1000,10 @@ export function describeContextUsage(breakdown: ContextBreakdown): NativeNode {
 }
 
 /**
- * The `/context` transcript block: ANSI renders the titled cell grid between
- * rules; natively it is one frame, drawn with `meter`s where the terminal
- * has them and as the glyph grid otherwise.
+ * The `/context` report body, without a frame or title of its own (the panel
+ * showing it is titled {@link contextUsageHead}): ANSI renders the cell grid
+ * beside the legend; natively it is drawn with `meter`s where the terminal has
+ * them and as the glyph grid otherwise.
  */
 export class ContextUsageView extends Container {
 	readonly #breakdown: ContextBreakdown;
@@ -906,11 +1012,7 @@ export class ContextUsageView extends Container {
 	constructor(breakdown: ContextBreakdown, theme: Theme) {
 		super();
 		this.#breakdown = breakdown;
-		this.addChild(new DynamicBorder());
-		this.addChild(new Text(theme.bold(theme.fg("accent", t("Context Usage"))), 1, 0));
-		this.addChild(new Spacer(1));
-		this.addChild(new Text(renderContextUsage(breakdown, theme), 1, 0));
-		this.addChild(new DynamicBorder());
+		this.addChild(new Text(renderContextUsage(breakdown, theme), 0, 0));
 	}
 
 	override describe(cx: DescribeContext): NativeNode {
@@ -918,13 +1020,7 @@ export class ContextUsageView extends Container {
 		if (this.#native?.meter === meter) return this.#native.node;
 		const breakdown = this.#breakdown;
 		const described =
-			breakdown.contextWindow <= 0
-				? describeContextUsage(breakdown)
-				: meter
-					? describeContextFrame(breakdown)
-					: card({ role: "omp.context", head: [span(t("Context Usage"), "strong")] }, [
-							describeContextUsage(breakdown),
-						]);
+			meter && breakdown.contextWindow > 0 ? describeContextFrame(breakdown) : describeContextUsage(breakdown);
 		this.#native = { meter, node: described };
 		return described;
 	}

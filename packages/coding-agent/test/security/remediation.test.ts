@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { IsoBackendKind } from "@oh-my-pi/pi-natives";
 import { setLocale } from "../../src/i18n";
-import { assertSecurityRemediationBaselineClean, prepareSecurityRemediationWorkspace } from "../../src/security";
-import type { IsolationContext } from "../../src/task/isolation-runner";
+import {
+	assertSecurityRemediationBaselineClean,
+	prepareSecurityRemediationWorkspace,
+	type SecurityRemediationContext,
+} from "../../src/security";
 import type { IsolationHandle, WorktreeBaseline } from "../../src/task/worktree";
 
 beforeEach(() => {
@@ -27,7 +30,7 @@ function cleanBaseline(): WorktreeBaseline {
 	};
 }
 
-function context(baseline = cleanBaseline()): IsolationContext {
+function context(baseline = cleanBaseline()): SecurityRemediationContext {
 	return { repoRoot: "/repo", baseline };
 }
 

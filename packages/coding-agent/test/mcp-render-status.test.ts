@@ -2,14 +2,14 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { TSchema } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { renderMCPResult } from "@oh-my-pi/pi-tui/tools/mcp";
+import { describeMCPResult, renderMCPResult } from "@oh-my-pi/pi-tui/tools/mcp";
 import { DeferredMCPTool, MCPTool } from "@oh-my-pi/pi-coding-agent/mcp/tool-bridge";
 import { type MCPToolDetails } from "@oh-my-pi/pi-tui/tools/mcp";
 import type { MCPServerConnection, MCPToolDefinition, MCPTransport } from "@oh-my-pi/pi-coding-agent/mcp/types";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { theme as activeTheme, getThemeByName, initTheme } from "@oh-my-pi/pi-tui/theme";
 import { type OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
-import { formatOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
+import { formatArtifactErrorNotice, formatOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { formatStatusIcon } from "@oh-my-pi/pi-tui/render/render-utils";
 import { TUI } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
@@ -176,15 +176,36 @@ describe("MCP tool rendering", () => {
 			details: { serverName: "evk", mcpToolName: "peek", meta },
 		};
 
-		const rendered = Bun.stripANSI(
-			renderMCPResult(result, { expanded: true, isPartial: false }, activeTheme).render(160).join("\n"),
-		);
+		const rows = renderMCPResult(result, { expanded: true, isPartial: false }, activeTheme)
+			.render(300)
+			.map(Bun.stripANSI);
+		const rendered = rows.join("\n");
 
 		expect(rendered).toContain("event 97");
 		expect(rendered).toContain("event 100");
-		expect(rendered).toContain("artifact://7");
-		// The link appears exactly once — as the styled warning — proving the
-		// inline notice was stripped from the body rather than echoed verbatim.
-		expect(rendered.split("artifact://7").length - 1).toBe(1);
+		// One visible notice can contain both the artifact link and its bounded
+		// raw selector. A second row would echo the model-facing footer.
+		const warnings = rows.filter(row => row.includes("artifact://7"));
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("artifact://7:raw:1-3000");
 	}, 15_000);
+
+	it.each(["", '{"ok":true}', "last captured event"])(
+		"retains a metadata-only capture failure after stripping the model notice (%j)",
+		body => {
+			const meta: OutputMeta = { artifactError: "write" };
+			const result = {
+				content: [{ type: "text" as const, text: body + formatOutputNotice(meta) }],
+				details: { serverName: "evk", mcpToolName: "peek", meta },
+			};
+			const options = { expanded: true, isPartial: false };
+			const rendered = Bun.stripANSI(renderMCPResult(result, options, activeTheme).render(160).join("\n"));
+			const warning = formatArtifactErrorNotice("write");
+
+			expect(rendered.split(warning).length - 1).toBe(1);
+			const view = describeMCPResult(result, options);
+			expect(JSON.stringify(view?.body)).toContain(warning);
+			expect(JSON.stringify(view?.body)).toContain('"role":"omp.tool.notice"');
+		},
+	);
 });

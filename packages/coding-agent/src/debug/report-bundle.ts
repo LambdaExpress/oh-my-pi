@@ -8,7 +8,7 @@ import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { WorkProfile } from "@oh-my-pi/pi-natives";
-import { APP_NAME, getLogPath, getLogsDir, getReportsDir, isEnoent, localDay } from "@oh-my-pi/pi-utils";
+import { APP_NAME, getLogPath, getLogsDir, getReportsDir, isEnoent, localDay, logger } from "@oh-my-pi/pi-utils";
 import { writeArchive } from "@oh-my-pi/pi-utils/ar";
 import type { SessionEntry } from "../session/session-entries";
 import { parseSessionContent } from "../session/session-loader";
@@ -226,6 +226,8 @@ async function addDirectoryToArchive(
 
 /** Get recent log entries for display (tail-limited to avoid OOM on large files). */
 export async function getLogText(): Promise<string> {
+	// The file transport batches writes; include this process's latest records.
+	logger.flush();
 	return readLastLines(getLogPath(), MAX_LOG_LINES);
 }
 
@@ -235,6 +237,7 @@ export async function getLogText(): Promise<string> {
  * are ordered oldest-first by mtime and separated by a filename header.
  */
 async function collectSameDayLogs(linesPerFile: number): Promise<string> {
+	logger.flush();
 	const logsDir = getLogsDir();
 	// Log files are named with the local day (see localDay / RotatingFileSink),
 	// so match them with the local day too — the UTC key misses the live log
@@ -293,6 +296,7 @@ export async function createDebugLogSource(): Promise<DebugLogSource> {
 	let cursor = 0;
 
 	const getInitialText = async (): Promise<string> => {
+		logger.flush();
 		return readLastLines(todayPath, MAX_LOG_LINES);
 	};
 

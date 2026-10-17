@@ -849,32 +849,62 @@ describe("InteractiveMode completed-run collapse", () => {
 			modelRegistry,
 		});
 		const e2eMode = new InteractiveMode(e2eSession, "test");
-		// The harness exercises the event controller without starting a terminal UI.
-		e2eMode.isInitialized = true;
-		e2eMode.eventController.subscribeToAgent();
-		const firstStart = Promise.withResolvers<void>();
-		e2eSession.subscribe(event => {
-			if (event.type === "agent_start") firstStart.resolve();
-		});
+		try {
+			// The harness exercises the event controller without starting a terminal UI.
+			e2eMode.isInitialized = true;
+			e2eMode.eventController.subscribeToAgent();
+			const firstStart = Promise.withResolvers<void>();
+			e2eSession.subscribe(event => {
+				if (event.type === "agent_start") firstStart.resolve();
+			});
+			const completedSpanCommitted = Promise.withResolvers<void>();
+			const recordCollapse = e2eMode.recordCompletedRunCollapse.bind(e2eMode);
+			vi.spyOn(e2eMode, "recordCompletedRunCollapse").mockImplementation(collapse => {
+				const changed = recordCollapse(collapse);
+				if (
+					collapse.finalAssistantMessage?.content.some(
+						content => content.type === "text" && content.text === "done after resume",
+					)
+				) {
+					completedSpanCommitted.resolve();
+				}
+				return changed;
+			});
 
-		const firstPrompt = e2eSession.prompt("original request", { expandPromptTemplates: false });
-		await firstStart.promise;
-		await e2eSession.abort({ reason: USER_INTERRUPT_LABEL });
-		await firstPrompt.catch(() => {});
-		await e2eSession.prompt("continue and finish", { expandPromptTemplates: false });
-		await e2eSession.prompt("next request", { expandPromptTemplates: false });
+			const firstPrompt = e2eSession.prompt("original request", { expandPromptTemplates: false });
+			await firstStart.promise;
+			await e2eSession.abort({ reason: USER_INTERRUPT_LABEL });
+			await firstPrompt.catch(() => {});
+			await e2eSession.prompt("continue and finish", { expandPromptTemplates: false });
+			await e2eSession.prompt("next request", { expandPromptTemplates: false });
+			// Prompt completion does not drain fire-and-forget display listeners.
+			// Wait for the next submission's completed-span commit before replaying.
+			await completedSpanCommitted.promise;
 
-		e2eMode.chatContainer.clear();
-		e2eMode.renderSessionContext(e2eSession.buildTranscriptSessionContext({ collapseCompactedHistory: false }));
-		const rendered = Bun.stripANSI(e2eMode.chatContainer.render(120).join("\n"));
-		expect(rendered).toContain("original request");
-		expect(rendered).toContain("done after resume");
-		expect(rendered).not.toContain("continue and finish");
-		expect(rendered).not.toContain("partial work that must disappear");
-		expect(rendered).toContain("next request");
-		expect(rendered).toContain("unrelated answer");
-
-		await e2eMode.stop();
-		await e2eSession.dispose();
+			e2eMode.chatContainer.clear();
+			e2eMode.renderSessionContext(e2eSession.buildTranscriptSessionContext({ collapseCompactedHistory: false }));
+			const rendered = Bun.stripANSI(e2eMode.chatContainer.render(120).join("\n"));
+			expect(rendered.match(/※ collapsed:/g)).toHaveLength(1);
+			expect(rendered).toContain("original request");
+			expect(rendered).toContain("done after resume");
+			expect(rendered).not.toContain("continue and finish");
+			expect(rendered).not.toContain("partial work that must disappear");
+			expect(rendered).toContain("next request");
+			expect(rendered).toContain("unrelated answer");
+			expect(
+				e2eSession.agent.state.messages.some(
+					message =>
+						message.role === "user" &&
+						(typeof message.content === "string"
+							? message.content === "continue and finish"
+							: message.content.some(
+									content => content.type === "text" && content.text === "continue and finish",
+								)),
+				),
+			).toBe(true);
+		} finally {
+			await e2eMode.stop();
+			await e2eSession.dispose();
+		}
 	});
 });

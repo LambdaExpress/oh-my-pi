@@ -8,9 +8,13 @@
 //    input on the stored content block and drop the transient `partialJson`
 //    accumulation buffer, mirroring the function_call branch.
 import { describe, expect, test } from "bun:test";
+import { streamOpenAIResponses } from "@oh-my-pi/pi-ai/providers/openai-responses";
 import type { ResponseStreamEvent } from "@oh-my-pi/pi-ai/providers/openai-responses-wire";
 import { processResponsesStream } from "@oh-my-pi/pi-ai/providers/openai-shared";
-import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai/types";
+import type { AssistantMessage, AssistantMessageEvent, FetchImpl, Model } from "@oh-my-pi/pi-ai/types";
+import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
+import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import { validateToolArguments } from "@oh-my-pi/pi-ai/utils/validation";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
 function makeModel(): Model<"openai-responses"> {
@@ -55,6 +59,44 @@ async function* makeStream(events: unknown[]): AsyncIterable<ResponseStreamEvent
 type EmittedEvent = { type?: string } & Record<string, unknown>;
 
 describe("processResponsesStream: terminal events", () => {
+	test.each(["arguments.done", "output_item.done", "terminal"])(
+		"refuses truncated final JSON via %s",
+		async finalizer => {
+			const raw = '{"path":"repaired.txt","content":"hello';
+			const item = { type: "function_call", id: "fc_1", call_id: "call_1", name: "write", arguments: "" };
+			const events: unknown[] = [
+				{ type: "response.output_item.added", output_index: 0, item },
+				{ type: "response.function_call_arguments.delta", output_index: 0, item_id: "fc_1", delta: raw },
+			];
+			if (finalizer === "arguments.done") {
+				events.push({
+					type: "response.function_call_arguments.done",
+					output_index: 0,
+					item_id: "fc_1",
+					arguments: raw,
+				});
+			}
+			if (finalizer !== "terminal") {
+				events.push({ type: "response.output_item.done", output_index: 0, item: { ...item, arguments: raw } });
+			}
+			events.push({ type: "response.completed", response: { id: "resp_1", status: "completed" } });
+			const output = makeOutput();
+			await processResponsesStream(
+				makeStream(events),
+				output,
+				{ push: () => {}, end: () => {} } as never,
+				makeModel(),
+			);
+			expect(output.stopReason).toBe("toolUse");
+			const call = output.content.find(block => block.type === "toolCall");
+			if (!call) throw new Error("Expected tool call");
+			expect(call.arguments).toEqual({ __parseError: expect.any(String), __rawJson: raw });
+			expect(() =>
+				validateToolArguments({ name: "write", description: "", parameters: { type: "object" } }, call),
+			).toThrow("Tool call arguments are not valid JSON");
+		},
+	);
+
 	test("maps response.incomplete to a length stop with usage populated", async () => {
 		const output = makeOutput();
 		const emitted: EmittedEvent[] = [];
@@ -317,12 +359,12 @@ describe("processResponsesStream: terminal events", () => {
 		]);
 	});
 
-	test("rejects max-output incomplete turns when any function call still has a JSON prefix", async () => {
+	test.each([false, true])("keeps max-output JSON prefixes non-executable (done: %s)", async argumentsDone => {
 		const output = makeOutput();
-		const emitted: EmittedEvent[] = [];
-		const stream = { push: (event: unknown) => emitted.push(event as EmittedEvent), end: () => {} } as never;
+		const stream = new AssistantMessageEventStream();
+		const truncatedArguments = '{"path":"truncated.txt"';
 
-		const processing = processResponsesStream(
+		await processResponsesStream(
 			makeStream([
 				{
 					type: "response.output_item.added",
@@ -356,8 +398,18 @@ describe("processResponsesStream: terminal events", () => {
 					type: "response.function_call_arguments.delta",
 					output_index: 1,
 					item_id: "fc_second",
-					delta: '{"path":"truncated.txt"',
+					delta: truncatedArguments,
 				},
+				...(argumentsDone
+					? [
+							{
+								type: "response.function_call_arguments.done",
+								output_index: 1,
+								item_id: "fc_second",
+								arguments: truncatedArguments,
+							},
+						]
+					: []),
 				{
 					type: "response.incomplete",
 					response: {
@@ -371,16 +423,131 @@ describe("processResponsesStream: terminal events", () => {
 			stream,
 			makeModel(),
 		);
-		await expect(processing).rejects.toMatchObject({
-			name: "ProviderResponseError",
-			provider: "openai",
-			kind: "incomplete-stream",
-		});
-
-		// A strict-final parse failure must reach the provider retry path instead
-		// of exposing this mixed batch as executable tools.
-		expect(emitted.some(event => event.type === "toolcall_end")).toBe(false);
+		// Argument deltas have already reached the consumer: do not replay this
+		// attempt or execute its otherwise-complete sibling.
+		expect(output.stopReason).toBe("length");
+		expect(output.content).toEqual([
+			expect.objectContaining({ type: "toolCall", arguments: { path: "complete.txt" } }),
+			expect.objectContaining({
+				type: "toolCall",
+				arguments: { __parseError: expect.any(String), __rawJson: truncatedArguments },
+			}),
+		]);
+		const truncatedCall = output.content[1];
+		if (truncatedCall?.type !== "toolCall") throw new Error("Expected truncated tool call");
+		expect(Reflect.get(truncatedCall, kStreamingPartialJson)).toBeUndefined();
+		expect(() =>
+			validateToolArguments({ name: "read", description: "", parameters: { type: "object" } }, truncatedCall),
+		).toThrow("Tool call arguments are not valid JSON");
+		expect(stream.queue.filter(event => event.type === "toolcall_end")).toEqual([]);
 	});
+
+	test.each(["pending", "streamed", "committed"] as const)(
+		"retries a max-output JSON prefix only before output commits (%s)",
+		async commit => {
+			const completeArguments = '{"path":"complete.txt"}';
+			const truncatedArguments = '{"path":"truncated.txt"';
+			const firstCall = { type: "function_call", id: "fc_first", call_id: "call_first", name: "read" };
+			const secondCall = { type: "function_call", id: "fc_second", call_id: "call_second", name: "read" };
+			const recoveredCall = {
+				type: "function_call",
+				id: "fc_recovered",
+				call_id: "call_recovered",
+				name: "read",
+				arguments: '{"path":"recovered.txt"}',
+			};
+			const firstAttempt = [
+				{
+					type: "response.output_item.added",
+					output_index: 0,
+					item: { ...firstCall, arguments: commit === "streamed" ? "" : completeArguments },
+				},
+				...(commit === "streamed"
+					? [
+							{
+								type: "response.function_call_arguments.delta",
+								output_index: 0,
+								item_id: firstCall.id,
+								delta: completeArguments,
+							},
+						]
+					: commit === "committed"
+						? [
+								{
+									type: "response.output_item.done",
+									output_index: 0,
+									item: { ...firstCall, arguments: completeArguments },
+								},
+							]
+						: []),
+				{
+					type: "response.output_item.added",
+					output_index: 1,
+					item: { ...secondCall, arguments: commit === "streamed" ? "" : truncatedArguments },
+				},
+				...(commit === "streamed"
+					? [
+							{
+								type: "response.function_call_arguments.delta",
+								output_index: 1,
+								item_id: secondCall.id,
+								delta: truncatedArguments,
+							},
+						]
+					: []),
+				{
+					type: "response.incomplete",
+					response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } },
+				},
+			];
+			const recoveredAttempt = [
+				{ type: "response.output_item.added", output_index: 0, item: { ...recoveredCall, arguments: "" } },
+				{ type: "response.output_item.done", output_index: 0, item: recoveredCall },
+				{ type: "response.completed", response: { status: "completed" } },
+			];
+			let attempts = 0;
+			const fetchImpl: FetchImpl = Object.assign(
+				async () => {
+					const events = ++attempts === 1 ? firstAttempt : recoveredAttempt;
+					return new Response(`${events.map(event => `data: ${JSON.stringify(event)}`).join("\n\n")}\n\n`, {
+						status: 200,
+						headers: { "content-type": "text/event-stream" },
+					});
+				},
+				{ preconnect: fetch.preconnect },
+			);
+			const responseStream = streamOpenAIResponses(
+				makeModel(),
+				{ messages: [{ role: "user", content: "Read the file", timestamp: 1 }] },
+				{ apiKey: "test-key", fetch: fetchImpl, providerRetryWait: async () => {} },
+			);
+			const emitted: AssistantMessageEvent[] = [];
+			for await (const event of responseStream) emitted.push(event);
+			const result = await responseStream.result();
+			const endedCalls = emitted.filter(event => event.type === "toolcall_end").map(event => event.toolCall.id);
+
+			expect(attempts).toBe(commit === "pending" ? 2 : 1);
+			if (commit === "pending") {
+				expect(result.stopReason).toBe("toolUse");
+				expect(result.content).toEqual([
+					expect.objectContaining({ id: "call_recovered|fc_recovered", arguments: { path: "recovered.txt" } }),
+				]);
+				expect(endedCalls).toEqual(["call_recovered|fc_recovered"]);
+				expect(emitted.filter(event => event.type === "toolcall_start")).toHaveLength(1);
+			} else {
+				expect(result.stopReason).toBe("length");
+				expect(result.content).toEqual([
+					expect.objectContaining({ id: "call_first|fc_first", arguments: { path: "complete.txt" } }),
+					expect.objectContaining({
+						id: "call_second|fc_second",
+						arguments: { __parseError: expect.any(String), __rawJson: truncatedArguments },
+					}),
+				]);
+				expect(endedCalls).toEqual(commit === "committed" ? ["call_first|fc_first"] : []);
+				expect(emitted.filter(event => event.type === "error")).toEqual([]);
+			}
+		},
+	);
 
 	test("keeps max-output incomplete unfinished custom-tool input at length", async () => {
 		const output = makeOutput();
@@ -821,6 +988,39 @@ describe("processResponsesStream: reasoning summary recovery", () => {
 		expect(output.content).toEqual([expect.objectContaining({ type: "thinking", thinking: "First\n\nSecond" })]);
 	});
 
+	test("starts a new summary section after an omitted index on a closed part", async () => {
+		const output = makeOutput();
+		const deltas: string[] = [];
+		const stream = {
+			push: (event: EmittedEvent) => {
+				if (event.type === "thinking_delta") {
+					const delta = event.delta as string;
+					if (delta.length) deltas.push(delta);
+				}
+			},
+		} as never;
+
+		await processResponsesStream(
+			makeStream([
+				{ type: "response.output_item.added", item: { type: "reasoning", id: "rs_proxy", summary: [] } },
+				{ type: "response.reasoning_summary_text.done", text: "First" },
+				{ type: "response.reasoning_summary_part.done" },
+				// The proxy omits both summary_part.added and summary_index for the
+				// next section; the indexless delta/done must open a fresh part.
+				{ type: "response.reasoning_summary_text.delta", delta: "Sec" },
+				{ type: "response.reasoning_summary_text.done", text: "Second" },
+				{ type: "response.output_item.done", item: { type: "reasoning", id: "rs_proxy", summary: [] } },
+				{ type: "response.completed", response: { status: "completed" } },
+			]),
+			output,
+			stream,
+			makeModel(),
+		);
+
+		expect(deltas).toEqual(["First", "\n\n", "Sec", "ond"]);
+		expect(output.content).toEqual([expect.objectContaining({ type: "thinking", thinking: "First\n\nSecond" })]);
+	});
+
 	test.each([null, -1, 0.5, "0"])(
 		"rejects malformed summary index %j instead of guessing a section",
 		async summaryIndex => {
@@ -1216,6 +1416,84 @@ describe("processResponsesStream: payloadless proxy frames", () => {
 		expect(output.stopReason).toBe("toolUse");
 	});
 
+	test.each([
+		{
+			name: "a blank done after deltas, full item",
+			deltas: ['{"path": ', '"README.md"}'],
+			done: "",
+			item: '{"path": "README.md"}',
+			expected: { path: "README.md" },
+		},
+		{
+			name: "a blank done after deltas, empty item",
+			deltas: ['{"path": ', '"README.md"}'],
+			done: "",
+			item: "",
+			expected: { path: "README.md" },
+		},
+		{
+			name: "a blank done without deltas, full item",
+			deltas: [],
+			done: "",
+			item: '{"path": "README.md"}',
+			expected: { path: "README.md" },
+		},
+		{
+			name: "a blank done after truncated deltas, full item",
+			deltas: ['{"path": "READ'],
+			done: "",
+			item: '{"path": "README.md"}',
+			expected: { path: "README.md" },
+		},
+		{
+			name: "a zero-argument done, conflicting item",
+			deltas: ["{}"],
+			done: "{}",
+			item: '{"path": "other"}',
+			expected: {},
+		},
+		{ name: "a null done, null item", deltas: ["null"], done: "null", item: "null", expected: null },
+	])("finalizes function arguments from $name", async ({ deltas, done, item: itemArguments, expected }) => {
+		const output = makeOutput();
+		const item = { type: "function_call", id: "fc_done", call_id: "call_done", name: "read" };
+		await processResponsesStream(
+			makeStream([
+				{ type: "response.output_item.added", output_index: 0, item: { ...item, arguments: "" } },
+				...deltas.map(delta => ({ type: "response.function_call_arguments.delta", output_index: 0, delta })),
+				{ type: "response.function_call_arguments.done", output_index: 0, arguments: done },
+				{ type: "response.output_item.done", output_index: 0, item: { ...item, arguments: itemArguments } },
+				{ type: "response.completed", response: { status: "completed" } },
+			]),
+			output,
+			new AssistantMessageEventStream(),
+			makeModel(),
+		);
+		expect(output.content).toEqual([
+			expect.objectContaining({ type: "toolCall", name: "read", arguments: expected }),
+		]);
+	});
+
+	test("keeps a full done payload when a late delta and an empty item follow", async () => {
+		const output = makeOutput();
+		const item = { type: "function_call", id: "fc_late", call_id: "call_late", name: "read" };
+		await processResponsesStream(
+			makeStream([
+				{ type: "response.output_item.added", output_index: 0, item: { ...item, arguments: "" } },
+				{ type: "response.function_call_arguments.delta", item_id: "fc_late", delta: '{"path": "README.md"}' },
+				{ type: "response.function_call_arguments.done", item_id: "fc_late", arguments: '{"path": "README.md"}' },
+				{ type: "response.function_call_arguments.delta", item_id: "fc_late", delta: " " },
+				{ type: "response.output_item.done", output_index: 0, item: { ...item, arguments: "" } },
+				{ type: "response.completed", response: { status: "completed" } },
+			]),
+			output,
+			new AssistantMessageEventStream(),
+			makeModel(),
+		);
+		expect(output.content).toEqual([
+			expect.objectContaining({ type: "toolCall", name: "read", arguments: { path: "README.md" } }),
+		]);
+	});
+
 	test("ignores missing raw reasoning deltas while retaining the final reasoning snapshot", async () => {
 		const output = makeOutput();
 		const deltas: string[] = [];
@@ -1317,5 +1595,26 @@ describe("processResponsesStream: payloadless proxy frames", () => {
 				makeModel(),
 			),
 		).rejects.toBeInstanceOf(TypeError);
+	});
+
+	test("keeps completed custom input when the terminal item repeats an empty input", async () => {
+		const item = { type: "custom_tool_call", id: "ct_empty", call_id: "ct", name: "patch" };
+		const output = makeOutput();
+		await processResponsesStream(
+			makeStream([
+				{ type: "response.output_item.added", item: { ...item, input: "" } },
+				{ type: "response.custom_tool_call_input.delta", delta: "partial patch" },
+				{ type: "response.custom_tool_call_input.done", input: "complete patch" },
+				{ type: "response.output_item.done", item: { ...item, input: "" } },
+				{ type: "response.completed", response: { status: "completed" } },
+			]),
+			output,
+			{ push: () => {} } as never,
+			makeModel(),
+		);
+
+		expect(output.content).toEqual([
+			expect.objectContaining({ type: "toolCall", name: "patch", arguments: { input: "complete patch" } }),
+		]);
 	});
 });

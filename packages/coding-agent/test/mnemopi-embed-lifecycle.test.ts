@@ -1,191 +1,235 @@
-import { describe, expect, it, spyOn, vi } from "bun:test";
-import { MnemopiEmbedClient, type MnemopiEmbedWorkerHandle } from "@oh-my-pi/pi-coding-agent/mnemopi/embed-client";
-import type {
-	MnemopiEmbedWorkerInbound,
-	MnemopiEmbedWorkerOutbound,
+import { describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import {
+	MnemopiEmbedClient,
+	mnemopiEmbedLaunch,
+	mnemopiEmbedServerName,
+	type MnemopiEmbedWorkerHandle,
+} from "@oh-my-pi/pi-coding-agent/mnemopi/embed-client";
+import {
+	MNEMOPI_EMBED_IDLE_MS_ENV,
+	type MnemopiEmbedCall,
+	type MnemopiEmbedServerRequest,
+	type MnemopiEmbedServerResponse,
+	type MnemopiEmbedWorkerOutbound,
 } from "@oh-my-pi/pi-coding-agent/mnemopi/embed-protocol";
+import {
+	connectSharedWorker,
+	type SharedWorkerLaunch,
+	type SpawnedWorker,
+} from "@oh-my-pi/pi-coding-agent/subprocess/shared-worker";
+import type { RefCountedWorkerHandle } from "@oh-my-pi/pi-coding-agent/subprocess/worker-client";
 
-const IDLE_TIMEOUT_MS = 100;
-const REQUEST_TIMEOUT_MS = 10_000;
+const REQUEST_TIMEOUT_MS = 100;
 const MODEL = "fast-bge-base-en-v1.5";
 const CACHE_DIR = "/tmp/cache";
+type EmbedReply = MnemopiEmbedWorkerOutbound | MnemopiEmbedServerResponse;
+type ServerConnection = RefCountedWorkerHandle<MnemopiEmbedServerRequest, MnemopiEmbedServerResponse>;
 
-class ControlledEmbedWorker implements MnemopiEmbedWorkerHandle {
+class ControlledEmbedTransport implements MnemopiEmbedWorkerHandle {
 	terminated = 0;
-	#requests: MnemopiEmbedWorkerInbound[] = [];
-	#requestWaiters: Array<(message: MnemopiEmbedWorkerInbound) => void> = [];
-	#messageHandler: ((message: MnemopiEmbedWorkerOutbound) => void) | undefined;
+	#requests: MnemopiEmbedCall[] = [];
+	#requestWaiters: Array<(message: MnemopiEmbedCall) => void> = [];
+	#messageHandler: ((message: EmbedReply) => void) | undefined;
+	#errorHandler: ((error: Error) => void) | undefined;
 
 	constructor(private readonly termination?: Promise<void>) {}
 
-	send(message: MnemopiEmbedWorkerInbound): void {
-		if (this.terminated > 0) throw new Error("request sent to terminated embedding worker");
+	send(message: MnemopiEmbedCall): void {
+		if (this.terminated > 0) throw new Error("request sent to terminated embedding transport");
 		const waiter = this.#requestWaiters.shift();
 		if (waiter) waiter(message);
 		else this.#requests.push(message);
 	}
 
-	nextRequest(): Promise<MnemopiEmbedWorkerInbound> {
+	nextRequest(): Promise<MnemopiEmbedCall> {
 		const request = this.#requests.shift();
 		if (request) return Promise.resolve(request);
-		const { promise, resolve } = Promise.withResolvers<MnemopiEmbedWorkerInbound>();
+		const { promise, resolve } = Promise.withResolvers<MnemopiEmbedCall>();
 		this.#requestWaiters.push(resolve);
 		return promise;
 	}
 
-	onMessage(handler: (message: MnemopiEmbedWorkerOutbound) => void): () => void {
+	onMessage(handler: (message: EmbedReply) => void): () => void {
 		this.#messageHandler = handler;
 		return () => {
 			if (this.#messageHandler === handler) this.#messageHandler = undefined;
 		};
 	}
 
-	onError(): () => void {
-		return () => {};
+	onError(handler: (error: Error) => void): () => void {
+		this.#errorHandler = handler;
+		return () => {
+			if (this.#errorHandler === handler) this.#errorHandler = undefined;
+		};
+	}
+
+	captureError(): (error: Error) => void {
+		if (!this.#errorHandler) throw new Error("embedding transport has no error listener");
+		return this.#errorHandler;
 	}
 
 	ref(): void {}
 	unref(): void {}
 
-	complete(request: MnemopiEmbedWorkerInbound, vectors: number[][] = []): void {
-		if (!this.#messageHandler) throw new Error("embedding worker has no response listener");
+	complete(request: MnemopiEmbedCall, vectors: number[][]): void {
+		if (!this.#messageHandler) throw new Error("embedding transport has no response listener");
 		if (request.type === "init") this.#messageHandler({ type: "ready", id: request.id });
-		else if (request.type === "embed") this.#messageHandler({ type: "vectors", id: request.id, vectors });
-		else this.#messageHandler({ type: "pong", id: request.id });
+		else this.#messageHandler({ type: "vectors", id: request.id, vectors });
 	}
 
 	terminate(): Promise<void> {
 		this.terminated += 1;
 		this.#messageHandler = undefined;
+		this.#errorHandler = undefined;
 		return this.termination ?? Promise.resolve();
 	}
 }
 
-interface EmbedHarness {
-	client: MnemopiEmbedClient;
-	workers: ControlledEmbedWorker[];
-	firstSpawn: Promise<ControlledEmbedWorker>;
+async function ping(connection: ServerConnection, id: string): Promise<string> {
+	const { promise, resolve, reject } = Promise.withResolvers<string>();
+	const unsubscribeMessage = connection.onMessage(message => {
+		if (message.type === "pong" && message.id === id) resolve(message.tag);
+	});
+	const unsubscribeError = connection.onError(reject);
+	try {
+		connection.send({ type: "ping", id });
+		return await promise;
+	} finally {
+		unsubscribeMessage();
+		unsubscribeError();
+	}
 }
 
-function createHarness(firstTermination?: Promise<void>): EmbedHarness {
-	const workers: ControlledEmbedWorker[] = [];
-	const firstSpawn = Promise.withResolvers<ControlledEmbedWorker>();
-	const client = new MnemopiEmbedClient(
-		() => {
-			const worker = new ControlledEmbedWorker(workers.length === 0 ? firstTermination : undefined);
-			workers.push(worker);
-			firstSpawn.resolve(worker);
-			return worker;
-		},
-		REQUEST_TIMEOUT_MS,
-		IDLE_TIMEOUT_MS,
-	);
-	return { client, workers, firstSpawn: firstSpawn.promise };
-}
-
-async function initialize(harness: EmbedHarness) {
-	const initializing = harness.client.initialize(MODEL, CACHE_DIR);
-	const worker = await harness.firstSpawn;
-	worker.complete(await worker.nextRequest());
-	const model = await initializing;
-	if (!model) throw new Error("controlled embedding worker failed to initialize");
-	return { worker, model };
-}
-
-describe("mnemopi embedding worker idle lifecycle", () => {
-	it("reuses a warm worker, releases it after inactivity, and reloads through the cached model", async () => {
+describe("mnemopi shared embedding lifecycle", () => {
+	it("isolates a timed-out model connection from another model's in-flight embedding", async () => {
 		vi.useFakeTimers();
-		const harness = createHarness();
+		const transports = new Map<string, ControlledEmbedTransport>();
+		const client = new MnemopiEmbedClient(model => {
+			const transport = new ControlledEmbedTransport();
+			transports.set(model, transport);
+			return transport;
+		}, REQUEST_TIMEOUT_MS);
 		try {
-			const { worker, model } = await initialize(harness);
-			vi.advanceTimersByTime(IDLE_TIMEOUT_MS - 1);
-			expect(worker.terminated).toBe(0);
+			const stalled = client.embed(MODEL, CACHE_DIR, ["stalled recall"], undefined);
+			const stalledOutcome = stalled.then(
+				vectors => ({ kind: "completed" as const, vectors }),
+				error => ({ kind: "failed" as const, error }),
+			);
+			vi.advanceTimersByTime(REQUEST_TIMEOUT_MS / 2);
+			const peerModel = "fast-bge-small-en-v1.5";
+			const peerEmbedding = client.embed(peerModel, CACHE_DIR, ["peer recall"], undefined);
+			const peerOutcome = peerEmbedding.then(
+				vectors => ({ kind: "completed" as const, vectors }),
+				error => ({ kind: "failed" as const, error }),
+			);
+			const peer = transports.get(peerModel)!;
+			const peerRequest = await peer.nextRequest();
+			vi.advanceTimersByTime(REQUEST_TIMEOUT_MS / 2);
 
-			const warmEmbedding = model.embed(["warm recall"])[Symbol.asyncIterator]().next();
-			worker.complete(await worker.nextRequest(), [[0.25, 0.75]]);
-			expect(await warmEmbedding).toEqual({ done: false, value: [[0.25, 0.75]] });
-			expect(harness.workers).toHaveLength(1);
-
-			vi.advanceTimersByTime(IDLE_TIMEOUT_MS - 1);
-			expect(worker.terminated).toBe(0);
-			vi.advanceTimersByTime(1);
-			expect(worker.terminated).toBe(1);
-
-			const reloadedEmbedding = model.embed(["recall after idle release"])[Symbol.asyncIterator]().next();
-			const reloadedWorker = harness.workers[1];
-			reloadedWorker.complete(await reloadedWorker.nextRequest(), [[0.5, 0.5]]);
-			expect(await reloadedEmbedding).toEqual({ done: false, value: [[0.5, 0.5]] });
-			expect(harness.workers).toHaveLength(2);
+			const outcome = await stalledOutcome;
+			expect(outcome.kind).toBe("failed");
+			if (outcome.kind === "failed") expect(String(outcome.error)).toMatch(/timed out/i);
+			expect(transports.get(MODEL)!.terminated).toBe(1);
+			expect(peer.terminated).toBe(0);
+			peer.complete(peerRequest, [[0.25, 0.75]]);
+			expect(await peerOutcome).toEqual({ kind: "completed", vectors: [[0.25, 0.75]] });
 		} finally {
-			await harness.client.terminate();
+			await client.terminate();
 			vi.useRealTimers();
 		}
 	});
 
-	it("never treats initialization or overlapping embeddings as idle", async () => {
-		vi.useFakeTimers();
-		const harness = createHarness();
-		try {
-			const initializing = harness.client.initialize(MODEL, CACHE_DIR);
-			const worker = await harness.firstSpawn;
-			const init = await worker.nextRequest();
-			vi.advanceTimersByTime(IDLE_TIMEOUT_MS * 3);
-			expect(worker.terminated).toBe(0);
-			worker.complete(init);
-			const model = await initializing;
-			if (!model) throw new Error("controlled embedding worker failed to initialize");
-
-			const firstEmbedding = model.embed(["first recall"])[Symbol.asyncIterator]().next();
-			const first = await worker.nextRequest();
-			const secondEmbedding = model.embed(["second recall"])[Symbol.asyncIterator]().next();
-			const second = await worker.nextRequest();
-			vi.advanceTimersByTime(IDLE_TIMEOUT_MS * 3);
-			expect(worker.terminated).toBe(0);
-
-			worker.complete(first, [[1, 0]]);
-			expect(await firstEmbedding).toEqual({ done: false, value: [[1, 0]] });
-			vi.advanceTimersByTime(IDLE_TIMEOUT_MS * 3);
-			expect(worker.terminated).toBe(0);
-			worker.complete(second, [[0, 1]]);
-			expect(await secondEmbedding).toEqual({ done: false, value: [[0, 1]] });
-
-			vi.advanceTimersByTime(IDLE_TIMEOUT_MS);
-			expect(worker.terminated).toBe(1);
-		} finally {
-			await harness.client.terminate();
-			vi.useRealTimers();
-		}
-	});
-
-	it("fences an old idle callback and delayed close from a replacement worker", async () => {
-		vi.useFakeTimers();
-		const timers = spyOn(globalThis, "setTimeout");
+	it("keeps a replacement usable while an old connection close drains and a queued error arrives", async () => {
 		const oldClose = Promise.withResolvers<void>();
-		const harness = createHarness(oldClose.promise);
+		const transports: ControlledEmbedTransport[] = [];
+		const client = new MnemopiEmbedClient(() => {
+			const transport = new ControlledEmbedTransport(transports.length === 0 ? oldClose.promise : undefined);
+			transports.push(transport);
+			return transport;
+		});
 		try {
-			const { worker, model } = await initialize(harness);
-			const idleCallback = timers.mock.calls.findLast(([, delay]) => delay === IDLE_TIMEOUT_MS)?.[0];
-			if (typeof idleCallback !== "function") throw new Error("idle callback was not scheduled");
+			const firstEmbedding = client.embed(MODEL, CACHE_DIR, ["first recall"], undefined);
+			const first = transports[0]!;
+			first.complete(await first.nextRequest(), [[1, 0]]);
+			expect(await firstEmbedding).toEqual([[1, 0]]);
+			const lateError = first.captureError();
 
-			const closing = harness.client.terminate();
-			expect(worker.terminated).toBe(1);
-			const embedding = model.embed(["replacement recall"])[Symbol.asyncIterator]().next();
-			const replacement = harness.workers[1];
-			replacement.complete(await replacement.nextRequest(), [[0.75, 0.25]]);
-			expect(await embedding).toEqual({ done: false, value: [[0.75, 0.25]] });
-
+			const closing = client.terminate();
+			const replacementEmbedding = client.embed(MODEL, CACHE_DIR, ["replacement recall"], undefined);
+			const outcome = replacementEmbedding.then(
+				vectors => ({ kind: "completed" as const, vectors }),
+				error => ({ kind: "failed" as const, error }),
+			);
+			const replacement = transports[1]!;
+			const request = await replacement.nextRequest();
+			// Model an error callback queued before the old listener was unsubscribed.
+			lateError(new Error("worker connection closed"));
 			oldClose.resolve();
 			await closing;
-			// Model a cancelled timer callback that had already been queued before teardown.
-			idleCallback();
+			expect(first.terminated).toBe(1);
 			expect(replacement.terminated).toBe(0);
-			vi.advanceTimersByTime(IDLE_TIMEOUT_MS);
-			expect(replacement.terminated).toBe(1);
+			replacement.complete(request, [[0.75, 0.25]]);
+			expect(await outcome).toEqual({ kind: "completed", vectors: [[0.75, 0.25]] });
 		} finally {
 			oldClose.resolve();
-			await harness.client.terminate();
-			timers.mockRestore();
-			vi.useRealTimers();
+			await client.terminate();
 		}
 	});
+
+	it("disconnects clients independently, idles with connections open, and reconnects to a fresh shared server", async () => {
+		const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-embed-lifetime-"));
+		const spawned: SpawnedWorker[] = [];
+		const connections: ServerConnection[] = [];
+		const base = mnemopiEmbedLaunch(MODEL, { [MNEMOPI_EMBED_IDLE_MS_ENV]: "2000" });
+		const launch: SharedWorkerLaunch = {
+			...base,
+			async spawn(endpoint, logPath) {
+				const worker = await base.spawn(endpoint, logPath);
+				spawned.push(worker);
+				return worker;
+			},
+		};
+		const name = mnemopiEmbedServerName(MODEL, path.join(runtimeDir, "cache"));
+		const connect = async (): Promise<ServerConnection> => {
+			const connection = await connectSharedWorker<MnemopiEmbedServerRequest, MnemopiEmbedServerResponse>(
+				launch,
+				runtimeDir,
+				name,
+			);
+			connections.push(connection);
+			return connection;
+		};
+		try {
+			// Only ping: the real CLI server runs, but no embedding model is loaded.
+			const sessionA = await connect();
+			const sessionB = await connect();
+			const originalServer = spawned[0]!;
+			await sessionA.terminate();
+			expect(await ping(sessionB, "peer-after-disconnect")).toBe(launch.tag);
+			const sessionC = await connect();
+			expect(await ping(sessionC, "reused-server")).toBe(launch.tag);
+			expect(spawned).toHaveLength(1);
+			expect(originalServer.proc.exitCode).toBeNull();
+
+			// Idle ownership belongs to the server, not client connection count.
+			originalServer.proc.ref();
+			expect(await originalServer.proc.exited).toBe(0);
+			const sessionD = await connect();
+			expect(await ping(sessionD, "server-after-idle")).toBe(launch.tag);
+			expect(spawned).toHaveLength(2);
+		} finally {
+			await Promise.all(connections.map(connection => connection.terminate()));
+			await Promise.all(
+				spawned.map(async worker => {
+					worker.proc.ref();
+					if (worker.proc.exitCode === null) worker.proc.kill();
+					await worker.proc.exited;
+				}),
+			);
+			await fs.rm(runtimeDir, { recursive: true, force: true });
+		}
+	}, 30_000);
 });

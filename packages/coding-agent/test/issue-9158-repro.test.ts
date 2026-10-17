@@ -15,8 +15,8 @@
  * installs the postmortem handler on import) whose worker emits a bad frame and
  * then STAYS ALIVE — proving the malformed frame itself faults the worker's error
  * channel rather than a coincidental clean exit — and pins that the parent
- * survives. Windows has no portable raw IPC fd 3, so there the fixture injects
- * Bun's exact stackless decode error while a real IPC worker stays alive.
+ * survives. On Windows the fixture wraps the raw IPC body in libuv's named-pipe
+ * frame header so the malformed payload reaches Bun's deserializer.
  */
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
@@ -24,13 +24,15 @@ import * as path from "node:path";
 describe("issue #9158 — malformed worker IPC frame must not terminate the parent", () => {
 	it("contains an advanced-serialization decode failure to the worker instead of exiting the session", async () => {
 		const repoRoot = path.resolve(import.meta.dir, "..");
-		// On POSIX, emit an invalid structured-clone body to Bun's raw IPC fd.
-		// On Windows, establish a real IPC channel and keep its child alive while
-		// the parent injects the same process-level error at the runtime boundary.
+		// Bun advanced-IPC frame with an invalid structured-clone body, written
+		// raw to the IPC fd (3), then the child blocks forever. Staying alive is
+		// the point: the malformed frame — not an exit — must fault the worker.
+		// On Windows the IPC fd is a libuv ipc-mode named pipe that wraps every
+		// write in a 16-byte frame header ({flags=HAS_DATA, 0, length, 0}); an
+		// unwrapped raw write is rejected by libuv and silently closes the
+		// channel without ever reaching Bun's deserializer.
 		const childScript =
-			process.platform === "win32"
-				? 'process.send("READY"); setInterval(() => {}, 1000);'
-				: 'require("node:fs").writeSync(3, Buffer.from([2, 4, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef])); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);';
+			'const body = Buffer.from([2, 4, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef]); let frame = body; if (process.platform === "win32") { const header = Buffer.alloc(16); header.writeUInt32LE(1, 0); header.writeUInt32LE(body.length, 8); frame = Buffer.concat([header, body]); } require("node:fs").writeSync(3, frame); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);';
 		// Runs in a spawned `bun -e` parent: importing worker-client pulls in the
 		// postmortem module, which installs the global uncaughtException handler
 		// under test.
@@ -49,14 +51,6 @@ describe("issue #9158 — malformed worker IPC frame must not terminate the pare
 				worker.proc.kill("SIGKILL");
 				process.exitCode = 2;
 			}, 10000);
-			if (process.platform === "win32") {
-				const { promise: ready, resolve: markReady } = Promise.withResolvers();
-				worker.inbound.add(message => { if (message === "READY") markReady(); });
-				await ready;
-				const decodeError = new TypeError("Unable to deserialize data.");
-				delete decodeError.stack;
-				queueMicrotask(() => { throw decodeError; });
-			}
 			// The bad frame is contained and faults the worker's error channel even
 			// though the child never exits on its own.
 			const err = await errored;

@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { TranscriptContainer, trimBlankEdges } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { type Component, Container, Markdown } from "@oh-my-pi/pi-tui";
 
@@ -132,6 +133,51 @@ describe("AssistantMessageComponent streaming fast path", () => {
 		expect(component.getTranscriptStableRows()).toEqual([]);
 		expect(component.renderTranscriptStableRows(count, 40)).toEqual([]);
 		component.markTranscriptBlockFinalized();
+	});
+
+	it("keeps published thinking rows when a split fence or comment sentinel completes below them", () => {
+		// A delta may end inside "```" or "<!-- -->". The prose fold then shows
+		// the partial line as text, but once it completes the fold drops it and
+		// appends its ellipsis to the line above — which must not be published yet.
+		for (const tail of ["```ts\nlet y = 2;\n```", "<!-- -->\n\n```ts\nlet y = 2;\n```"]) {
+			const thinking = `First thought.\n\nSecond thought.\n\n${tail}\n\nThird thought.\n\nStill going`;
+			const component = new AssistantMessageComponent();
+			for (let end = 1; end <= thinking.length; end++) {
+				component.updateContent(msg([{ type: "thinking", thinking: thinking.slice(0, end) }]), { transient: true });
+				const rows = trimBlankEdges(component.render(W));
+				const stable = component.renderTranscriptStableRows(component.getTranscriptStableRows().length, W);
+				expect(rows.slice(0, stable.length)).toEqual([...stable]);
+			}
+			expect(component.getTranscriptStableRows().length).toBeGreaterThan(0);
+		}
+	});
+
+	it("keeps retiring later blocks after a streamed block with a tab closes", () => {
+		// While streaming, a block publishes Markdown's settled prefix (tabs
+		// expanded); once the next block starts it publishes whole. Both must be
+		// the same bytes, or every later snapshot stops extending the published one.
+		const first = "Columns:\tname\tsize.\n\nSecond paragraph of the answer.\n\nThird paragraph.";
+		const second = "Now reasoning about the next step.\n\nAnother paragraph here.\n\nAnd a closing line.";
+		const component = new AssistantMessageComponent();
+		const counts: number[] = [];
+		const stream = (content: AssistantMessage["content"]) => {
+			component.updateContent(msg(content), { transient: true });
+			const rows = trimBlankEdges(component.render(W));
+			const stable = component.renderTranscriptStableRows(component.getTranscriptStableRows().length, W);
+			expect(rows.slice(0, stable.length)).toEqual([...stable]);
+			counts.push(stable.length);
+		};
+		for (let end = 1; end <= first.length; end++) stream([{ type: "text", text: first.slice(0, end) }]);
+		const beforeSecond = counts.at(-1)!;
+		expect(beforeSecond).toBeGreaterThan(0);
+		for (let end = 1; end <= second.length; end++) {
+			stream([
+				{ type: "text", text: first },
+				{ type: "thinking", thinking: second.slice(0, end) },
+			]);
+		}
+		// The closed first block and the settled head of the second both retire.
+		expect(counts.at(-1)!).toBeGreaterThan(beforeSecond + 2);
 	});
 
 	it("matches teardown output across a growing thinking + text stream", () => {
@@ -344,13 +390,35 @@ describe("AssistantMessageComponent streaming stable rows", () => {
 		expect(rendered.slice(0, stableRendered.length)).toEqual([...stableRendered]);
 		expect(Bun.stripANSI(stableRendered.join("\n"))).toContain("Completed reasoning paragraph.");
 		expect(Bun.stripANSI(stableRendered.join("\n"))).not.toContain("Mutable thinking tail");
+	});
 
-		const textOnly = new AssistantMessageComponent();
-		textOnly.updateContent(msg([{ type: "text", text: "Completed answer paragraph.\n\nMutable answer tail" }]), {
+	it("withholds revision-capable prose until the final replacement can retire", () => {
+		const transcript = new TranscriptContainer();
+		const component = new AssistantMessageComponent();
+		component.setMidStreamPublication(false);
+		transcript.addChild(component);
+		component.updateContent(msg([{ type: "text", text: "Completed answer paragraph.\n\nMutable answer tail" }]), {
 			transient: true,
 		});
-		textOnly.render(52);
-		expect(textOnly.getTranscriptStableRows()).toEqual([]);
+		expect(transcript.peekFinalizedBatch(52, 0)).toBeUndefined();
+		expect(component.getTranscriptStableRows()).toEqual([]);
+
+		const replacement = "Revised answer paragraph.\n\nReplacement answer tail";
+		component.updateContent(msg([{ type: "text", text: replacement }]), { transient: true });
+		expect(transcript.peekFinalizedBatch(52, 0)).toBeUndefined();
+		const live = transcript.renderViewport(52, 20);
+		expect(Bun.stripANSI(live.join("\n"))).toContain("Revised answer paragraph.");
+		expect(Bun.stripANSI(live.join("\n"))).not.toContain("Completed answer paragraph.");
+		expect(component.getTranscriptStableRows()).toEqual([]);
+
+		component.updateContent(msg([{ type: "text", text: replacement }]));
+		component.markTranscriptBlockFinalized();
+		const finalRows = trimBlankEdges(component.render(52));
+		const batch = transcript.peekFlushBatch(52);
+		if (!batch) throw new Error("expected finalized revision-capable prose");
+		expect(batch.rows).toEqual([...finalRows, ""]);
+		transcript.acknowledgeFinalizedBatch(batch.id);
+		expect(transcript.peekFlushBatch(52)).toBeUndefined();
 	});
 
 	it("keeps stable identities and their rendered prefix monotonic as thinking grows", () => {

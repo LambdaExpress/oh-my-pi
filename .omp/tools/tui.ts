@@ -20,9 +20,9 @@
  */
 
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import * as net from "node:net";
 import { inflateSync } from "node:zlib";
 import type * as CanvasModule from "@napi-rs/canvas";
+import { IpcConnection } from "@oh-my-pi/pi-natives";
 import type * as KittyVt from "kitty-vt-wasm";
 import type { Color, KittyEvent, KittyTerminal } from "kitty-vt-wasm";
 import { tmpdir } from "node:os";
@@ -667,9 +667,8 @@ interface Session {
 	rows: number;
 	dir: string;
 	screen: Screen;
-	sock: net.Socket | null;
+	sock: IpcConnection | null;
 	socketError: Error | null;
-	sockBuf: string;
 	waiters: Waiter[];
 	raw: Buffer[];
 	rawBytes: number;
@@ -698,11 +697,10 @@ function capture(session: Session, chunk: Uint8Array) {
 }
 
 /** A FIFO protocol cannot recover its response order after a lost request. */
-function disconnectSocket(session: Session, sock: net.Socket, error: Error): void {
+function disconnectSocket(session: Session, sock: IpcConnection, error: Error): void {
 	if (session.sock !== sock) return;
 	session.sock = null;
 	session.socketError = error;
-	session.sockBuf = "";
 	for (const waiter of session.waiters.splice(0)) {
 		clearTimeout(waiter.timer);
 		waiter.reject(error);
@@ -713,29 +711,32 @@ function disconnectSocket(session: Session, sock: net.Socket, error: Error): voi
 async function connectSocket(session: Session, path: string, timeoutMs: number): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
 	do {
-		const connected = Promise.withResolvers<boolean>();
-		const sock = net.createConnection(path);
-		const timer = setTimeout(
-			() => {
-				sock.destroy();
-				connected.resolve(false);
-			},
-			Math.max(0, deadline - Date.now()),
-		);
-		sock.setEncoding("utf8");
-		sock.on("data", (data: string) => {
-			if (session.sock !== sock) return;
-			session.sockBuf += data;
-			for (;;) {
-				const index = session.sockBuf.indexOf("\n");
-				if (index < 0) return;
-				const line = session.sockBuf.slice(0, index);
-				session.sockBuf = session.sockBuf.slice(index + 1);
+		if (session.closed || session.exit !== null || Date.now() >= deadline) return false;
+		let conn: IpcConnection;
+		try {
+			conn = await IpcConnection.connect(path, {
+				framing: "lines",
+				timeoutMs: Math.max(1, Math.min(1_000, deadline - Date.now())),
+			});
+		} catch {
+			if (session.closed || session.exit !== null || Date.now() >= deadline) return false;
+			await sleep(Math.min(150, Math.max(0, deadline - Date.now())));
+			continue;
+		}
+		if (session.closed || session.exit !== null || Date.now() >= deadline) {
+			conn.destroy();
+			return false;
+		}
+		session.sock = conn;
+		session.socketError = null;
+		conn.start(
+			frame => {
+				if (session.sock !== conn) return;
 				const waiter = session.waiters[0];
-				if (!waiter) continue;
+				if (!waiter) return;
 				let response: Record<string, unknown>;
 				try {
-					const parsed: unknown = JSON.parse(line);
+					const parsed: unknown = JSON.parse(frame);
 					if (
 						typeof parsed !== "object" ||
 						parsed === null ||
@@ -746,43 +747,25 @@ async function connectSocket(session: Session, path: string, timeoutMs: number):
 					}
 					response = parsed as Record<string, unknown>;
 				} catch (error) {
-					disconnectSocket(session, sock, new Error(`bad response line: ${error}`));
+					disconnectSocket(session, conn, new Error(`bad response line: ${error}`));
 					return;
 				}
 				session.waiters.shift();
 				clearTimeout(waiter.timer);
 				waiter.resolve(response);
-			}
-		});
-		sock.once("connect", () => {
-			session.sock = sock;
-			session.socketError = null;
-			connected.resolve(true);
-		});
-		sock.on("error", error => {
-			const code = (error as NodeJS.ErrnoException).code;
-			const failure =
-				code === "ECONNRESET" || code === "EPIPE"
-					? new DebugSocketClosedError(`debug socket closed for session "${session.name}": ${error.message}`)
-					: new Error(`debug socket error: ${error.message}`);
-			disconnectSocket(session, sock, failure);
-			sock.destroy();
-			connected.resolve(false);
-		});
-		sock.on("close", () => {
-			disconnectSocket(
-				session,
-				sock,
-				new DebugSocketClosedError(`debug socket closed for session "${session.name}"`),
-			);
-			connected.resolve(false);
-		});
-		const ready = await connected.promise;
-		clearTimeout(timer);
-		if (ready) return true;
-		if (session.exit !== null || Date.now() >= deadline) return false;
-		await sleep(Math.min(150, Math.max(0, deadline - Date.now())));
-	} while (session.exit === null && Date.now() < deadline);
+			},
+			reason => {
+				const error =
+					reason === null || /^(ECONNRESET|EPIPE):/.test(reason)
+						? new DebugSocketClosedError(
+								`debug socket closed for session "${session.name}"${reason ? `: ${reason}` : ""}`,
+							)
+						: new Error(`debug socket error: ${reason}`);
+				disconnectSocket(session, conn, error);
+			},
+		);
+		return true;
+	} while (!session.closed && session.exit === null && Date.now() < deadline);
 	return false;
 }
 
@@ -809,7 +792,15 @@ function request(
 	}, timeoutMs);
 	session.waiters.push({ resolve, reject, timer });
 	try {
-		sock.write(`${JSON.stringify(body)}\n`);
+		if (sock.closed) {
+			disconnectSocket(
+				session,
+				sock,
+				new DebugSocketClosedError(`debug socket closed for session "${session.name}"`),
+			);
+		} else {
+			sock.send(JSON.stringify(body));
+		}
 	} catch (error) {
 		disconnectSocket(session, sock, new Error(`debug request failed: ${error}`));
 	}
@@ -1145,7 +1136,6 @@ const factory = (omp: ToolHost) => {
 			screen,
 			sock: null,
 			socketError: null,
-			sockBuf: "",
 			waiters: [],
 			raw: [],
 			rawBytes: 0,

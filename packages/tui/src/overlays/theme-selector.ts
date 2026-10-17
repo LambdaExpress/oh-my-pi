@@ -71,7 +71,12 @@ export class ThemeSelectorComponent extends OverlayPanel {
 		};
 
 		this.addChild(this.#selectList);
-		this.#sheet = new SelectListSheet(this.#selectList, themePickerOptions(t("Theme"), currentTheme));
+		// The picker checks the current theme, so its "(current)" text stays in the terminal list.
+		const options = themePickerOptions(t("Theme"), currentTheme);
+		this.#sheet = new SelectListSheet(this.#selectList, {
+			...options,
+			decorate: item => ({ ...options.decorate?.(item), detail: "" }),
+		});
 	}
 
 	override describe(cx: DescribeContext): NativeNode | null {

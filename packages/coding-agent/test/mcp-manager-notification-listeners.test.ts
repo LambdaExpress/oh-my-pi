@@ -154,9 +154,10 @@ describe("MCPManager notification listeners", () => {
 			// Connect FIRST, before any listener is registered. The fixture
 			// emits `notifications/tools/list_changed` plus a server-custom
 			// notification during its `notifications/initialized` handshake,
-			// so by the time connect resolves at least one notification frame
-			// has already been received by the manager with no consumer.
+			// so the startup barrier ensures its notification frames have
+			// already been received by the manager with no consumer.
 			await manager.connectServers({ alpha: serverConfig() }, {});
+			await manager.waitForStartup(0);
 
 			// Attach the FIRST listener AFTER frames were already dispatched.
 			// Drain-on-first-subscribe must deliver the buffered frames now.
@@ -178,116 +179,139 @@ describe("MCPManager notification listeners", () => {
 		}
 	});
 
-	it("refreshServerTools awaits an async setOnToolsChanged handler before resolving", async () => {
-		// Verifies the second-layer guarantee (issue raised in review):
-		// #onToolsChanged in the sdk.ts wiring calls session.refreshMCPTools()
-		// asynchronously. If refreshServerTools does not await the callback,
-		// a mcp_notification listener acting on tools/list_changed can call
-		// getAllTools() on the session before its registry has been rebound.
-		// This test drives the same pattern by registering a slow async
-		// setOnToolsChanged handler and confirming refreshServerTools blocks
-		// on it before resolving — proving the fanout in
-		// #handleServerNotification (which awaits refreshServerTools) sees
-		// the callback complete.
+	it("runs a refresh queued during a failed tools refresh instead of dropping it", async () => {
 		const manager = new MCPManager(workDir);
-		const events: string[] = [];
-		const { promise: hold, resolve: release } = Promise.withResolvers<void>();
-
-		manager.setOnToolsChanged(async () => {
-			events.push("cb:start");
-			await hold;
-			events.push("cb:end");
-		});
+		const collector = makeFrameCollector();
+		manager.addNotificationListener(collector.listener);
 
 		try {
 			await manager.connectServers({ alpha: serverConfig() }, {});
-			// connectServers may kick the callback for the initial tool load via
-			// its background continuation; drain that first so we can assert
-			// specifically on the refresh path.
-			await Bun.sleep(30);
-			release();
-			await Bun.sleep(30);
-			const priorLen = events.length;
+			await manager.waitForStartup(0);
+			// The handshake's list_changed refresh fans out only after it settles.
+			await collector.awaitFrame("alpha", "notifications/tools/list_changed");
 
-			// Trigger a fresh refresh and hold the callback again — this is the
-			// path #handleServerNotification takes for tools/list_changed.
-			const { promise: hold2, resolve: release2 } = Promise.withResolvers<void>();
-			let cbState: "started" | "ended" | undefined;
+			let calls = 0;
 			manager.setOnToolsChanged(async () => {
-				cbState = "started";
-				await hold2;
-				cbState = "ended";
+				calls++;
+				if (calls === 1) {
+					// A tools/list_changed arriving mid-flight marks the refresh dirty…
+					void manager.refreshServerTools("alpha");
+					// …and then the in-flight pass fails.
+					throw new Error("in-flight refresh failed");
+				}
 			});
-			const refreshDone = manager.refreshServerTools("alpha");
-			// Give the callback time to enter the await.
-			await Bun.sleep(20);
-			expect(cbState).toBe("started");
-			// refreshServerTools has NOT resolved yet — proves it's awaiting.
-			let refreshResolved = false;
-			void refreshDone.then(() => {
-				refreshResolved = true;
-			});
-			await Bun.sleep(10);
-			expect(refreshResolved).toBe(false);
-			// Release the callback; refresh should now resolve promptly.
-			release2();
-			await refreshDone;
-			expect(cbState).toBe("ended");
-			// Drain events reference — just to silence unused var if refactored.
-			expect(events.length).toBeGreaterThanOrEqual(priorLen);
+
+			await manager.refreshServerTools("alpha");
+			expect(calls).toBe(2);
 		} finally {
 			await manager.disconnectAll();
 		}
 	});
 
-	it("mcp_notification listener for tools/list_changed fires only AFTER setOnToolsChanged callback resolves", async () => {
-		// Option B integration test: exercises the full manager-side chain
-		// #handleServerNotification → refreshServerTools → #onToolsChanged
-		// → fanout to notification listeners. Uses a slow async
-		// setOnToolsChanged callback that gates on a controllable promise
-		// (matches the mcp-dispose-disconnect-bounded.test.ts gate pattern)
-		// to prove that if the SDK's setOnToolsChanged handler is async and
-		// its work isn't complete, the mcp_notification listener does NOT
-		// fire prematurely. Regression guard: catches any future refactor
-		// that reintroduces fire-and-forget in the callback chain (e.g. the
-		// original sdk.ts:3411 `void (async () => ...)()` wrapper — which
-		// was the specific race raised in review of #6535).
+	it("coalesces a burst of tool refreshes into one trailing pass that every caller waits for", async () => {
 		const manager = new MCPManager(workDir);
-		const events: string[] = [];
-		let cbCall = 0;
-		const { promise: gate, resolve: releaseGate } = Promise.withResolvers<void>();
-
-		manager.setOnToolsChanged(async () => {
-			cbCall++;
-			// Initial connect fires the callback via a background continuation
-			// (manager.ts line ~555, fire-and-forget). Return immediately so
-			// its floating promise resolves cleanly; only gate on the second
-			// call, which is the one our simulated post-connect notification
-			// triggers.
-			if (cbCall === 1) {
-				events.push("initial-cb:done");
-				return;
-			}
-			events.push("cb:start");
-			await gate;
-			events.push("cb:end");
-		});
-
-		manager.addNotificationListener((_server, method) => {
-			if (method === "notifications/tools/list_changed") {
-				events.push("listener:fire");
-			}
-		});
+		const collector = makeFrameCollector();
+		manager.addNotificationListener(collector.listener);
 
 		try {
 			await manager.connectServers({ alpha: serverConfig() }, {});
-			// Wait for the initial-connect background continuation to fire the
-			// callback (call #1, ungated). Once it's recorded, we know the
-			// callback is idle and the next invocation will be call #2.
-			for (let i = 0; i < 20 && !events.includes("initial-cb:done"); i++) {
-				await Bun.sleep(10);
-			}
-			expect(events).toContain("initial-cb:done");
+			await manager.waitForStartup(0);
+			await collector.awaitFrame("alpha", "notifications/tools/list_changed");
+
+			const firstEntered = Promise.withResolvers<void>();
+			const releaseFirst = Promise.withResolvers<void>();
+			let calls = 0;
+			manager.setOnToolsChanged(async () => {
+				calls++;
+				if (calls === 1) {
+					firstEntered.resolve();
+					await releaseFirst.promise;
+				}
+			});
+
+			const first = manager.refreshServerTools("alpha");
+			await firstEntered.promise;
+			const burst = [1, 2, 3, 4].map(() => manager.refreshServerTools("alpha"));
+			let burstSettled = false;
+			void Promise.all(burst).then(() => {
+				burstSettled = true;
+			});
+			releaseFirst.resolve();
+			await Promise.all([first, ...burst]);
+
+			expect(burstSettled).toBe(true);
+			// The held pass plus exactly one trailing pass for the whole burst.
+			expect(calls).toBe(2);
+		} finally {
+			await manager.disconnectAll();
+		}
+	});
+
+	it("refreshServerTools awaits an async setOnToolsChanged handler before resolving", async () => {
+		const manager = new MCPManager(workDir);
+		const collector = makeFrameCollector();
+		manager.addNotificationListener(collector.listener);
+		const events: string[] = [];
+		const entered = Promise.withResolvers<void>();
+		const { promise: hold, resolve: release } = Promise.withResolvers<void>();
+
+		try {
+			await manager.connectServers({ alpha: serverConfig() }, {});
+			await manager.waitForStartup(0);
+			await collector.awaitFrame("alpha", "notifications/tools/list_changed");
+
+			// Install the held handler only after startup and its notifications settle.
+			manager.setOnToolsChanged(async () => {
+				events.push("cb:start");
+				entered.resolve();
+				await hold;
+				events.push("cb:end");
+			});
+			const refreshDone = manager.refreshServerTools("alpha").then(() => {
+				events.push("refresh:end");
+			});
+			await entered.promise;
+			// Drain runnable continuations without releasing the callback.
+			const nextTurn = Promise.withResolvers<void>();
+			setImmediate(nextTurn.resolve);
+			await nextTurn.promise;
+			expect(events).toEqual(["cb:start"]);
+
+			release();
+			await refreshDone;
+			expect(events).toEqual(["cb:start", "cb:end", "refresh:end"]);
+		} finally {
+			release();
+			await manager.disconnectAll();
+		}
+	});
+
+	it("mcp_notification listener for tools/list_changed fires only AFTER setOnToolsChanged callback resolves", async () => {
+		const manager = new MCPManager(workDir);
+		const collector = makeFrameCollector();
+		manager.addNotificationListener(collector.listener);
+		const events: string[] = [];
+		const entered = Promise.withResolvers<void>();
+		const delivered = Promise.withResolvers<void>();
+		const { promise: gate, resolve: releaseGate } = Promise.withResolvers<void>();
+
+		try {
+			await manager.connectServers({ alpha: serverConfig() }, {});
+			await manager.waitForStartup(0);
+			await collector.awaitFrame("alpha", "notifications/tools/list_changed");
+
+			manager.setOnToolsChanged(async () => {
+				events.push("cb:start");
+				entered.resolve();
+				await gate;
+				events.push("cb:end");
+			});
+			manager.addNotificationListener((_server, method) => {
+				if (method === "notifications/tools/list_changed") {
+					events.push("listener:fire");
+					delivered.resolve();
+				}
+			});
 
 			// Simulate a post-connect `notifications/tools/list_changed` frame
 			// by driving the transport's onNotification hook directly — that's
@@ -299,33 +323,17 @@ describe("MCPManager notification listeners", () => {
 			if (!conn?.transport.onNotification) throw new Error("expected transport onNotification to be wired");
 			void conn.transport.onNotification("notifications/tools/list_changed", {});
 
-			// Give the async chain time to enter the callback's await.
-			for (let i = 0; i < 20 && !events.includes("cb:start"); i++) {
-				await Bun.sleep(10);
-			}
-			expect(events).toContain("cb:start");
-
-			// CRITICAL: at this point the callback is holding, and the
-			// listener MUST NOT have fired. If it has, the manager fanned
-			// out before awaiting the callback — the exact race this test
-			// guards against.
-			expect(events).not.toContain("cb:end");
-			expect(events).not.toContain("listener:fire");
+			await entered.promise;
+			const nextTurn = Promise.withResolvers<void>();
+			setImmediate(nextTurn.resolve);
+			await nextTurn.promise;
+			expect(events).toEqual(["cb:start"]);
 
 			// Release the gate. Now the callback resolves, refresh completes,
 			// and the listener fires — in that order.
 			releaseGate();
-
-			// Wait for the listener to fire (or bail on timeout).
-			for (let i = 0; i < 50 && !events.includes("listener:fire"); i++) {
-				await Bun.sleep(10);
-			}
-
-			const idxCbEnd = events.indexOf("cb:end");
-			const idxFire = events.indexOf("listener:fire");
-			expect(idxCbEnd).toBeGreaterThanOrEqual(0);
-			expect(idxFire).toBeGreaterThanOrEqual(0);
-			expect(idxFire).toBeGreaterThan(idxCbEnd);
+			await delivered.promise;
+			expect(events).toEqual(["cb:start", "cb:end", "listener:fire"]);
 		} finally {
 			// Ensure gate is released even on early failure so no promise leaks.
 			releaseGate();

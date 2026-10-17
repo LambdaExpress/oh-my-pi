@@ -4,6 +4,8 @@
  * Handles /ssh subcommands for managing SSH host configurations.
  */
 import { getProjectDir, getSSHConfigPath } from "@oh-my-pi/pi-utils";
+import { Text } from "@oh-my-pi/pi-tui";
+import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 import { type SSHHost, type SSHHostConfig, sshCapability } from "../../capability/ssh";
 import { loadCapability } from "../../discovery";
 import { t } from "../../i18n";
@@ -55,9 +57,6 @@ export class SSHCommandController {
 	 */
 	#showHelp(): void {
 		const helpText = [
-			"",
-			theme.bold(t("SSH Host Management")),
-			"",
 			t("Manage SSH host configurations for remote command execution."),
 			"",
 			theme.fg("accent", t("Commands:")),
@@ -68,7 +67,7 @@ export class SSHCommandController {
 			"",
 		].join("\n");
 
-		this.#showMessage(helpText);
+		this.#showReport("SSH Host Management", helpText);
 	}
 
 	/**
@@ -304,23 +303,22 @@ export class SSHCommandController {
 			}
 
 			if (userHosts.length === 0 && projectHosts.length === 0 && discoveredHosts.length === 0) {
-				this.#showMessage(
+				this.#showReport(
+					"SSH Hosts",
 					[
-						"",
 						theme.fg("muted", t("No SSH hosts configured.")),
 						"",
 						t("Use {cmd} to add a host.", { cmd: theme.fg("accent", "/ssh add") }),
-						"",
 					].join("\n"),
 				);
 				return;
 			}
 
-			const lines: string[] = ["", theme.bold(t("Configured SSH Hosts")), ""];
+			const lines: string[] = [];
 
 			// Show user-level hosts
 			if (userHosts.length > 0) {
-				lines.push(theme.fg("accent", t("User level")) + theme.fg("muted", ` (~/.omp/agent/ssh.json):`));
+				lines.push(theme.fg("accent", t("User level")) + theme.fg("muted", ` (${shortenPath(userPath)}):`));
 				for (const name of userHosts) {
 					const config = userConfig.hosts![name];
 					const details = this.#formatHostDetails(config);
@@ -331,7 +329,7 @@ export class SSHCommandController {
 
 			// Show project-level hosts
 			if (projectHosts.length > 0) {
-				lines.push(theme.fg("accent", t("Project level")) + theme.fg("muted", ` (.omp/ssh.json):`));
+				lines.push(theme.fg("accent", t("Project level")) + theme.fg("muted", ` (${shortenPath(projectPath)}):`));
 				for (const name of projectHosts) {
 					const config = projectConfig.hosts![name];
 					const details = this.#formatHostDetails(config);
@@ -362,7 +360,7 @@ export class SSHCommandController {
 				}
 			}
 
-			this.#showMessage(lines.join("\n"));
+			this.#showReport("Configured SSH Hosts", lines.join("\n"));
 		} catch (error) {
 			this.ctx.showError(
 				t("Failed to list hosts: {error}", { error: error instanceof Error ? error.message : String(error) }),
@@ -435,5 +433,10 @@ export class SSHCommandController {
 	 */
 	#showMessage(text: string): void {
 		showCommandMessage(this.ctx, text);
+	}
+
+	/** A read-only listing shown outside the transcript (see `InteractiveModeContext.showCommandReport`). */
+	#showReport(title: string, text: string): void {
+		this.ctx.showCommandReport({ title: t(title), body: new Text(text.trim(), 0, 0) });
 	}
 }

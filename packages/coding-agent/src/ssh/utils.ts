@@ -1,3 +1,5 @@
+import { quotePosixArgument } from "../utils/shell-quote";
+
 export function sanitizeHostName(name: string): string {
 	const sanitized = name.replace(/[^a-zA-Z0-9._-]+/g, "_");
 	return sanitized.length > 0 ? sanitized : "remote";
@@ -102,15 +104,6 @@ export function buildSshTarget(username: string | undefined, host: string): stri
 }
 
 /**
- * Single-quote a path for the POSIX remote shell used by `ssh://`
- * file-transfer helpers, escaping embedded single quotes.
- */
-export function quotePosixPath(value: string): string {
-	if (value.length === 0) return "''";
-	return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-/**
  * Single-quote a string for PowerShell, escaping embedded single quotes.
  */
 export function quotePowerShellString(value: string): string {
@@ -134,5 +127,5 @@ export function quotePowerShellString(value: string): string {
  * `-lc` to mirror the user's real environment.
  */
 export function wrapInPosixShell(shell: "sh" | "bash" | "zsh", command: string): string {
-	return `${shell} -c ${quotePosixPath(command)}`;
+	return `${shell} -c ${quotePosixArgument(command)}`;
 }

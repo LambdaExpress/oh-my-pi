@@ -77,7 +77,7 @@ function createTruncatedReasoningPartDoneResponse(): Response {
 
 const malformedNestedWriteArguments = `{"i":"Running SSH inspection","path":"xd://ssh","content":"{\\"host\\":\\"172.27.0.52\\",\\"command\\":\\"printf '%s\\\\n' '-- home --'; ls -la /home/shinetech\\",\\"timeout\\":45}}]}] trailing assistant text`;
 
-function createMalformedFinalWriteResponse(): Response {
+function createMalformedFinalWriteResponse(streamArguments = false): Response {
 	return createSseResponse([
 		{ type: "response.created", response: { id: "resp_corrupted", status: "in_progress" } },
 		{
@@ -92,6 +92,16 @@ function createMalformedFinalWriteResponse(): Response {
 				status: "in_progress",
 			},
 		},
+		...(streamArguments
+			? [
+					{
+						type: "response.function_call_arguments.delta",
+						output_index: 0,
+						item_id: "fc_corrupted",
+						delta: malformedNestedWriteArguments,
+					},
+				]
+			: []),
 		{
 			type: "response.output_item.done",
 			output_index: 0,
@@ -105,6 +115,74 @@ function createMalformedFinalWriteResponse(): Response {
 			},
 		},
 		{ type: "response.completed", response: { id: "resp_corrupted", status: "completed" } },
+	]);
+}
+
+function createTerminalOnlyMalformedWriteResponse(
+	terminalEvent: "response.completed" | "response.incomplete",
+	{ streamArguments = false, committedCall = false } = {},
+): Response {
+	const outputIndex = committedCall ? 1 : 0;
+	return createSseResponse([
+		{ type: "response.created", response: { id: "resp_pending_corrupted", status: "in_progress" } },
+		...(committedCall
+			? [
+					{
+						type: "response.output_item.added",
+						output_index: 0,
+						item: {
+							type: "function_call",
+							id: "fc_committed",
+							call_id: "call_committed",
+							name: "read",
+							arguments: "",
+							status: "in_progress",
+						},
+					},
+					{
+						type: "response.output_item.done",
+						output_index: 0,
+						item: {
+							type: "function_call",
+							id: "fc_committed",
+							call_id: "call_committed",
+							name: "read",
+							arguments: '{"path":"README.md"}',
+							status: "completed",
+						},
+					},
+				]
+			: []),
+		{
+			type: "response.output_item.added",
+			output_index: outputIndex,
+			item: {
+				type: "function_call",
+				id: "fc_pending_corrupted",
+				call_id: "call_pending_corrupted",
+				name: "write",
+				arguments: streamArguments ? "" : malformedNestedWriteArguments,
+				status: "in_progress",
+			},
+		},
+		...(streamArguments
+			? [
+					{
+						type: "response.function_call_arguments.delta",
+						output_index: outputIndex,
+						item_id: "fc_pending_corrupted",
+						delta: malformedNestedWriteArguments,
+					},
+				]
+			: []),
+		{
+			type: terminalEvent,
+			response: {
+				id: "resp_pending_corrupted",
+				status: terminalEvent === "response.incomplete" ? "incomplete" : "completed",
+				...(terminalEvent === "response.incomplete" ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
+			},
+		},
 	]);
 }
 
@@ -385,6 +463,165 @@ describe("OpenAI Responses transient stream retry", () => {
 		]);
 		expect(JSON.stringify(events)).not.toContain("call_corrupted");
 		expect(JSON.stringify(result.providerPayload)).not.toContain("call_corrupted");
+	});
+
+	it.each(["response.completed", "response.incomplete"] as const)(
+		"retries malformed pending initial arguments finalized only by %s",
+		async terminalEvent => {
+			const recoveredArguments = { path: "recovered.txt", content: "Recovered terminal-only call" };
+			const sentRequests: Array<Record<string, unknown>> = [];
+			const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+				sentRequests.push(parseBody(init));
+				return sentRequests.length === 1
+					? createTerminalOnlyMalformedWriteResponse(terminalEvent)
+					: createCompletedWriteResponse(recoveredArguments);
+			}) as FetchImpl;
+			const responseStream = streamOpenAIResponses(model, context, {
+				apiKey: "test-key",
+				fetch: fetchMock,
+				providerRetryWait: async () => {},
+			});
+			const events = await collectEvents(responseStream);
+			const result = await responseStream.result();
+
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+			expect(sentRequests[1]).toEqual(sentRequests[0]);
+			expect(result.stopReason).toBe("toolUse");
+			expect(result.responseId).toBe("resp_write_recovered");
+			expect(JSON.parse(JSON.stringify(result.content))).toEqual([
+				{
+					type: "toolCall",
+					id: "call_write_recovered|fc_write_recovered",
+					name: "write",
+					arguments: recoveredArguments,
+				},
+			]);
+			expect(events.filter(event => event.type === "toolcall_start")).toHaveLength(1);
+			expect(events.filter(event => event.type === "toolcall_end")).toEqual([
+				expect.objectContaining({
+					contentIndex: 0,
+					toolCall: {
+						type: "toolCall",
+						id: "call_write_recovered|fc_write_recovered",
+						name: "write",
+						arguments: recoveredArguments,
+					},
+				}),
+			]);
+			expect(JSON.stringify(events)).not.toContain("call_pending_corrupted");
+			expect(JSON.stringify(result.providerPayload)).not.toContain("call_pending_corrupted");
+		},
+	);
+
+	it.each([
+		{ name: "after streaming arguments", streamArguments: true, committedCall: false, attempts: 1 },
+		{ name: "after another tool call was committed", streamArguments: false, committedCall: true, attempts: 1 },
+		{ name: "after its replay budget", streamArguments: false, committedCall: false, attempts: 2 },
+	])(
+		"keeps a terminal-only malformed pending call diagnostic $name",
+		async ({ streamArguments, committedCall, attempts }) => {
+			const fetchMock = vi.fn(async () =>
+				createTerminalOnlyMalformedWriteResponse("response.completed", { streamArguments, committedCall }),
+			) as FetchImpl;
+			const responseStream = streamOpenAIResponses(model, context, {
+				apiKey: "test-key",
+				fetch: fetchMock,
+				providerRetryWait: async () => {},
+			});
+			const events = await collectEvents(responseStream);
+			const result = await responseStream.result();
+			const committedToolCall = {
+				type: "toolCall",
+				id: "call_committed|fc_committed",
+				name: "read",
+				arguments: { path: "README.md" },
+			};
+
+			expect(fetchMock).toHaveBeenCalledTimes(attempts);
+			expect(result.stopReason).toBe("toolUse");
+			expect(JSON.parse(JSON.stringify(result.content))).toEqual([
+				...(committedCall ? [committedToolCall] : []),
+				{
+					type: "toolCall",
+					id: "call_pending_corrupted|fc_pending_corrupted",
+					name: "write",
+					arguments: {
+						__parseError: expect.any(String),
+						__rawJson: malformedNestedWriteArguments,
+					},
+				},
+			]);
+			expect(events.filter(event => event.type === "toolcall_start")).toHaveLength(committedCall ? 2 : 1);
+			expect(events.filter(event => event.type === "toolcall_end")).toEqual(
+				committedCall ? [expect.objectContaining({ toolCall: committedToolCall })] : [],
+			);
+			expect(events.filter(event => event.type === "error")).toEqual([]);
+		},
+	);
+
+	it.each([
+		{ name: "after streaming arguments", streamArguments: true, attempts: 1 },
+		{ name: "after its replay budget", streamArguments: false, attempts: 2 },
+	])("returns a non-executable parse diagnostic $name", async ({ streamArguments, attempts }) => {
+		const fetchMock = vi.fn(async () => createMalformedFinalWriteResponse(streamArguments)) as FetchImpl;
+		const responseStream = streamOpenAIResponses(model, context, {
+			apiKey: "test-key",
+			fetch: fetchMock,
+			providerRetryWait: async () => {},
+		});
+		const events = await collectEvents(responseStream);
+		const result = await responseStream.result();
+
+		expect(fetchMock).toHaveBeenCalledTimes(attempts);
+		expect(result.stopReason).toBe("toolUse");
+		const call = result.content.find(block => block.type === "toolCall");
+		if (!call) throw new Error("Expected diagnostic tool call");
+		expect(call.arguments).toEqual({
+			__parseError: expect.any(String),
+			__rawJson: malformedNestedWriteArguments,
+		});
+		expect(events.filter(event => event.type === "toolcall_start")).toHaveLength(1);
+		expect(events.filter(event => event.type === "toolcall_end")).toEqual([
+			expect.objectContaining({
+				contentIndex: 0,
+				toolCall: {
+					type: "toolCall",
+					id: "call_corrupted|fc_corrupted",
+					name: "write",
+					arguments: call.arguments,
+				},
+			}),
+		]);
+	});
+
+	it("recovers from an HTTP-200 gateway WebSocket error before output", async () => {
+		let attempts = 0;
+		const fetchMock = vi.fn(async () => {
+			attempts++;
+			return attempts === 1
+				? createSseResponse([
+						{ type: "response.created", response: { id: "resp_gateway", status: "in_progress" } },
+						{
+							type: "error",
+							error: {
+								code: "stream_incomplete",
+								message:
+									"Upstream websocket closed before response.completed: Upstream websocket receive failed",
+							},
+						},
+					])
+				: createCompletedTextResponse("Recovered", "resp_recovered");
+		}) as FetchImpl;
+
+		const result = await streamOpenAIResponses(model, context, {
+			apiKey: "test-key",
+			fetch: fetchMock,
+			providerRetryWait: async () => {},
+		}).result();
+
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(result.content).toMatchObject([{ type: "text", text: "Recovered" }]);
+		expect(result.stopReason).toBe("stop");
 	});
 
 	it("retries a truncated pending tool call with a fresh request and clean state", async () => {

@@ -16,7 +16,7 @@
  *   Past hard TTL → treat as miss and fetch fresh.
  */
 
-import { Database, type SQLQueryBindings } from "bun:sqlite";
+import { Database } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -61,35 +61,6 @@ interface Row {
 let cachedDb: Database | null = null;
 let openAttempted = false;
 
-/**
- * Run a one-off SQL statement through a freshly prepared statement that is
- * finalized immediately after stepping.
- *
- * bun:sqlite's `Database.close()` defers the real close while prepared
- * statements are still alive, leaving the WAL `-wal`/`-shm` sidecars behind
- * (and briefly locked on Windows). Inline `db.prepare(...).run(...)` calls
- * therefore must finalize their statement, or temp-dir cleanup after
- * `resetForTests()` races the deferred close (EBUSY on `rm`). These helpers
- * make the finalize explicit.
- */
-function runPrepared(db: Database, sql: string, ...params: SQLQueryBindings[]): { changes: number | bigint } {
-	const stmt = db.prepare(sql);
-	try {
-		return stmt.run(...params);
-	} finally {
-		stmt.finalize();
-	}
-}
-
-function getPrepared<T>(db: Database, sql: string, ...params: SQLQueryBindings[]): T | undefined {
-	const stmt = db.prepare(sql);
-	try {
-		return stmt.get(...params) as T | undefined;
-	} finally {
-		stmt.finalize();
-	}
-}
-
 function ensureParentDir(filePath: string): void {
 	try {
 		const dir = path.dirname(filePath);
@@ -132,7 +103,10 @@ export function openDb(): Database | null {
 		// Migrate any pre-existing table whose key/check constraint predates
 		// the current schema. The cache is regenerable, so we drop rows rather
 		// than running an in-place ALTER dance.
-		const userVersion = getPrepared<{ user_version?: number }>(db, "PRAGMA user_version")?.user_version;
+		// Statements go through the query cache that close() finalizes; an unfinalized
+		// prepare() keeps the closed connection alive and the file locked on Windows.
+		const userVersion = (db.query("PRAGMA user_version").get() as { user_version?: number } | undefined)
+			?.user_version;
 		if (userVersion !== undefined && userVersion < 3) {
 			db.run("DROP TABLE IF EXISTS github_view_cache");
 		}
@@ -169,7 +143,7 @@ export function openDb(): Database | null {
 function evictExpired(db: Database, hardTtlMs: number): void {
 	try {
 		const cutoff = Date.now() - hardTtlMs;
-		runPrepared(db, "DELETE FROM github_view_cache WHERE fetched_at < ?", cutoff);
+		db.query("DELETE FROM github_view_cache WHERE fetched_at < ?").run(cutoff);
 	} catch (err) {
 		logger.debug("github cache: eviction failed", { err: String(err) });
 	}
@@ -291,15 +265,11 @@ export function getCached<T = unknown>(
 	const db = openDb();
 	if (!db) return null;
 	try {
-		const row = getPrepared<Row>(
-			db,
-			"SELECT auth_key, repo, kind, number, include_comments, fetched_at, payload, rendered, source_url FROM github_view_cache WHERE auth_key = ? AND repo = ? AND kind = ? AND number = ? AND include_comments = ?",
-			authKey,
-			normalizeRepo(repo),
-			kind,
-			number,
-			includeComments ? 1 : 0,
-		);
+		const row = db
+			.query(
+				"SELECT auth_key, repo, kind, number, include_comments, fetched_at, payload, rendered, source_url FROM github_view_cache WHERE auth_key = ? AND repo = ? AND kind = ? AND number = ? AND include_comments = ?",
+			)
+			.get(authKey, normalizeRepo(repo), kind, number, includeComments ? 1 : 0) as Row | undefined;
 		if (!row) return null;
 		let payload: T;
 		try {
@@ -343,9 +313,9 @@ export function putCached<T = unknown>(input: PutCachedInput<T>): void {
 	try {
 		const fetchedAt = input.fetchedAt ?? Date.now();
 		const payloadJson = JSON.stringify(input.payload);
-		runPrepared(
-			db,
+		db.query(
 			"INSERT OR REPLACE INTO github_view_cache (auth_key, repo, kind, number, include_comments, fetched_at, payload, rendered, source_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		).run(
 			input.authKey ?? DEFAULT_CACHE_AUTH_KEY,
 			normalizeRepo(input.repo),
 			input.kind,
@@ -374,24 +344,16 @@ export function invalidate(
 	if (!db) return;
 	try {
 		if (includeComments === undefined) {
-			runPrepared(
-				db,
-				"DELETE FROM github_view_cache WHERE auth_key = ? AND repo = ? AND kind = ? AND number = ?",
+			db.query("DELETE FROM github_view_cache WHERE auth_key = ? AND repo = ? AND kind = ? AND number = ?").run(
 				authKey,
 				normalizeRepo(repo),
 				kind,
 				number,
 			);
 		} else {
-			runPrepared(
-				db,
+			db.query(
 				"DELETE FROM github_view_cache WHERE auth_key = ? AND repo = ? AND kind = ? AND number = ? AND include_comments = ?",
-				authKey,
-				normalizeRepo(repo),
-				kind,
-				number,
-				includeComments ? 1 : 0,
-			);
+			).run(authKey, normalizeRepo(repo), kind, number, includeComments ? 1 : 0);
 		}
 	} catch (err) {
 		logger.debug("github cache: invalidate failed", { err: String(err) });
@@ -414,9 +376,9 @@ export function invalidateAllForNumber(number: number, repo?: string): void {
 	if (!db) return;
 	try {
 		if (repo === undefined) {
-			runPrepared(db, "DELETE FROM github_view_cache WHERE number = ?", number);
+			db.query("DELETE FROM github_view_cache WHERE number = ?").run(number);
 		} else {
-			runPrepared(db, "DELETE FROM github_view_cache WHERE number = ? AND repo = ?", number, normalizeRepo(repo));
+			db.query("DELETE FROM github_view_cache WHERE number = ? AND repo = ?").run(number, normalizeRepo(repo));
 		}
 	} catch (err) {
 		logger.debug("github cache: invalidateAllForNumber failed", { err: String(err) });
@@ -428,7 +390,7 @@ export function clearAll(): void {
 	const db = openDb();
 	if (!db) return;
 	try {
-		runPrepared(db, "DELETE FROM github_view_cache");
+		db.query("DELETE FROM github_view_cache").run();
 	} catch (err) {
 		logger.debug("github cache: clear failed", { err: String(err) });
 	}
@@ -445,9 +407,9 @@ export function invalidateAllForRepo(repo?: string): void {
 	if (!db) return;
 	try {
 		if (repo === undefined) {
-			runPrepared(db, "DELETE FROM github_view_cache");
+			db.query("DELETE FROM github_view_cache").run();
 		} else {
-			runPrepared(db, "DELETE FROM github_view_cache WHERE repo = ?", normalizeRepo(repo));
+			db.query("DELETE FROM github_view_cache WHERE repo = ?").run(normalizeRepo(repo));
 		}
 	} catch (err) {
 		logger.debug("github cache: invalidateAllForRepo failed", { err: String(err) });
