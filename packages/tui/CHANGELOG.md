@@ -19,6 +19,8 @@
 
 ### Fixed
 
+- Fixed active tool previews appearing truncated until resize when their contents changed after overflowing the viewport.
+- Fixed large blank gaps above the input when tool previews, panels, or completed runs collapse; ordinary paints and short history replays now keep the editor directly below the remaining content.
 - Localized usage limit titles and absolute remaining/spent amounts across overview cards, detail reports, and native terminal descriptions.
 - Fixed `/usage` overview cards hiding extra credit balances behind the four-window quota preview, including native terminal cards.
 - Fixed full-output recovery notices offering only bare artifact links; notices now include a bounded verbatim read selector.

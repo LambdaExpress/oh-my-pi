@@ -275,8 +275,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	// with rows — so it is retained across resizes rather than rediscovered
 	// from whatever chrome is expanded when the height changes.
 	#chromeFloor: number | undefined;
-	// Settled idle chrome has retired rows; contraction must preserve native history.
-	#chromeFloorPromoted = false;
 	#runActive = false;
 	#transientChrome: ReadonlySet<Component> = new Set();
 	#selfClearingChrome: ReadonlySet<Component> = new Set();
@@ -426,7 +424,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		// Eligible chrome excludes user-driven transient rows above their resting height and every
 		// self-clearing row; contraction, floor and rebaseline all use it.
 		const eligibleChrome = after.length - (transientRows - transientFloor) - selfClearingRows;
-		const promotedChromeContracted = this.#chromeFloorPromoted && eligibleChrome < (this.#chromeFloor ?? 0);
 		this.#chromeFloor = Math.min(this.#chromeFloor ?? eligibleChrome, eligibleChrome);
 		this.#rebaselineChromeFloor(this.#runActive || transcript.hasActiveBlock(), eligibleChrome);
 		const belowFloor = this.#chromeFloor;
@@ -456,40 +453,9 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			activeSpans.push({ start: span.start, end: span.end, candidates: () => ids });
 		}
 		const drop = Math.max(0, before.length + active.length + after.length - rows);
+		// The writer preserves the native-history anchor. Let contractions shorten
+		// the mutable viewport so the editor follows the remaining transcript.
 		const mutable = [...before, ...active, ...after].slice(drop);
-		// Once a paint reaches the bottom row over committed history, rows above
-		// it may already be in native scrollback, which no later frame can pull
-		// back down. Keep the input on the bottom row whenever the frame shrinks
-		// — a closing dialog, report or HUD, or a live block collapsing. The
-		// slack that leaves has to sit somewhere: rows above the live area hold
-		// committed history still on screen, so the live rows cannot move up into
-		// them, and replaying those rows would duplicate them while clearing
-		// history would lose them. Replays position themselves. Without native
-		// history the live viewport is the whole document and shrinks in place.
-		const filledHistoryRows =
-			history?.kind === "replay" || !(history !== undefined || this.ui.hasProviderHistory())
-				? undefined
-				: this.ui.getFilledHistoryRows();
-		// Once settled chrome has retired rows, shrinking it cannot pull those
-		// rows back out of native scrollback. Let the editor move up instead of
-		// inserting a seam band; subsequent frames retain that natural anchor
-		// until new output fills the screen again. Shell history stays untouched.
-		const slack =
-			filledHistoryRows === undefined || promotedChromeContracted
-				? 0
-				: Math.max(0, rows - Math.min(rows, filledHistoryRows + (history?.rows.length ?? 0)) - mutable.length);
-		// Park the slack below the live rows rather than above them. Above, it
-		// splits the on-screen history from the live tail and reads as a hole
-		// punched into whatever was streaming — a table's rows included — and
-		// each slack row is written with no cells, so no repaint, mark or
-		// selection can cover it until something scrolls it away. Below, the
-		// transcript stays contiguous with the history, the slack reads as the
-		// empty tail of a short document, and growth consumes it before any row
-		// can scroll.
-		if (slack > 0) {
-			const at = Math.max(0, Math.min(mutable.length, before.length + active.length - drop));
-			mutable.splice(at, 0, ...Array<string>(slack).fill(""));
-		}
 		const viewportLength = mutable.length;
 		const spans: ViewportClickSpan[] = [];
 		const shift = (span: ViewportClickSpan, base: number): void => {
@@ -504,7 +470,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			}
 		};
 		for (const span of activeSpans) shift(span, before.length - drop);
-		for (const span of afterSpans) shift(span, slack + before.length + active.length - drop);
+		for (const span of afterSpans) shift(span, before.length + active.length - drop);
 		this.#lastClickSpans = spans;
 		if (history !== undefined && this.#offeredHistory?.source === "header") {
 			const visibleHeaderRows = Math.max(0, rows - (mutable.length + drop));
@@ -720,7 +686,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			return;
 		}
 		if (this.#idleChromeSettled && this.#idleChrome === chrome) {
-			this.#chromeFloorPromoted = true;
 			this.#chromeFloor = chrome;
 			this.#resetIdleChrome();
 			return;
@@ -1042,7 +1007,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	setRuntimeChildren(children: readonly Component[], options: RuntimeChildrenOptions = {}): void {
 		if (this.#stopped) return;
 		this.#chromeFloor = undefined;
-		this.#chromeFloorPromoted = false;
 		this.#resetIdleChrome();
 		this.#nativeDock = options.nativeDock;
 		this.#transientChrome = new Set(options.transientChrome);

@@ -22,6 +22,11 @@ Each normal frame:
 4. Ask `TranscriptContainer` for the live rows within the exact remainder.
 5. Return one bounded `TerminalFramePlan`.
 
+When a live preview or below-transcript chrome contracts, the composer shortens
+the viewport without filling the reclaimed rows above the editor. The writer
+preserves the native-history anchor and clears the unused tail below the input.
+This applies to ordinary paints as well as short history replays.
+
 Graceful shutdown switches the provider to Flush policy and synchronously drains
 every currently eligible finalized prefix before terminal handoff.
 
@@ -51,7 +56,7 @@ Transcript rebuilds preserve pending plain-text and custom user requests, includ
 
 Finalizing a later block never bypasses mutable content or an active predecessor. `peekFinalizedBatch(width, capacity)` retires the shortest eligible settled prefix that lets the remaining live tail fit `capacity`, in batches capped by a per-frame render budget (the remainder is offered on later frames), and reoffers the same id until `acknowledgeFinalizedBatch()` succeeds. Zero-row logical markers may explicitly permit successor retirement: the completed-run collapse anchor keeps its projection metadata without blocking finalized assistant/tool rows from entering scrollback.
 
-An append-only head may emit a monotonically extending prefix of stable semantic rows under pressure, retaining its mutable suffix; final retirement emits only the remainder. Mutable blocks can expose an explicit settled prefix or retain a visual overflow snapshot without becoming logically committed. Same-width snapshot reconciliation compares visible text, so settlement styling and streamed argument growth do not replay an unchanged prefix; width changes require reflow. Ordinary retirement also bounds the number of live blocks; otherwise, while the screen has room nothing retires, so a submitted message is visible immediately and recent blocks keep reflowing on resize. `peekFlushBatch(width)` drains the whole eligible finalized prefix during graceful shutdown without the ordinary per-frame budget.
+An append-only head may emit a monotonically extending prefix of stable semantic rows under pressure, retaining its mutable suffix; final retirement emits only the remainder. Mutable blocks can expose an explicit settled prefix or retain a visual overflow snapshot without becoming logically committed. Same-width snapshot reconciliation compares visible text for active and settled blocks, so settlement styling and streamed argument growth do not replay an unchanged prefix; width changes require reflow. When a preview rewrites earlier rows, output resumes at the first changed row and the snapshot rebases to the current rendered prefix. Ordinary retirement also bounds the number of live blocks; otherwise, while the screen has room nothing retires, so a submitted message is visible immediately and recent blocks keep reflowing on resize. `peekFlushBatch(width)` drains the whole eligible finalized prefix during graceful shutdown without the ordinary per-frame budget.
 
 Assistant snapshot publication retains source paragraph whitespace and applies the same prose styling as live rendering; viewport-edge blank trimming never mutates the semantic snapshot. Revisions that invalidate append-only assumptions remain mutable under pressure until finalization.
 

@@ -75,7 +75,14 @@ previous viewport. A replay is one atomic exception: the renderer moves the
 ledger suffix that fits into leading blank viewport rows, retains the prefix as
 history remainder, prepares `remainder || finalViewport`, and performs one
 synchronous `terminal.write`. No block-at-a-time replay frames are observable.
+Unused space in a short viewport receives only actual replay rows; when the
+complete ledger and live content fit on screen, the document stays top-anchored
+and the editor follows the transcript without synthetic blank padding. Full or
+overflowing replays retain the bottom-first split.
 Ordinary renders never audit or rewrite terminal history.
+The provider also keeps its live rows, status chrome, and editor contiguous on
+ordinary contractions. The writer retains the native-history anchor and clears
+the freed rows below the editor; no synthetic band is inserted above the input.
 
 Visible overlays are screen-coordinate content. They composite over the
 viewport and never become history. Showing, updating, or closing an overlay

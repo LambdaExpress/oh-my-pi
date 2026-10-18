@@ -823,14 +823,9 @@ export class TUI extends Container {
 	// above it hold history still visible on the physical screen.
 	#providerViewportTop = 0;
 	// Net composer-space offset of the published hit-test origin behind the
-	// painted top, from the last paint: replay-replaced rows minus viewport
-	// rows the paint prepended for a short viewport. Negative while prepended
-	// blanks outweigh replaced rows; zero on ordinary frames.
+	// painted top: leading composer rows replaced by replayed history.
+	// History prepended to a short viewport does not consume composer rows.
 	#providerViewportPadTop = 0;
-	// Whether native history holds rows the provider committed since the last
-	// destructive reset. Only paints write history and only a destructive reset
-	// erases it; an `append` resize replay keeps the rows it replays beneath.
-	#providerHistoryWritten = false;
 	// Viewport-relative row of the hardware cursor after the last normal paint
 	// (0 = parked at the viewport top). A resize reflows the normal buffer
 	// before the app hears about it; terminals keep the cursor attached to its
@@ -1372,9 +1367,9 @@ export class TUI extends Container {
 	 * the display, while a resize transaction is settling, and while a Ghostty
 	 * image paint is deferred — the painted rows predate the latest spans in
 	 * all three cases, so hits would map to unrelated old rows.
-	 * The origin is in composer rows: a replay paint replaces leading composer
-	 * blanks with history rows and prepends blanks for a short viewport, so
-	 * the painted top is backed out by that net pad.
+	 * The origin is in composer rows: a replay can replace leading composer
+	 * blanks or prepend history rows to a short viewport. Only replaced
+	 * composer rows are backed out of the painted top.
 	 */
 	getMutableViewport(): { top: number; length: number } {
 		if (
@@ -1387,27 +1382,6 @@ export class TUI extends Container {
 			return { top: 0, length: 0 };
 		}
 		return { top: this.#providerViewportTop - this.#providerViewportPadTop, length: this.#providerWindow.length };
-	}
-
-	/**
-	 * Rows of native history the last paint left on screen above a mutable
-	 * viewport that reached the bottom row, or `undefined` when that paint left
-	 * rows free below it (or none happened, or a destructive reset will repaint
-	 * from row zero). Rows above a bottom-reaching viewport may already sit in
-	 * native scrollback, which a later shrink cannot pull back down.
-	 */
-	getFilledHistoryRows(): number | undefined {
-		if (!this.#hasEverRendered || this.#clearScrollbackOnNextRender) return undefined;
-		const height = this.terminal.rows;
-		if (this.#providerWindow.length === 0 || this.#providerViewportTop + this.#providerWindow.length < height) {
-			return undefined;
-		}
-		return Math.min(this.#providerViewportTop, height);
-	}
-
-	/** Whether native history holds rows the frame provider committed since the last destructive reset. */
-	hasProviderHistory(): boolean {
-		return this.#providerHistoryWritten && !this.#clearScrollbackOnNextRender;
 	}
 
 	/**
@@ -3547,19 +3521,22 @@ export class TUI extends Container {
 
 		let historyRows = history?.rows ?? [];
 		let replayViewportRows = 0;
-		let replayPrependedBlanks = 0;
+		let replayPrependedRows = 0;
 		if (history?.kind === "replay") {
-			// Providers may omit unused leading rows from a short viewport. Make
-			// that logical space explicit before the bottom-first replay split.
-			replayPrependedBlanks = Math.max(0, height - viewport.length);
-			while (viewport.length < height) viewport.unshift("");
+			// Only fill unused leading space with actual replay rows. Padding a
+			// short ledger to the screen height would pin the input below a blank
+			// band even after a destructive collapse has reclaimed the history.
+			replayPrependedRows = Math.min(historyRows.length, Math.max(0, height - viewport.length));
 			let leadingBlankRows = 0;
 			while (leadingBlankRows < viewport.length && !/\S/.test(viewport[leadingBlankRows]!)) {
 				leadingBlankRows++;
 			}
-			const moved = Math.min(historyRows.length, leadingBlankRows);
+			const moved = Math.min(historyRows.length, replayPrependedRows + leadingBlankRows);
 			if (moved > 0) {
-				viewport = [...historyRows.slice(historyRows.length - moved), ...viewport.slice(moved)];
+				viewport = [
+					...historyRows.slice(historyRows.length - moved),
+					...viewport.slice(moved - replayPrependedRows),
+				];
 				historyRows = historyRows.slice(0, historyRows.length - moved);
 				replayViewportRows = moved;
 			}
@@ -3579,7 +3556,6 @@ export class TUI extends Container {
 			this.#providerViewportTop = 0;
 			this.#providerWindow = [];
 			this.#providerPreparedRows = [];
-			this.#providerHistoryWritten = false;
 		}
 		// The viewport stays anchored directly below whatever history remains on
 		// screen. Appending K history rows moves the anchor down by K; the write
@@ -3766,7 +3742,7 @@ export class TUI extends Container {
 		this.#providerWindow = mutablePreparedLines;
 		this.#providerPreparedRows = mutablePreparedRows;
 		this.#providerViewportTop = mutableTop;
-		this.#providerViewportPadTop = replayViewportRows - replayPrependedBlanks;
+		this.#providerViewportPadTop = replayViewportRows - replayPrependedRows;
 		this.#previousWidth = width;
 		this.#previousHeight = height;
 		this.#resizeBurstGrew = false;
@@ -3776,7 +3752,6 @@ export class TUI extends Container {
 		this.#resizeBurstWidthChanged = false;
 		this.#resizeBurstResized = false;
 		this.#previousFrameLength = mutablePreparedLines.length;
-		if (preparedHistory.lines.length > 0 || replayViewportRows > 0) this.#providerHistoryWritten = true;
 		this.#clearScrollbackOnNextRender = false;
 		this.#forceViewportRepaintOnNextRender = false;
 		this.#hasEverRendered = true;

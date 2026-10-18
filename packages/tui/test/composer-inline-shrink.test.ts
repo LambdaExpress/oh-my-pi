@@ -831,25 +831,39 @@ describe("composer inline shrink (#11007)", () => {
 		}
 	});
 
-	it("keeps the editor on the bottom row when a live block collapses under retired history", async () => {
+	it("keeps the editor adjacent to a shrinking live preview without rewriting native history", async () => {
 		const h = makeHarness();
-		const transcript = new TranscriptContainer();
-		for (let i = 0; i < TRANSCRIPT_ROWS; i++) transcript.addChild({ render: () => [`${TRANSCRIPT_PREFIX}${i}`] });
-		// A streaming tool preview that collapses to its short result.
 		let toolRows = 12;
-		transcript.addChild({ render: () => Array.from({ length: toolRows }, (_, i) => `Tool row ${i}`) });
-		h.composer.setRuntimeChildren([transcript, h.hud, h.editor]);
-		await h.scheduler.settle(h.terminal);
-		toolRows = 4;
-		h.composer.ui.requestRender();
-		await h.scheduler.settle(h.terminal);
-		const view = h.terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
-		expect(view.findIndex(row => row.includes("EDITOR"))).toBe(ROWS - 1);
-		expect(view.filter(row => row.startsWith("Tool row "))).toHaveLength(4);
-		h.composer.stop();
+		const tool = {
+			render: () => Array.from({ length: toolRows }, (_, i) => `Tool row ${i}`),
+			isTranscriptBlockFinalized: () => false,
+		};
+		h.transcript.addChild(tool);
+		try {
+			await h.scheduler.settle(h.terminal);
+			toolRows = 4;
+			for (let repaint = 0; repaint < 2; repaint++) {
+				h.composer.ui.requestRender();
+				await h.scheduler.settle(h.terminal);
+				const view = h.terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
+				const toolEnd = view.findIndex(row => row === "Tool row 3");
+				expect(toolEnd).toBeGreaterThanOrEqual(0);
+				expect(view[toolEnd + 1]).toBe("EDITOR");
+				const history = h.terminal
+					.getScrollBuffer()
+					.map(row => Bun.stripANSI(row).trimEnd())
+					.filter(row => row.startsWith(TRANSCRIPT_PREFIX) || row.startsWith("Tool row "));
+				expect(history).toEqual([
+					...Array.from({ length: TRANSCRIPT_ROWS }, (_, i) => `${TRANSCRIPT_PREFIX}${i}`),
+					...Array.from({ length: toolRows }, (_, i) => `Tool row ${i}`),
+				]);
+			}
+		} finally {
+			h.composer.stop();
+		}
 	});
 
-	it("parks a collapsing block's slack below the reply instead of banding its history", async () => {
+	it("keeps a streamed reply contiguous when an earlier card contracts", async () => {
 		const rows = 50;
 		const h = makeHarness(107, rows, 10);
 		const card = new InlineWidget();
@@ -889,7 +903,6 @@ describe("composer inline shrink (#11007)", () => {
 		// into the answer (and, carrying no cells, cannot be covered by any repaint).
 		expect(view[0]).not.toBe("");
 		expect(longest).toBeLessThanOrEqual(1);
-		expect(view.findIndex(row => row.includes("EDITOR"))).toBe(rows - 1);
 		h.composer.stop();
 	});
 });

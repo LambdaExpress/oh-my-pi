@@ -397,24 +397,44 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
-	it("publishes composer-space origin when a replay prepends blanks", () => {
-		// A short viewport is prepended with blanks before the replay split,
-		// so composer row 0 sits that many screens below the painted top even
-		// when fewer blanks were replaced by history rows.
-		const terminal = new CountingTerminal(20, 4);
-		const provider = new Provider({ viewport: ["live", "editor"] });
-		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+	it("keeps a short replay contiguous with its live rows and editor cursor across repaints", () => {
+		const terminal = new CountingTerminal(20, 6);
+		const provider = new Provider({
+			viewport: ["old one", "old two", "old three", "old four", "old five", "old six"],
+		});
+		const tui = new TUI(terminal, true, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
 
 		provider.plan = {
 			history: { id: 1, rows: ["history one"], kind: "replay" },
-			viewport: ["live", "editor"],
+			viewport: ["live", `ed${CURSOR_MARKER}itor`],
 		};
-		tui.requestRender(true);
+		try {
+			tui.requestRender(true);
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual([
+				"history one",
+				"live",
+				"editor",
+				"",
+				"",
+				"",
+			]);
+			expect(terminal.getCursor()).toMatchObject({ row: 2, col: 2 });
+			expect(tui.getMutableViewport()).toEqual({ top: 1, length: 2 });
 
-		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["history one", "", "live", "editor"]);
-		expect(tui.getMutableViewport()).toEqual({ top: 2, length: 3 });
-		tui.stop();
+			tui.requestRender(true);
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual([
+				"history one",
+				"live",
+				"editor",
+				"",
+				"",
+				"",
+			]);
+			expect(terminal.getCursor()).toMatchObject({ row: 2, col: 2 });
+		} finally {
+			tui.stop();
+		}
 	});
 
 	it("fuses fullscreen overlay exit into a session replacement paint", () => {
@@ -635,18 +655,17 @@ describe("terminal frame plans", () => {
 		tui.setFrameProvider(provider);
 		tui.start();
 		await renderScheduler.settle(terminal);
-		expect(tui.hasProviderHistory()).toBe(true);
+		expect(plainBuffer(terminal)).toContain("history");
 
 		// An append-mode width replay leaves the committed rows in scrollback.
 		terminal.resize(30, 3);
 		await renderScheduler.advance(terminal, 160);
 		expect(plainBuffer(terminal)).toContain("history");
-		expect(tui.hasProviderHistory()).toBe(true);
 
 		// A destructive reset erases them, and the empty replay writes none back.
 		tui.resetDisplay();
 		await renderScheduler.settle(terminal);
-		expect(tui.hasProviderHistory()).toBe(false);
+		expect(plainBuffer(terminal)).not.toContain("history");
 		tui.stop();
 	});
 

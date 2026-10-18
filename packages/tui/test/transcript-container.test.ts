@@ -19,6 +19,10 @@ class Block implements Component {
 		this.#finalized = finalized;
 	}
 
+	update(rows: string[]): void {
+		this.#rows = rows;
+	}
+
 	finalize(rows: string[]): void {
 		this.#rows = rows;
 		this.#finalized = true;
@@ -1138,6 +1142,49 @@ describe("TranscriptContainer", () => {
 		// new width, all three current rows must be eligible for display/retirement;
 		// reusing the old row count would silently hide narrow-0.
 		expect(transcript.renderViewport(40, 10)).toEqual(["narrow-0", "narrow-1", "narrow-2"]);
+	});
+
+	it("shows rewritten active preview rows without waiting for resize or finalization", () => {
+		const transcript = new TranscriptContainer();
+		const active = new ToolBlock(["header", "old-a", "old-b", "tail-a", "tail-b"], false);
+		transcript.addChild(active);
+		const first = transcript.peekFinalizedBatch(80, 2);
+		if (!first) throw new Error("expected initial preview overflow");
+		expect(first.rows).toEqual(["header", "old-a", "old-b"]);
+		transcript.acknowledgeFinalizedBatch(first.id);
+
+		active.update(["header", "new-a", "new-b", "tail-a", "tail-b"]);
+		const changed = transcript.peekFinalizedBatch(80, 2);
+		expect(changed?.rows).toEqual(["new-a", "new-b"]);
+		if (!changed) throw new Error("expected rewritten preview overflow");
+		expect(transcript.renderViewport(80, 2)).toEqual(["tail-a", "tail-b"]);
+		transcript.acknowledgeFinalizedBatch(changed.id);
+		expect(transcript.peekFinalizedBatch(80, 2)).toBeUndefined();
+
+		active.update(["\x1b[32mheader\x1b[0m", "\x1b[31mnew-a\x1b[0m", "new-b", "tail-a", "tail-b"]);
+		expect(transcript.peekFinalizedBatch(80, 2)).toBeUndefined();
+		expect(transcript.renderViewport(80, 2)).toEqual(["tail-a", "tail-b"]);
+	});
+
+	it("rebases an unacknowledged preview snapshot onto its latest rendered prefix", () => {
+		const transcript = new TranscriptContainer();
+		const active = new ToolBlock(["header", "old-a", "old-b", "tail-a", "tail-b"], false);
+		transcript.addChild(active);
+		const first = transcript.peekFinalizedBatch(80, 2);
+		if (!first) throw new Error("expected initial preview overflow");
+		transcript.acknowledgeFinalizedBatch(first.id);
+
+		active.update(["header", "new-a", "new-b", "tail-a", "tail-b"]);
+		const changed = transcript.peekFinalizedBatch(80, 2);
+		if (!changed) throw new Error("expected rewritten preview overflow");
+		active.update(["header", "new-a", "revised-b", "tail-a", "tail-b"]);
+		const reoffered = transcript.rerenderOfferedBatch(80);
+		expect(reoffered?.rows).toEqual(["new-a", "revised-b"]);
+		if (!reoffered) throw new Error("expected updated preview offer");
+		transcript.acknowledgeFinalizedBatch(reoffered.id);
+
+		expect(transcript.peekFinalizedBatch(80, 2)).toBeUndefined();
+		expect(transcript.renderViewport(80, 2)).toEqual(["tail-a", "tail-b"]);
 	});
 
 	it("clears an acknowledged partial watermark on destructive reset", () => {

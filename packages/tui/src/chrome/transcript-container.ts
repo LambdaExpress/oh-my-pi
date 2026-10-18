@@ -893,14 +893,10 @@ export class TranscriptContainer extends Container {
 			const start = this.#retiredPrefixLength(entry, width, rendered);
 			const offeredRows = Math.max(0, offered.batch.rows.length - (offered.watermark.separator ? 1 : 0));
 			const rowCount = Math.min(rendered.length, start + offeredRows);
-			const prefix =
-				entry.snapshot?.width === width
-					? [...entry.snapshot.prefix, ...rendered.slice(entry.snapshot.rowCount, rowCount)]
-					: rendered.slice(0, rowCount);
 			const watermark: SnapshotWatermark = {
 				width,
 				rowCount,
-				prefix,
+				prefix: rendered.slice(0, rowCount),
 				separator: rowCount > start && rowCount === rendered.length && !this.#isFoldedToolRow(entry.component),
 			};
 			const rerendered = Array.from(rendered.slice(start, rowCount));
@@ -1233,14 +1229,10 @@ export class TranscriptContainer extends Container {
 				const start = this.#retiredPrefixLength(candidate.entry, width, full);
 				const rowCount = Math.min(full.length, start + Math.max(1, total - room));
 				if (rowCount > start) {
-					const prefix =
-						candidate.entry.snapshot?.width === width
-							? [...candidate.entry.snapshot.prefix, ...full.slice(candidate.entry.snapshot.rowCount, rowCount)]
-							: full.slice(0, rowCount);
 					const watermark: SnapshotWatermark = {
 						width,
 						rowCount,
-						prefix,
+						prefix: full.slice(0, rowCount),
 						// Trailing blanks are deferred past a folded row: its run may
 						// continue with the next block.
 						separator: rowCount === full.length && !this.#isFoldedToolRow(candidate.entry.component),
@@ -1619,17 +1611,15 @@ export class TranscriptContainer extends Container {
 		});
 	}
 
-	#snapshotStart(
-		snapshot: SnapshotWatermark | undefined,
-		state: BlockState,
-		width: number,
-		rendered: readonly string[],
-	): number {
+	#snapshotStart(snapshot: SnapshotWatermark | undefined, width: number, rendered: readonly string[]): number {
 		if (snapshot === undefined || snapshot.width !== width) return 0;
 		const comparable = Math.min(snapshot.rowCount, rendered.length);
-		if (state === "active") return comparable;
+		// Mutable previews can replace earlier rows before they finalize.
+		// Only the unchanged visible prefix is already represented in history.
 		for (let row = 0; row < comparable; row++) {
-			if (Bun.stripANSI(snapshot.prefix[row]!) !== Bun.stripANSI(rendered[row]!)) return row;
+			const previous = snapshot.prefix[row]!;
+			const current = rendered[row]!;
+			if (previous !== current && Bun.stripANSI(previous) !== Bun.stripANSI(current)) return row;
 		}
 		return comparable;
 	}
@@ -1638,7 +1628,7 @@ export class TranscriptContainer extends Container {
 		return Math.max(
 			this.#emittedRowCount(entry, width),
 			this.#legacyPrefixLength(entry, width, rendered),
-			this.#snapshotStart(entry.snapshot, entry.state, width, rendered),
+			this.#snapshotStart(entry.snapshot, width, rendered),
 		);
 	}
 
@@ -1849,7 +1839,7 @@ export class TranscriptContainer extends Container {
 		return Math.max(
 			this.#projectedEmittedRowCount(entry, index, width),
 			partialRows,
-			this.#snapshotStart(snapshot, entry.state, width, rendered),
+			this.#snapshotStart(snapshot, width, rendered),
 		);
 	}
 
