@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { type Component, Container, Text } from "@oh-my-pi/pi-tui";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { COMPOSER_DEFAULTS, Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
@@ -47,6 +48,88 @@ beforeAll(async () => {
 });
 
 describe("transcript rows under chrome that outlives the turn", () => {
+	it("does not duplicate animated tool previews in native history before settlement", async () => {
+		const terminal = new VirtualTerminal(COLUMNS, 24);
+		const scheduler = new VirtualRenderScheduler();
+		const composer = new Composer({
+			terminal,
+			tuiOptions: { renderScheduler: scheduler },
+			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
+		});
+		const transcript = new TranscriptContainer();
+		const title = "Animated tool preview";
+		const code = Array.from({ length: 40 }, (_, i) => `value_${i} = ${i}`).join("\n");
+		const tool = new ToolExecutionComponent("eval", { language: "py", code, title }, {}, undefined, composer.ui);
+		transcript.addChild(tool);
+		const chrome = new TurnChrome();
+		chrome.rows = 20;
+		const editor = new Text("EDITOR", 0, 0);
+		composer.setRuntimeChildren([transcript, chrome, editor]);
+		composer.start({ playWelcomeIntro: false });
+		const titleRows = (): string[] => terminal.getScrollBuffer().filter(row => row.includes(title));
+		try {
+			for (let tick = 0; tick < 8; tick++) {
+				tool.tickSpinner(tick);
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+			}
+			chrome.rows = 0;
+			composer.ui.requestRender();
+			await scheduler.settle(terminal);
+			expect(titleRows()).toHaveLength(1);
+
+			// A live result may replace the entire code preview, not just its spinner.
+			chrome.rows = 20;
+			tool.updateResult(
+				{
+					content: [{ type: "text", text: "LIVE_OUTPUT" }],
+					details: {
+						cells: [{ index: 0, title, code, language: "python", output: "LIVE_OUTPUT", status: "running" }],
+					},
+				},
+				true,
+			);
+			for (let tick = 0; tick < 8; tick++) {
+				tool.tickSpinner(tick);
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+			}
+			chrome.rows = 0;
+			composer.ui.requestRender();
+			await scheduler.settle(terminal);
+			expect(titleRows()).toHaveLength(1);
+
+			tool.setExpanded(true);
+			const result = {
+				content: [{ type: "text", text: "FINAL_OUTPUT" }],
+				details: {
+					cells: [{ index: 0, title, code, language: "python", output: "FINAL_OUTPUT", status: "complete" }],
+				},
+			};
+			tool.updateResult(result, false);
+			chrome.rows = 20;
+			composer.ui.requestRender();
+			await scheduler.settle(terminal);
+			expect(titleRows()).toHaveLength(1);
+			expect(terminal.getScrollBuffer().filter(row => row.includes("FINAL_OUTPUT"))).toHaveLength(1);
+			expect(terminal.getScrollBuffer().some(row => row.includes("LIVE_OUTPUT"))).toBe(false);
+			expect(terminal.getScrollBuffer().flatMap(row => row.match(/value_\d+ = \d+/g) ?? [])).toEqual(
+				code.split("\n"),
+			);
+
+			composer.ui.resetDisplay();
+			await scheduler.settle(terminal);
+			expect(titleRows()).toHaveLength(1);
+			expect(terminal.getScrollBuffer().filter(row => row.includes("FINAL_OUTPUT"))).toHaveLength(1);
+			expect(terminal.getScrollBuffer().flatMap(row => row.match(/value_\d+ = \d+/g) ?? [])).toEqual(
+				code.split("\n"),
+			);
+		} finally {
+			tool.stopAnimation();
+			composer.stop();
+		}
+	});
+
 	for (const rows of [24, 45]) {
 		it(`keeps every line of a long streamed answer at ${rows} rows`, async () => {
 			const terminal = new VirtualTerminal(COLUMNS, rows);

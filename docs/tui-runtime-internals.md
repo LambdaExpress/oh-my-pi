@@ -74,6 +74,12 @@ The product root reserves chrome first, then gives the transcript the remaining 
 
 Built-in and extension tools use the same `ToolExecutionComponent` wrapper. Explicit user folding and expansion remain separate presentation choices: `display.foldToolRows` replaces tool cards with one-line activity rows, `display.hideToolActivity` hides activity, and Ctrl+O expands or contracts output previews. These choices do not change execution or block finality.
 
+Active tool cards opt out of mid-stream retirement: their animated headers,
+streamed argument tail windows, partial results, and figures can rewrite earlier
+rows. Overflow stays in the mutable viewport tail until settlement instead of
+appending repeated preview fragments to native history on every animation tick.
+Finalized cards retire normally, including their complete expanded output.
+
 ## Display projections and context injection
 
 Completed-run collapse is controlled by `display.collapseCompletedRuns`. A qualifying finished run stays expanded while the user reads its final answer; the next submission or Alt+O commits its collapse record. Later Alt+O presses expand or collapse the recorded runs. Queued follow-up requests can start within the same agent lifecycle, so the preceding completed segment is recorded only after its final assistant message has persisted. Aborted, errored, tool-use, and force-flush continuation spans are not prematurely collapsed.

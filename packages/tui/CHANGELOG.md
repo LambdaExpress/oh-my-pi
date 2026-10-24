@@ -19,6 +19,7 @@
 
 ### Fixed
 
+- Fixed overflowing running tool cards repeatedly appending their headers and preview fragments to terminal history as loading animations or partial results update.
 - Fixed active tool previews appearing truncated until resize when their contents changed after overflowing the viewport.
 - Fixed large blank gaps above the input when tool previews, panels, or completed runs collapse; ordinary paints and short history replays now keep the editor directly below the remaining content.
 - Localized usage limit titles and absolute remaining/spent amounts across overview cards, detail reports, and native terminal descriptions.

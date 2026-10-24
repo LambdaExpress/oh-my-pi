@@ -886,9 +886,9 @@ export class ToolExecutionComponent extends Container {
 		return this.#toolActivityVisible && this.#figure?.pending === true;
 	}
 
-	/** A growing tool figure may replace its raster until the call settles. */
+	/** Animated headers, tail windows and partial results stay mutable until the call settles. */
 	allowsMidStreamRetirement(): boolean {
-		return this.#figure === undefined;
+		return false;
 	}
 
 	/**
