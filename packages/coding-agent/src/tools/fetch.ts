@@ -7,9 +7,10 @@ import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { type FetchImpl, getEnvApiKey, type ImageContent, type TextContent } from "@oh-my-pi/pi-ai";
 import { htmlToMarkdown, notebookToEditableText } from "@oh-my-pi/pi-natives";
-import { $which, ptree, removeWithRetries } from "@oh-my-pi/pi-utils";
+import { $which, ptree, removeWithRetries, untilAborted } from "@oh-my-pi/pi-utils";
 import { type ArchiveFormat, listArchiveRoot, sniffArchiveFormat } from "@oh-my-pi/pi-utils/ar";
 import type { XmlElement } from "@oh-my-pi/pi-utils/docx/xml";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
 
@@ -44,6 +45,7 @@ import { cfgProvidersFetch } from "../session/settings";
 // =============================================================================
 
 const FETCH_DEFAULT_MAX_LINES = 300;
+const PDF_MIMES = new Set(["application/pdf", "application/x-pdf"]);
 // MIME types markit can convert — one per registered converter (pdf, docx,
 // pptx, xlsx, epub). Legacy `application/msword`, `application/vnd.ms-*`, and
 // `application/rtf` are intentionally absent: markit has no converter for them.
@@ -730,6 +732,7 @@ interface FetchImagePayload {
 
 type FetchRenderResult = RenderResult & {
 	image?: FetchImagePayload;
+	pdf?: true;
 };
 
 const BINARY_SAMPLE_CHARS = 4096;
@@ -1092,14 +1095,21 @@ async function renderUrl(
 		if (specialResult) return specialResult;
 	}
 
-	// Step 2: Fetch page
-	// Generic-MIME responses for convertible extensions (e.g. octet-stream .pdf) are re-fetched
-	// via fetchBinary below, so skip the first body read to download the bytes only once.
+	// Step 2: Fetch page. Keep PDF bytes from this response: cancelling a
+	// successful response and downloading again can turn it into a transient
+	// HTTP failure, or extract a different document for a concurrent range read.
 	const requestExtHint = getExtensionHint(url);
+	const readPdfBody = (contentType: string, finalUrl: string): boolean =>
+		requestExtHint === ".pdf" || PDF_MIMES.has(contentType) || getExtensionHint(finalUrl) === ".pdf";
 	const skipBody = (contentType: string): boolean =>
 		shouldSkipBodyDownload(contentType) ||
 		(GENERIC_BINARY_MIMES[normalizeMime(contentType)] === true && CONVERTIBLE_EXTENSIONS.has(requestExtHint));
-	let response = await loadPage(url, { timeout, signal, skipBodyForContentType: skipBody });
+	let response = await loadPage(url, {
+		timeout,
+		signal,
+		skipBodyForContentType: skipBody,
+		binaryBodyForContentType: readPdfBody,
+	});
 	if (
 		response.ok &&
 		response.bodySkipped &&
@@ -1107,12 +1117,26 @@ async function renderUrl(
 		!CONVERTIBLE_EXTENSIONS.has(getExtensionHint(response.finalUrl))
 	) {
 		// Redirect dropped the convertible extension; the body is needed after all.
-		response = await loadPage(url, { timeout, signal, skipBodyForContentType: shouldSkipBodyDownload });
+		response = await loadPage(url, {
+			timeout,
+			signal,
+			skipBodyForContentType: shouldSkipBodyDownload,
+			binaryBodyForContentType: readPdfBody,
+		});
 	}
 	if (signal?.aborted) {
 		throw new ToolAbortError();
 	}
 	if (!response.ok) {
+		if (readPdfBody(response.contentType, response.finalUrl || url)) {
+			const reason = [
+				response.status && response.status >= 400 ? `HTTP ${response.status}` : "Fetch failed",
+				response.error,
+			]
+				.filter(Boolean)
+				.join(": ");
+			throw new ToolError(`Cannot read PDF at ${response.finalUrl || url}: ${reason}`);
+		}
 		return {
 			url,
 			finalUrl: response.finalUrl || url,
@@ -1129,6 +1153,9 @@ async function renderUrl(
 	}
 
 	if (response.status === 204) {
+		if (readPdfBody(response.contentType, response.finalUrl || url)) {
+			throw new ToolError(`Cannot read PDF at ${response.finalUrl || url}: HTTP 204 No Content`);
+		}
 		return {
 			url,
 			finalUrl: response.finalUrl,
@@ -1147,8 +1174,9 @@ async function renderUrl(
 	}
 	const mime = normalizeMime(response.contentType);
 	const extHint = getExtensionHint(finalUrl);
+	const isPdf = readPdfBody(mime, finalUrl);
 
-	const imageMimeType = resolveImageMimeType(mime, extHint);
+	const imageMimeType = isPdf ? null : resolveImageMimeType(mime, extHint);
 	let skipConvertibleBinaryRetry = false;
 	if (imageMimeType) {
 		if (!isInlineImageMimeTypeSupported(imageMimeType)) {
@@ -1251,14 +1279,30 @@ async function renderUrl(
 
 	// Step 3: Handle convertible binary files (PDF, DOCX, etc.)
 	let convertibleBinary: BinaryFetchResult | undefined;
-	if (!skipConvertibleBinaryRetry && isConvertible(mime, extHint)) {
-		const binary = await fetchBinary(finalUrl, timeout, signal);
+	if (!skipConvertibleBinaryRetry && (isPdf || isConvertible(mime, extHint))) {
+		const binary: BinaryFetchResult = response.binary
+			? { ok: true, ...response.binary }
+			: isPdf
+				? { ok: false, error: "PDF response has no readable body" }
+				: await fetchBinary(finalUrl, timeout, signal);
 		convertibleBinary = binary;
 		if (binary.ok) {
-			const ext = getExtensionHint(finalUrl, binary.contentDisposition) || extHint;
+			if (
+				isPdf &&
+				!Buffer.from(
+					binary.buffer.buffer,
+					binary.buffer.byteOffset,
+					Math.min(binary.buffer.byteLength, 1024),
+				).includes("%PDF-")
+			) {
+				throw new ToolError(
+					`Cannot read PDF at ${finalUrl}: expected a PDF header in the ${mime || "untyped"} response.`,
+				);
+			}
+			const ext = isPdf ? ".pdf" : getExtensionHint(finalUrl, binary.contentDisposition) || extHint;
 			const converted = await convertWithMarkit(binary.buffer, ext, timeout, signal);
 			if (converted.ok) {
-				if (converted.content.trim().length > 50) {
+				if (converted.content.trim().length > (isPdf ? 0 : 50)) {
 					notes.push("Converted with markit");
 					const output = finalizeOutput(converted.content);
 					return {
@@ -1270,6 +1314,7 @@ async function renderUrl(
 						fetchedAt,
 						truncated: output.truncated,
 						notes,
+						pdf: isPdf ? true : undefined,
 					};
 				}
 				notes.push("markit conversion produced no usable output");
@@ -1282,6 +1327,9 @@ async function renderUrl(
 			notes.push(`Binary fetch failed: ${binary.error}`);
 		} else {
 			notes.push("Binary fetch failed");
+		}
+		if (isPdf) {
+			throw new ToolError(`Cannot read PDF at ${finalUrl}: ${notes.join("; ")}`);
 		}
 	}
 
@@ -1562,6 +1610,22 @@ interface ReadUrlEntry {
 	content: string;
 }
 
+interface SharedUrlRender {
+	controller: AbortController;
+	promise: Promise<FetchRenderResult>;
+	consumers: number;
+	settled: boolean;
+}
+
+interface ReadUrlState {
+	pdfs: LRUCache<string, FetchRenderResult>;
+	pending: Map<string, SharedUrlRender>;
+}
+
+// A bounded PDF snapshot belongs to the session, just like its read artifacts.
+// Other URLs remain live and are retained only while a fetch is in progress.
+const readUrlStates = new WeakMap<ToolSession, ReadUrlState>();
+
 async function findArtifactPath(session: ToolSession, artifactId: string): Promise<string | null> {
 	const artifactsDir = session.getArtifactsDir?.();
 	if (!artifactsDir) return null;
@@ -1632,18 +1696,65 @@ export async function fetchReadUrl(
 		throw new ToolAbortError();
 	}
 
-	const storage = session.settings.getStorage();
-	const result = await renderUrl(
-		url,
-		effectiveTimeout,
-		raw,
-		session.settings,
-		signal,
-		storage,
-		session.modelRegistry,
-		session.fetch,
-		webpExclusionForModel(session.getActiveModel?.()),
-	);
+	let state = readUrlStates.get(session);
+	if (!state) {
+		state = {
+			pdfs: new LRUCache<string, FetchRenderResult>({
+				max: 16,
+				maxSize: 8 * 1024 * 1024,
+				sizeCalculation: result => Math.max(1, result.content.length * 2),
+			}),
+			pending: new Map(),
+		};
+		readUrlStates.set(session, state);
+	}
+	const key = `${raw ? "raw" : "rendered"}:${normalizeUrl(url)}`;
+	let result = state.pdfs.get(key);
+	if (!result) {
+		let pending = state.pending.get(key);
+		if (!pending) {
+			const controller = new AbortController();
+			const shared: SharedUrlRender = {
+				controller,
+				consumers: 0,
+				settled: false,
+				promise: renderUrl(
+					url,
+					effectiveTimeout,
+					raw,
+					session.settings,
+					controller.signal,
+					session.settings.getStorage(),
+					session.modelRegistry,
+					session.fetch,
+					webpExclusionForModel(session.getActiveModel?.()),
+				)
+					.then(rendered => {
+						if (rendered.pdf && !controller.signal.aborted) state.pdfs.set(key, rendered);
+						return rendered;
+					})
+					.finally(() => {
+						shared.settled = true;
+						if (state.pending.get(key) === shared) state.pending.delete(key);
+					}),
+			};
+			state.pending.set(key, shared);
+			pending = shared;
+		}
+		pending.consumers++;
+		try {
+			result = await untilAborted(signal, pending.promise);
+		} catch (error) {
+			if (signal?.aborted) throw new ToolAbortError();
+			throw error;
+		} finally {
+			pending.consumers--;
+			if (!pending.settled && pending.consumers === 0) {
+				if (state.pending.get(key) === pending) state.pending.delete(key);
+				pending.controller.abort();
+			}
+		}
+	}
 	const output = buildUrlReadOutput(result, result.content);
 	const artifact = options?.ensureArtifact ? await persistReadUrlArtifact(session, output) : undefined;
 

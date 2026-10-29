@@ -79,6 +79,8 @@ The idle checker runs once a minute and preserves clients with pending requests 
 
 Client reuse, in-flight initialization, reload cleanup, and mux reuse identify workspaces by their canonical directory. Equivalent separators, relative segments, and Windows path casing do not start another language server for the same configuration.
 
+File-scoped requests resolve their own checkout-bounded project root, including external Git worktrees whose `.git` is a file. MSBuild solutions take precedence over individual projects so sibling callers can be loaded; an unmarked external file never falls back to an unrelated session checkout. C# reload restarts the process for that root. C# results identify the requested root and explicitly state that OMP cannot verify the server's loaded MSBuild graph; wrappers must preserve the requested cwd or explicitly select the target solution. One caller cancelling shared initialization does not cancel other waiting callers, and diagnostic failures name their server, root and timeout/cancellation cause.
+
 ## ServerConfig fields
 
 | Field                   | Type       | Required for a new server | Description                                                                                              |

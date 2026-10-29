@@ -6,7 +6,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { disposeAllVmContexts } from "@oh-my-pi/pi-coding-agent/eval/js/context-manager";
 import { createBrowserPrelude } from "@oh-my-pi/pi-coding-agent/tools/browser";
 import { findFreeCdpPort } from "@oh-my-pi/pi-coding-agent/tools/browser/attach";
-import { releaseAllTabs } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
+import { getTab, releaseAllTabs } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { chromiumAvailable } from "./chromium-probe";
 
@@ -250,9 +250,12 @@ return "done";`,
 		expect(result).toBe("done");
 	});
 
-	test("keeps a completed run's result when its interception cannot be reset", async () => {
+	test("keeps a completed run and its worker when interception cleanup remains pending", async () => {
 		const invoke = createHost();
 		await invoke({ action: "open", name: "stuck-interception", url: `${baseUrl}/` });
+		const tab = getTab("stuck-interception");
+		if (!tab || tab.backend !== "worker") throw new Error("Expected a worker tab");
+		const worker = tab.worker;
 		const completed = await invoke({
 			action: "run",
 			name: "stuck-interception",
@@ -263,15 +266,21 @@ return "done";`,
 		expect(valueOf(completed)).toBe("done");
 		expect(completed.content).toContainEqual({
 			type: "text",
-			text: "Browser request interception could not be reset after this run; the tab was reattached to a new worker. Tab state set since it was opened was reset (tab.route routes, emulation and user agent, init scripts, element ids, the request log, HAR recording, run globals), any open dialog was dismissed, and any page still loading was stopped.",
+			text: "Browser request interception cleanup is still pending; wait for it to finish before running more code. The worker, tab state, and in-flight page loads were preserved; no tab was reattached or reloaded.",
 		});
-		const next = valueOf(
+		expect(getTab("stuck-interception")).toBe(tab);
+		expect(tab.worker).toBe(worker);
+		let failure: unknown;
+		try {
 			await invoke({
 				action: "run",
 				name: "stuck-interception",
 				code: `return await tab.evaluate(async url => await (await fetch(url)).json(), ${JSON.stringify(`${baseUrl}/api`)})`,
-			}),
-		);
-		expect(next).toEqual({ source: "fixture" });
+			});
+		} catch (error) {
+			failure = error;
+		}
+		expect(failure).toMatchObject({ message: expect.stringContaining("interception cleanup is still pending") });
+		expect(tab.worker).toBe(worker);
 	});
 });

@@ -150,6 +150,12 @@ class _StreamProxy(io.TextIOBase):
         if not data:
             return 0
         rid = _CURRENT_RID.get()
+        if rid is None and self._kind == "stderr":
+            # New threads do not inherit the cell's ContextVar. In particular,
+            # Windows subprocess reader-thread decoding errors are printed by
+            # threading.excepthook, not raised from subprocess.run(). Keep
+            # those standard diagnostics in the active cell's stderr frames.
+            rid = _STATE.capture_rid
         if rid is None:
             _RAW_STDERR.write(data)
             _RAW_STDERR.flush()

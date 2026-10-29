@@ -88,6 +88,8 @@ A host `cwd` is resolved relative to session cwd (`resolveToCwd`) and validated 
 
 The default timeout is 300 seconds. `timeout: 0` disables the deadline. Other values are clamped to `[1, 3600]` seconds and by a positive `tools.maxTimeout` ceiling; a clamp notice and both requested/resolved values are recorded when they differ.
 
+Finite execution uses one absolute deadline across launch preparation, settings, snapshot/direnv loading, output-artifact allocation and backend execution. A late preparation result cannot start the command after its deadline. Backend cancellation and output cleanup have a bounded five-second backstop; an unconfirmed termination is reported explicitly. Managed jobs remain `starting (launch pending)` until a PID or execution output confirms launch, rather than presenting preparation as a running process.
+
 ## 4) Artifact allocation
 
 Local finite-command execution allocates an artifact path/id (best-effort) for truncated output storage; managed jobs allocate inside the job. Service logs use the broker, and client-terminal output uses the final inline-cap recovery path instead.

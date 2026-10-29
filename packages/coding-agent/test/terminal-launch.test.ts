@@ -432,6 +432,57 @@ describe("terminal launch dispatcher", () => {
 		expect(calls).toEqual([]);
 	});
 
+	it.each([
+		{ env: [] },
+		{ env: { "INVALID=NAME": "value" } },
+		{ env: { VALUE: "nul\0value" } },
+		{ env: { VALUE: 17 } },
+		{ env: { VALUE: "line\nbreak" }, shellGrammar: "posix" },
+	])("rejects invalid environment overrides before creating a surface: %j", async options => {
+		const { calls, launch } = createHarness({ CMUX_WORKSPACE_ID: "workspace:1" }, []);
+		await expect(
+			launch({
+				multiplexer: "cmux",
+				placement: "window",
+				command: ["omp"],
+				cwd: process.cwd(),
+				shellGrammar: "posix",
+				...options,
+			} as unknown as TerminalLaunchRequest),
+		).rejects.toMatchObject({ name: "TerminalLaunchError", operation: "env" });
+		expect(calls).toEqual([]);
+	});
+
+	it.skipIf(process.platform === "win32")(
+		"applies child scope overrides to direct POSIX launches without retaining stale server values",
+		async () => {
+			const launch = createTerminalLauncher({
+				environment: () => ({ TMUX: "/tmp/tmux.sock,1,0", TMUX_PANE: "%2" }),
+				runCli: async (argv, cwd) => {
+					const child = await processCli(argv.slice(argv.indexOf("--") + 1), cwd, {
+						...process.env,
+						OMP_HERDR_UNSET: "stale",
+						OMP_HERDR_EMPTY: "stale",
+					});
+					expect(child.exitCode).toBe(0);
+					expect(JSON.parse(child.stdout)).toEqual({ value: "Ω '雪'", unset: null, empty: null });
+					return { stdout: "%7\n", exitCode: 0 };
+				},
+			});
+			await launch({
+				multiplexer: "tmux",
+				placement: "pane",
+				command: [
+					process.execPath,
+					"-e",
+					"process.stdout.write(JSON.stringify({ value: process.env.OMP_HERDR_VALUE, unset: process.env.OMP_HERDR_UNSET ?? null, empty: process.env.OMP_HERDR_EMPTY ?? null }))",
+				],
+				cwd: process.cwd(),
+				env: { OMP_HERDR_VALUE: "Ω '雪'", OMP_HERDR_UNSET: undefined, OMP_HERDR_EMPTY: "" },
+			});
+		},
+	);
+
 	it("does not treat CMUX transport or socket overrides as an active surface", async () => {
 		const { calls, launch } = createHarness({ CMUX_REMOTE_TRANSPORT: "ssh", CMUX_SOCKET_PATH: "/tmp/cmux.sock" }, []);
 		await expect(
@@ -635,15 +686,17 @@ describe("terminal launch dispatcher", () => {
 		expect(result).toEqual({ multiplexer: "zellij", placement: "window", id: "7" });
 	});
 
-	// Herdr is POSIX-only and the launch script lives under the real temp dir, whose
-	// Windows path (drive letter, backslashes) is not a shell-neutral word.
+	// POSIX launch scripts require a shell-neutral path under the host's real temp directory.
 	it.skipIf(process.platform === "win32")(
 		"types only /bin/sh and a shell-neutral script path into a new Herdr pane and preserves exact argv",
 		async () => {
 			const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "herdr-argv-"));
 			try {
 				const recorder = path.join(tempRoot, "recorder.js");
-				await Bun.write(recorder, 'process.stdout.write(JSON.stringify(process.argv.slice(2)) + "\\n");\n');
+				await Bun.write(
+					recorder,
+					'process.stdout.write(JSON.stringify({ argv: process.argv.slice(2), value: process.env.OMP_HERDR_VALUE, unset: process.env.OMP_HERDR_UNSET ?? null }) + "\\n");\n',
+				);
 				const args = [
 					"Ω 雪",
 					"",
@@ -663,6 +716,7 @@ describe("terminal launch dispatcher", () => {
 					cwd: "/repo with space",
 					direction: "down",
 					focus: false,
+					env: { OMP_HERDR_VALUE: "Ω '雪'", OMP_HERDR_UNSET: undefined },
 				});
 
 				expect(result).toEqual({ multiplexer: "herdr", placement: "pane", id: "w1:p2" });
@@ -684,9 +738,12 @@ describe("terminal launch dispatcher", () => {
 				expect(calls[1]!.argv).toEqual(["herdr", "pane", "run", "w1:p2", typed]);
 				expect(typed).toMatch(/^\/bin\/sh \/[A-Za-z0-9_./-]+$/);
 				const script = typed.slice("/bin/sh ".length);
-				const executed = await processCli(["/bin/sh", "-c", typed], tempRoot);
+				const executed = await processCli(["/bin/sh", "-c", typed], tempRoot, {
+					...process.env,
+					OMP_HERDR_UNSET: "stale",
+				});
 				expect(executed.exitCode).toBe(0);
-				expect(JSON.parse(executed.stdout)).toEqual(args);
+				expect(JSON.parse(executed.stdout)).toEqual({ argv: args, value: "Ω '雪'", unset: null });
 				expect(await Bun.file(script).exists()).toBe(false);
 			} finally {
 				await fs.rm(tempRoot, { recursive: true, force: true });
@@ -738,6 +795,112 @@ describe("terminal launch dispatcher", () => {
 			vi.restoreAllMocks();
 		});
 
+		it.skipIf(process.platform !== "win32")(
+			"preserves Windows argv, cwd, environment overrides, and exit status through encoded shell input",
+			async () => {
+				const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "herdr 雪's [temp] "));
+				vi.spyOn(os, "tmpdir").mockReturnValue(tempRoot);
+				try {
+					const cwd = path.join(tempRoot, "cwd Ω & [test]");
+					const recorder = path.join(tempRoot, "recorder's 雪.js");
+					const executable = path.join(tempRoot, "runtime [雪]'s.exe");
+					await fs.mkdir(cwd);
+					await fs.link(process.execPath, executable);
+					await Bun.write(
+						recorder,
+						`process.stdout.write(JSON.stringify({
+							cwd: process.cwd(),
+							argv: process.argv.slice(2),
+							value: process.env.OMP_HERDR_VALUE,
+							unset: process.env.OMP_HERDR_UNSET ?? null,
+							empty: process.env.OMP_HERDR_EMPTY ?? null,
+						}) + "\\n");
+						process.exitCode = 17;`,
+					);
+					const args = [
+						"Ω 雪",
+						"",
+						"  spaced  ",
+						"it's 'quoted'",
+						'a"b',
+						'slash\\"quote',
+						"trailing\\",
+						"$(printf injected) * $HOME %PATH% & | ^ < >",
+						"line\nbreak",
+					];
+					const { calls, launch } = createHarness(
+						{ HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1" },
+						[
+							{ stdout: '{"result":{"pane":{"pane_id":"w1:p2"}}}', exitCode: 0 },
+							{ stdout: "", exitCode: 0 },
+						],
+						"win32",
+					);
+					await launch({
+						multiplexer: "herdr",
+						placement: "pane",
+						command: [executable, recorder, ...args],
+						cwd,
+						env: { OMP_HERDR_VALUE: "Ω '雪' $HOME", OMP_HERDR_UNSET: undefined, OMP_HERDR_EMPTY: "" },
+					});
+					const typed = calls[1]!.argv[4]!;
+					const child = Bun.spawn(typed.split(" "), {
+						cwd,
+						env: { ...process.env, OMP_HERDR_UNSET: "stale", OMP_HERDR_EMPTY: "stale" },
+						stdout: "pipe",
+						stderr: "pipe",
+					});
+					const [exitCode, stdout, stderr] = await Promise.all([
+						child.exited,
+						new Response(child.stdout).text(),
+						new Response(child.stderr).text(),
+					]);
+					expect(exitCode, `${stdout}\n${stderr}`).toBe(17);
+					expect(JSON.parse(stdout)).toEqual({
+						cwd,
+						argv: args,
+						value: "Ω '雪' $HOME",
+						unset: null,
+						empty: null,
+					});
+					expect((await fs.readdir(tempRoot)).sort()).toEqual([
+						"cwd Ω & [test]",
+						"recorder's 雪.js",
+						"runtime [雪]'s.exe",
+					]);
+				} finally {
+					await fs.rm(tempRoot, { recursive: true, force: true });
+				}
+			},
+		);
+
+		it.skipIf(process.platform !== "win32")(
+			"removes the Windows launch script when running a newly created tab fails",
+			async () => {
+				const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "herdr-failed-"));
+				vi.spyOn(os, "tmpdir").mockReturnValue(tempRoot);
+				try {
+					const { launch } = createHarness(
+						{ HERDR_ENV: "1", HERDR_WORKSPACE_ID: "w1" },
+						[
+							{
+								stdout: '{"result":{"tab":{"tab_id":"w1:t2"},"root_pane":{"pane_id":"w1:p3"}}}',
+								exitCode: 0,
+							},
+							{ stdout: "", exitCode: 1 },
+						],
+						"win32",
+					);
+					await expect(
+						launch({ multiplexer: "herdr", placement: "window", command: ["omp"], cwd: tempRoot }),
+					).rejects.toThrow("pane run failed");
+					expect(await fs.readdir(tempRoot)).toEqual([]);
+				} finally {
+					await fs.rm(tempRoot, { recursive: true, force: true });
+				}
+			},
+		);
+
 		it.skipIf(process.platform === "win32")(
 			"creates no Herdr surface when the launch script cannot be prepared",
 			async () => {
@@ -755,14 +918,6 @@ describe("terminal launch dispatcher", () => {
 				}
 			},
 		);
-	});
-
-	it("rejects Herdr launches on Windows before creating a surface", async () => {
-		const { calls, launch } = createHarness({ HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1" }, [], "win32");
-		await expect(launch({ multiplexer: "herdr", placement: "pane", command: ["omp"], cwd: "/repo" })).rejects.toThrow(
-			"not supported on Windows",
-		);
-		expect(calls).toEqual([]);
 	});
 
 	it("preserves Unicode argv and pane cwd through ASCII-only CMUX shell input", async () => {

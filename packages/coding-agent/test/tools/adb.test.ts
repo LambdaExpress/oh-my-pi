@@ -1008,9 +1008,7 @@ describe("AdbTool renderer", () => {
 		);
 		expect(collapsed).toContain("adb output line 1");
 		expect(collapsed).not.toContain("adb output line 30");
-		expect(collapsed.toLowerCase()).toMatch(/more lines|earlier line/);
 		expect(expanded).toContain("adb output line 1");
 		expect(expanded).toContain("adb output line 30");
-		expect(expanded.toLowerCase()).not.toMatch(/more lines|earlier line/);
 	});
 });

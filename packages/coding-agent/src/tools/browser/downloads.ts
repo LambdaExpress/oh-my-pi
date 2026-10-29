@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { hasFsCode, isEnoent, toError, untilAborted } from "@oh-my-pi/pi-utils";
-import type { Browser, CDPSession, Page } from "puppeteer-core";
+import type { Browser, Connection, Page } from "puppeteer-core";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { replaceFileAcrossDevices, replaceFileAtomically } from "../../utils/atomic-file";
 import { devtoolsFrameId } from "./frames";
@@ -46,14 +46,16 @@ const DOWNLOAD_GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 
 /** Owns tab-scoped destinations and browser-context-wide Chromium download events. */
 export class DownloadManager {
-	readonly #browser: Browser;
 	readonly #page: Page;
 	readonly #defaultDirectory: string;
 	readonly #perTab: boolean;
 	readonly #stagingDirectory?: string;
 	#directory?: string;
 	#arming?: Promise<void>;
-	#session?: CDPSession;
+	#connection?: Connection;
+	#trackingError?: ToolError;
+	#inventoryError?: ToolError;
+	readonly #completing = new Set<Promise<void>>();
 	readonly #pending = new Map<string, PendingDownload>();
 	readonly #completed: BrowserDownload[] = [];
 	readonly #unclaimed: BrowserDownload[] = [];
@@ -67,7 +69,6 @@ export class DownloadManager {
 	 * downloads, which would otherwise be saved under bare GUIDs nobody renames.
 	 */
 	constructor(browser: Browser, page: Page, tabId: string, options: { perTab: boolean }) {
-		this.#browser = browser;
 		this.#page = page;
 		this.#defaultDirectory = path.join(os.tmpdir(), `omp-downloads-${tabId}`);
 		this.#perTab = options.perTab;
@@ -83,20 +84,33 @@ export class DownloadManager {
 		}
 	}
 
+	/** Arm inventory before page code can download; unsupported attached browsers remain usable for other operations. */
+	async start(directory?: string): Promise<void> {
+		try {
+			await this.enable(directory);
+		} catch (error) {
+			this.#trackingError = new ToolError(
+				`Download tracking is unavailable on this browser connection: ${toError(error).message}. Native downloads may still succeed, but tab.downloads() cannot inventory them.`,
+			);
+		}
+	}
+
 	/**
-	 * Enable context-wide tracking. Owned tabs share a private GUID staging folder, never one of their final
-	 * destinations, so overlapping downloads cannot leave intermediate files in a sibling tab's folder.
+	 * Owned tabs share a private GUID staging folder. User-driven tabs without an explicit destination keep
+	 * Chrome's native download behavior and directory; subscribing must not redirect the user's downloads.
 	 */
 	async enable(directory?: string): Promise<void> {
-		const resolved = path.resolve(directory ?? this.#defaultDirectory);
-		await fs.mkdir(resolved, { recursive: true });
+		if (this.#trackingError) throw this.#trackingError;
+		const resolved =
+			directory === undefined && !this.#perTab ? undefined : path.resolve(directory ?? this.#defaultDirectory);
 		const staging = this.#stagingDirectory ?? resolved;
-		if (staging !== resolved) await fs.mkdir(staging, { recursive: true });
-		if (!this.#session) await this.#attach();
+		if (resolved) await fs.mkdir(resolved, { recursive: true });
+		if (staging && staging !== resolved) await fs.mkdir(staging, { recursive: true });
+		const connection = this.#connection ?? (await this.#attach());
 		const context = this.#page.browserContext() as { id?: string };
-		await this.#session!.send("Browser.setDownloadBehavior", {
-			behavior: this.#perTab ? "allowAndName" : "allow",
-			downloadPath: staging,
+		await connection.send("Browser.setDownloadBehavior", {
+			behavior: this.#perTab ? "allowAndName" : resolved ? "allow" : "default",
+			...(staging ? { downloadPath: staging } : {}),
 			eventsEnabled: true,
 			...(context.id ? { browserContextId: context.id } : {}),
 		});
@@ -110,6 +124,9 @@ export class DownloadManager {
 
 	/** Wait for the next unclaimed completed download. */
 	async wait(signal?: AbortSignal): Promise<BrowserDownload> {
+		if (signal?.aborted) throw signal.reason;
+		if (this.#trackingError) throw this.#trackingError;
+		if (this.#inventoryError) throw this.#inventoryError;
 		if (this.#unclaimed.length === 0) {
 			// A rejected `arming` nobody awaits would surface as an unhandled rejection.
 			if (signal?.aborted) throw signal.reason;
@@ -142,26 +159,39 @@ export class DownloadManager {
 	}
 
 	/** Return every completed download for this tab. */
-	list(): BrowserDownload[] {
+	async list(): Promise<BrowserDownload[]> {
+		if (this.#trackingError) throw this.#trackingError;
+		await Promise.all(this.#completing);
+		if (this.#inventoryError) throw this.#inventoryError;
 		return this.#completed.map(download => ({ ...download }));
 	}
 
 	/** Detach event listeners and reject outstanding waits. */
 	async close(): Promise<void> {
-		const session = this.#session;
-		if (!session) return;
-		if (this.#willBegin) session.off("Browser.downloadWillBegin", this.#willBegin);
-		if (this.#progress) session.off("Browser.downloadProgress", this.#progress);
+		const connection = this.#connection;
+		if (!connection) return;
+		if (this.#willBegin) connection.off("Browser.downloadWillBegin", this.#willBegin);
+		if (this.#progress) connection.off("Browser.downloadProgress", this.#progress);
 		for (const waiter of this.#waiters.splice(0)) {
 			if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
 			waiter.reject(new ToolError("Tab closed while waiting for a download"));
 		}
-		this.#session = undefined;
-		await session.detach().catch(() => undefined);
+		this.#connection = undefined;
 	}
 
-	async #attach(): Promise<void> {
-		const session = await this.#browser.target().createCDPSession();
+	async #attach(): Promise<Connection> {
+		// Browser.download* events have no sessionId: Puppeteer dispatches them on Connection, not on a
+		// Target.attachToTarget(browser) child CDPSession. Match BrowserContext.setDownloadBehavior's root
+		// command path and subscribe there too. A temporary page session exposes the same worker connection
+		// on both native CDP and relay transports; it owns neither the root connection nor its download events.
+		const session = await this.#page.createCDPSession();
+		let connection: Connection | undefined;
+		try {
+			connection = session.connection();
+		} finally {
+			await session.detach().catch(() => undefined);
+		}
+		if (!connection) throw new ToolError("The browser page has no root CDP connection for download tracking");
 		this.#willBegin = event => {
 			// Every session hears every download in the browser; keep the ones this tab's frames started.
 			if (!this.#page.frames().some(frame => devtoolsFrameId(frame) === event.frameId)) return;
@@ -177,16 +207,26 @@ export class DownloadManager {
 				this.#rejectNext(new ToolError(`Download canceled: ${pending.url}`));
 				return;
 			}
-			void this.#complete(pending, event.filePath).catch(error => {
-				this.#rejectNext(new ToolError(`Download failed: ${pending.url}: ${toError(error).message}`));
-			});
+			const completing = this.#complete(pending, event.filePath)
+				.catch(error => {
+					this.#inventoryError = new ToolError(`Download failed: ${pending.url}: ${toError(error).message}`);
+					this.#rejectNext(this.#inventoryError);
+				})
+				.finally(() => this.#completing.delete(completing));
+			this.#completing.add(completing);
 		};
-		session.on("Browser.downloadWillBegin", this.#willBegin);
-		session.on("Browser.downloadProgress", this.#progress);
-		this.#session = session;
+		connection.on("Browser.downloadWillBegin", this.#willBegin);
+		connection.on("Browser.downloadProgress", this.#progress);
+		this.#connection = connection;
+		return connection;
 	}
 
 	async #complete(pending: PendingDownload, filePath: string | undefined): Promise<void> {
+		if (!filePath && !this.#perTab) {
+			throw new ToolError(
+				"The browser completed a native download without exposing its saved path; download inventory is unsupported on this connection. Its path cannot be identified safely without inspecting the user's download directory.",
+			);
+		}
 		const directory = this.#directory ?? this.#defaultDirectory;
 		const source =
 			filePath ??
@@ -199,6 +239,7 @@ export class DownloadManager {
 				await Bun.sleep(10);
 			}
 		}
+		await fs.stat(source);
 		const name = typeof pending.suggestedFilename === "string" ? path.basename(pending.suggestedFilename) : "";
 		const target = path.join(directory, name);
 		// Only the last segment of the suggested name is used; anything else, or a download that cannot be moved, is

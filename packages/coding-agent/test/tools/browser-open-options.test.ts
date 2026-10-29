@@ -65,7 +65,7 @@ afterAll(async () => {
 });
 
 describe("browser open options CDP helpers", () => {
-	it("sends the invalid-certificate override through CDP", async () => {
+	it("keeps the invalid-certificate override session alive until its owner releases it", async () => {
 		const args = buildHeadlessLaunchArgs(
 			{ width: 800, height: 600 },
 			{ ignoreHttpsErrors: true, allowFileAccess: true },
@@ -87,9 +87,11 @@ describe("browser open options CDP helpers", () => {
 			}),
 		} as unknown as Page;
 
-		await applyIgnoreHttpsErrors(page);
+		const override = await applyIgnoreHttpsErrors(page);
 
 		expect(calls).toEqual([{ method: "Security.setIgnoreCertificateErrors", params: { ignore: true } }]);
+		expect(detached).toBe(false);
+		await override.detach();
 		expect(detached).toBe(true);
 	});
 
@@ -119,17 +121,19 @@ describe("browser open options CDP helpers", () => {
 		const elsewhere = await fs.mkdtemp(path.join(os.tmpdir(), "omp-browser-download-test-"));
 		tempDirs.push(directory, elsewhere);
 		const listeners = new Map<string, (event: unknown) => void>();
-		const session = {
+		const connection = {
 			on: (event: string, listener: (event: unknown) => void) => listeners.set(event, listener),
 			off: () => undefined,
 			send,
-			detach: async () => undefined,
 		};
 		const browser = {
-			target: () => ({ createCDPSession: async () => session }),
 			wsEndpoint: () => "ws://127.0.0.1/devtools/browser/download-fixture",
 		} as unknown as Browser;
-		const page = { frames: () => [{ _id: "frame" }], browserContext: () => ({}) } as unknown as Page;
+		const page = {
+			frames: () => [{ _id: "frame" }],
+			browserContext: () => ({}),
+			createCDPSession: async () => ({ connection: () => connection, detach: async () => undefined }),
+		} as unknown as Page;
 		const downloads = new DownloadManager(browser, page, "tab", { perTab });
 		const complete = async (
 			guid: unknown,
@@ -577,8 +581,8 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("browser open options", () => {
 				),
 			).toEqual({ source: "temporary" });
 			expect(returnedValue(await invoke({ action: "run", name, code: fetchCode }))).toEqual({ source: "origin" });
-			// Successful runs keep their result while cleanup recycles the worker.
-			// A failed run must surface the cleanup failure rather than hiding it.
+			// A cleanup failure must be explicit without discarding this tab's worker or page state.
+			const tab = getTab(name);
 			await expectBrowserError(
 				invoke({
 					action: "run",
@@ -594,7 +598,11 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("browser open options", () => {
 				}),
 				"Failed to restore browser request interception",
 			);
-			expect(returnedValue(await invoke({ action: "run", name, code: fetchCode }))).toEqual({ source: "origin" });
+			expect(getTab(name)).toBe(tab);
+			await expectBrowserError(
+				invoke({ action: "run", name, code: fetchCode }),
+				"interception cleanup failed; close and reopen",
+			);
 		} finally {
 			await invoke({ action: "close", name });
 			server.stop(true);

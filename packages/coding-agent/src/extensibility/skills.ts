@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import { accessSync, constants, statSync } from "node:fs";
 import * as os from "node:os";
 import { getProjectDir, parseFrontmatter, prompt } from "@oh-my-pi/pi-utils";
 import {
@@ -57,6 +58,27 @@ export interface SkillWarning {
 export interface LoadSkillsResult {
 	skills: Skill[];
 	warnings: SkillWarning[];
+}
+
+/**
+ * Managed files may disappear outside the session's mutation tools. Keep their
+ * frozen description hints, but never advertise an unreadable instruction file.
+ * Authored skills retain the existing session-pinned inventory contract.
+ */
+export function isManagedSkillAvailable(skill: Skill): boolean {
+	if (
+		skill._source?.provider !== MANAGED_SKILLS_PROVIDER_ID &&
+		!skill.source.startsWith(`${MANAGED_SKILLS_PROVIDER_ID}:`)
+	) {
+		return true;
+	}
+	try {
+		if (!statSync(skill.filePath).isFile()) return false;
+		accessSync(skill.filePath, constants.R_OK);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -592,7 +614,9 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		realPathSet.add(resolvedPath);
 	}
 
-	const skills = Array.from(skillMap.values()).filter(skill => matchesIncludePatterns(skill.name));
+	const skills = Array.from(skillMap.values()).filter(
+		skill => matchesIncludePatterns(skill.name) && isManagedSkillAvailable(skill),
+	);
 	// Deterministic ordering for prompt stability (case-insensitive, then exact name, then path).
 	skills.sort((a, b) => compareSkillOrder(a.name, a.filePath, b.name, b.filePath));
 	return {

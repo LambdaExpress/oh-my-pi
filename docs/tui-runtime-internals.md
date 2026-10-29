@@ -27,6 +27,14 @@ the viewport without filling the reclaimed rows above the editor. The writer
 preserves the native-history anchor and clears the unused tail below the input.
 This applies to ordinary paints as well as short history replays.
 
+History retirement and live transcript layout reserve the same measured height
+of the current editor, status rows, and panels. A cached minimum or delayed
+post-run height cannot stand in for visible chrome: cropping the difference
+after retirement would omit uncommitted rows at the history/live seam, joining
+unrelated tool cards and hiding their borders or output. When panels close,
+the editor follows the remaining transcript; retired rows stay in native
+history instead of being replayed to force bottom alignment.
+
 Graceful shutdown switches the provider to Flush policy and synchronously drains
 every currently eligible finalized prefix before terminal handoff.
 
@@ -60,6 +68,13 @@ An append-only head may emit a monotonically extending prefix of stable semantic
 
 Assistant snapshot publication retains source paragraph whitespace and applies the same prose styling as live rendering; viewport-edge blank trimming never mutates the semantic snapshot. Revisions that invalidate append-only assumptions remain mutable under pressure until finalization.
 
+Large stable publications retire at physical row boundaries instead of waiting
+for the entire publication to leave the screen. The same split can follow
+finalized predecessors in their history batch and can pass an empty completed-run
+gate that explicitly permits successor retirement. The gate stays active, the
+unpublished suffix stays mutable, and replay includes the emitted physical
+prefix even before the answer ends.
+
 The composer opens each frame with `beginFrame(frame)` before offering history. Until that frame's `renderViewport(width, rows, frame)` returns, every full-allocation measurement of a live block (retirement peek, `liveRowCount`, viewport layout) renders the block once and replays those rows; `renderViewport` closes the frame, so no measurement outlives the synchronous composition that took it. Allocation-constrained viewport renders are never shared.
 
 Display replay has an independent cursor over committed entries. It never changes
@@ -86,7 +101,7 @@ Completed-run collapse is controlled by `display.collapseCompletedRuns`. A quali
 
 Completed-run projection reads the full persisted transcript, including history before compaction, so expansion remains reversible. Official session compaction still controls the provider's model context; display collapse does not undo it or replace its summary. `display.collapseCompacted` hides older display history only when completed-run collapse is disabled. Rebuilds reuse equivalent settled components and preserve acknowledged retirement where possible; an intentional history replacement must pair its ledger reset with a scrollback-clearing repaint instead of appending a duplicate transcript.
 
-A recovered completed-run summary and an active gate may share the original user-request anchor after compaction. They render in one block, with the stable `※ collapsed` summary before the gate, and expose that summary as a settled prefix. The live region begins after the summary even while the gate remains unfinalized. Toggling completed-run projection during streaming refreshes the live display without a destructive replay; an idle toggle or the next input checkpoint can rebuild native history.
+A recovered completed-run summary and an active gate may share the original user-request anchor after compaction. They render in one block, with the stable `※ collapsed` summary before the gate, and expose that summary as a settled prefix. The live region begins after the summary even while the gate remains unfinalized. Explicit completed-run toggles rebuild native history immediately, including while a later run is streaming, so retired tool cards reflect the chosen projection. Rebuilds preserve the active stream, pending tools, and mounted editor.
 
 `InjectNoticeComponent` displays persisted context-injection records: source names, sizes or counts, and body previews. Transcript rebuilds replay those records rather than dropping the notice. `display.foldToolRows` reduces the entire notice to one `Inject:` activity row; ordinary previews are limited to two lines per source until expanded. Tool-activity visibility also governs these notices. Folding, output expansion, and visibility changes explicitly replay native history so already-retired rows reflect the chosen display state.
 

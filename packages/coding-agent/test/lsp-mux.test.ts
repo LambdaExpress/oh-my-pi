@@ -14,6 +14,8 @@ import {
 	type MuxServerExitParams,
 } from "../src/lsp/mux/protocol";
 import { LspMuxServer } from "../src/lsp/mux/server";
+import { findLspProjectRoot } from "../src/lsp/servers";
+import { fileToUri } from "../src/lsp/utils";
 
 interface RpcMessage {
 	jsonrpc: "2.0";
@@ -506,6 +508,37 @@ describe("LspMuxServer", () => {
 		expect(third.connected.pid).toBe(first.connected.pid);
 		await initialize(third.client, 424242, { probe: "A" });
 		expect((await state(third.client)).initializationOptions).toEqual({ probe: "A" });
+	}, 10_000);
+
+	it("does not reuse an idle server from another file-selected worktree root", async () => {
+		const roots = [path.join(tmpDir, "first"), path.join(tmpDir, "second")];
+		for (const root of roots) {
+			await fs.mkdir(path.join(root, "DAL"), { recursive: true });
+			await fs.writeFile(path.join(root, "App.sln"), "");
+			await fs.writeFile(path.join(root, "DAL", "DAL.csproj"), "<Project />");
+		}
+		await fs.writeFile(path.join(roots[0]!, ".git"), "gitdir: ../main/.git/worktrees/first\n");
+		await fs.mkdir(path.join(roots[1]!, ".git"));
+		const selected = roots.map(root =>
+			findLspProjectRoot(path.join(root, "DAL", "Dispatch.cs"), ["services/App.sln", "*.csproj", ".git"]),
+		);
+		expect(selected).toEqual(roots);
+		const first = await link({ ...connectParams, cwd: selected[0]! });
+		await first.client.request("initialize", {
+			...initializeParams(),
+			rootUri: fileToUri(roots[0]!),
+			workspaceFolders: [{ uri: fileToUri(roots[0]!), name: "first" }],
+		});
+		first.client.notify("initialized", {});
+		first.client.destroy();
+		await pollUntil(() => Promise.resolve(server.sessionCount === 0), "first worktree release");
+		const second = await link({ ...connectParams, cwd: selected[1]! });
+		expect(second.connected.spawned).toBe(true);
+		expect(second.connected.pid).not.toBe(first.connected.pid);
+		await initialize(second.client);
+		const sameRoot = await link({ ...connectParams, cwd: selected[0]! });
+		expect(sameRoot.connected.spawned).toBe(false);
+		expect(sameRoot.connected.pid).toBe(first.connected.pid);
 	}, 10_000);
 
 	it("intercepts shutdown and exit for only the calling session", async () => {

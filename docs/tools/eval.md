@@ -128,15 +128,18 @@ With `eval.autoBackground.enabled` (default `false`), a cell that outlives `eval
 - Top-level `await` and bare `return` work through async wrapping.
 - Static top-level imports and dynamic imports are rewritten through the local module loader. Local filesystem imports are cache-busted between cells; bare package and scheme/URL imports retain normal cache identity.
 - Awaited regions can interleave with another session sharing the executor; synchronous code still blocks the worker event loop.
+- Ordinary cell failures and late rejected browser calls preserve earlier successful bindings. If the retained worker actually exits, the first replacement-kernel cell reports `[JS kernel state lost]`; explicit resets do not emit this notice.
 
 ### Python (`py`)
 
 - Retained kernels are keyed by `python:${sessionId}`, normalized cwd, and interpreter. `python.kernelMode="per-call"` instead creates and shuts down a fresh kernel for each invocation.
+- Kernels start in Python UTF-8 mode, including on Windows, so `subprocess.run(..., capture_output=True, text=True)` decodes UTF-8 child output without relying on the system code page. An explicit subprocess `encoding` still takes precedence.
 - The runner uses one persistent asyncio event loop, so top-level `await` works; `asyncio.run(...)` is invalid there.
 - MIME frames support status, PNG, JSON, markdown, plain text, and HTML-to-markdown conversion.
 - Before the host parses display JSON, Python integers outside `−(2^53−1)` through `2^53−1` become exact decimal strings, including nested values and custom MIME-bundle `application/json` output. Safe integers and booleans retain their types; text representations and the user's Python objects are unchanged.
 - Interactive stdin is rejected with `Kernel requested stdin; interactive input is not supported.`
 - Synchronous blocks use the default executor with copied ContextVars; Python bytecode still contends on the GIL.
+- Standard background-thread exceptions emitted while a cell is active are included in that cell's stderr, including subprocess decoding failures.
 
 ## Prelude helpers
 

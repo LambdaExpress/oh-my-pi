@@ -65,10 +65,11 @@ import {
 } from "./edits";
 import { detectLspmux } from "./lspmux";
 import {
-	findLspProjectRoot,
+	getLspFileCwd,
 	getLspServerForFile,
 	getLspServers,
 	getLspServersForFile,
+	isCsharpLspServer,
 	isMethodNotFoundError,
 	isProjectAwareLspServer,
 	isTypeScriptNoProjectError,
@@ -136,13 +137,18 @@ interface FileRenamePair {
 	newUri: string;
 }
 
-/**
- * Route each resolved concrete target through its nearest server project.
- * A glob only chooses targets; it must not change their workspace or select
- * an unrelated sibling project's language-server installation.
- */
-function getFileClientCwd(resolvedFile: string, serverConfig: ServerConfig, sessionCwd: string): string {
-	return findLspProjectRoot(resolvedFile, serverConfig.rootMarkers) ?? sessionCwd;
+interface FileWorkspaceScope {
+	cwd: string;
+	servers: Set<string>;
+}
+
+function csharpSemanticScope(serverName: string, config: ServerConfig, cwd: string): string {
+	return [
+		`[lsp scope] ${serverName}: requested process cwd, rootUri and workspaceFolders = ${cwd}`,
+		`Server command: ${config.resolvedCommand ?? config.command}`,
+		"MSBuild project graph/loading completeness is not verified by OMP; references may be incomplete, including callers in projects the server has not loaded. Diagnostics are server-reported, not a compiler/build result.",
+		"A launcher/wrapper that changes cwd (for example a fixed pushd to the main checkout) can override this scope. OMP cannot correct an arbitrary wrapper; preserve the requested cwd or explicitly select this worktree's solution in the launcher, then reload.",
+	].join("\n");
 }
 
 const CSHARP_LS_INDEXING_HINT =
@@ -203,6 +209,7 @@ function formatRenameStatError(error: unknown): string {
  */
 export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Theme> {
 	readonly #codeActionOnlyByTarget = new Map<string, CodeActionContext["only"]>();
+	readonly #fileWorkspaces = new Map<string, FileWorkspaceScope>();
 	readonly name = "lsp";
 	readonly approval = (args: unknown): ToolApprovalDecision => {
 		const rawAction = (args as Partial<LspParams>).action;
@@ -237,6 +244,15 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 	static createIf(session: ToolSession): LspTool | null {
 		return session.enableLsp === false ? null : new LspTool(session);
+	}
+
+	#fileClientCwd(file: string, serverName: string, config: ServerConfig): string {
+		const cwd = getLspFileCwd(file, config, this.session.cwd);
+		const key = normalizePathForComparison(cwd);
+		const workspace = this.#fileWorkspaces.get(key);
+		if (workspace) workspace.servers.add(serverName);
+		else this.#fileWorkspaces.set(key, { cwd, servers: new Set([serverName]) });
+		return cwd;
 	}
 
 	/**
@@ -295,6 +311,20 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		const timeoutSignal = AbortSignal.timeout(timeoutSec * 1000);
 		const callerSignal = signal;
 		signal = callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal;
+		const rethrowCallAbort = (serverName?: string, cwd?: string): void => {
+			if (!signal?.aborted) return;
+			const scope = `${serverName ? ` on ${serverName}` : ""}${cwd ? ` in ${cwd}` : ""}`;
+			if (timeoutSignal.aborted && !callerSignal?.aborted) {
+				throw new ToolError(
+					`LSP ${action} timed out after ${timeoutSec}s${scope}. The server may still be indexing; pass timeout=<larger> if needed.`,
+				);
+			}
+			const reason = callerSignal?.reason;
+			const message =
+				reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "caller aborted";
+			throw new ToolAbortError(`LSP ${action} cancelled${scope}: ${message}`, { cause: reason });
+		};
+		rethrowCallAbort();
 		throwIfAborted(signal);
 
 		const config = getConfig(this.session.cwd);
@@ -419,6 +449,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			}
 
 			for (const target of targets) {
+				rethrowCallAbort(undefined, target);
 				throwIfAborted(signal);
 				const resolved = resolveToCwd(target, this.session.cwd);
 				const servers = getServersForFile(config, resolved);
@@ -432,15 +463,20 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				const allDiagnostics: Diagnostic[] = [];
 				const unavailableServerNames: string[] = [];
 				const failedServers: string[] = [];
+				const scopeNotes: string[] = [];
+				const withScope = (text: string): string => [text, ...scopeNotes].join("\n");
 				let succeededServers = 0;
 
 				// Query all applicable servers for this file
 				for (const [serverName, serverConfig] of servers) {
 					allServerNames.add(serverName);
 					totalServerAttempts++;
+					const serverCwd = this.#fileClientCwd(resolved, serverName, serverConfig);
+					if (isCsharpLspServer(serverName, serverConfig)) {
+						scopeNotes.push(csharpSemanticScope(serverName, serverConfig, serverCwd));
+					}
 					try {
 						throwIfAborted(signal);
-						const serverCwd = getFileClientCwd(resolved, serverConfig, this.session.cwd);
 						if (serverConfig.createClient) {
 							const linterClient = getLinterClient(serverName, serverConfig, this.session.cwd);
 							const diagnostics = await linterClient.lint(resolved, signal);
@@ -485,11 +521,14 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						succeededServers++;
 						totalServerSuccesses++;
 					} catch (err) {
-						if (err instanceof ToolAbortError || signal?.aborted) {
-							throw err;
-						}
+						rethrowCallAbort(serverName, serverCwd);
 						// Server failed; record it so a total failure is not reported as clean.
-						const errorMessage = err instanceof Error ? err.message : String(err);
+						const errorMessage =
+							err instanceof ToolAbortError
+								? `server operation cancelled independently of this request: ${err.message}`
+								: err instanceof Error
+									? err.message
+									: String(err);
 						failedServers.push(`${serverName}: ${errorMessage}`);
 						logger.debug("LSP diagnostics server failed", {
 							server: serverName,
@@ -531,7 +570,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							content: [
 								{
 									type: "text",
-									text: output || `${theme.status.error} ${relPath}: all language servers failed`,
+									text: withScope(output || `${theme.status.error} ${relPath}: all language servers failed`),
 								},
 							],
 							details: { action, serverName: Array.from(allServerNames).join(", "), success: false },
@@ -542,7 +581,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						if (unavailableMessages.length > 0) {
 							const output = `${DIAGNOSTICS_UNAVAILABLE_SUMMARY}:\n${formatGroupedDiagnosticMessages(unavailableMessages)}`;
 							return {
-								content: [{ type: "text", text: output }],
+								content: [{ type: "text", text: withScope(output) }],
 								details: { action, serverName: Array.from(allServerNames).join(", "), success: false },
 							};
 						}
@@ -551,7 +590,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 								? `OK\n${theme.status.warning} some servers failed: ${failedServers.join(", ")}`
 								: "OK";
 						return {
-							content: [{ type: "text", text }],
+							content: [{ type: "text", text: withScope(text) }],
 							details: { action, serverName: Array.from(allServerNames).join(", "), success: true },
 						};
 					}
@@ -563,7 +602,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						output += `\n${theme.status.warning} some servers failed: ${failedServers.join(", ")}`;
 					}
 					return {
-						content: [{ type: "text", text: output }],
+						content: [{ type: "text", text: withScope(output) }],
 						details: {
 							action,
 							serverName: Array.from(allServerNames).join(", "),
@@ -608,6 +647,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						results.push(`${theme.status.warning} ${relPath}: some servers failed (${failedServers.join(", ")})`);
 					}
 				}
+				results.push(...scopeNotes);
 			}
 
 			const allServersFailed = totalServerAttempts > 0 && totalServerSuccesses === 0;
@@ -988,10 +1028,10 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		}
 
 		if (action === "capabilities") {
+			const resolvedTarget = file && file !== "*" ? resolveToCwd(file, this.session.cwd) : null;
 			let serverList: Array<[string, ServerConfig]>;
-			if (file && file !== "*") {
-				const resolved = resolveToCwd(file, this.session.cwd);
-				serverList = getLspServersForFile(config, resolved);
+			if (resolvedTarget) {
+				serverList = getLspServersForFile(config, resolvedTarget);
 				if (serverList.length === 0) {
 					return {
 						content: [{ type: "text", text: "No language server found for this file" }],
@@ -1014,7 +1054,10 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			for (const [serverName, serverConfig] of serverList) {
 				throwIfAborted(signal);
 				try {
-					const client = await getOrCreateClient(serverConfig, this.session.cwd, undefined, signal);
+					const cwd = resolvedTarget
+						? this.#fileClientCwd(resolvedTarget, serverName, serverConfig)
+						: this.session.cwd;
+					const client = await getOrCreateClient(serverConfig, cwd, undefined, signal);
 					respondingServers.add(serverName);
 					const caps = client.serverCapabilities ?? {};
 					sections.push(`${serverName}:`);
@@ -1098,7 +1141,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 			try {
 				const requestCwd = resolvedTarget
-					? getFileClientCwd(resolvedTarget, chosenConfig, this.session.cwd)
+					? this.#fileClientCwd(resolvedTarget, chosenName, chosenConfig)
 					: this.session.cwd;
 				const client = await getOrCreateClient(chosenConfig, requestCwd, undefined, signal);
 				if (resolvedTarget) {
@@ -1309,15 +1352,52 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			const refreshedConfig = getConfig(this.session.cwd);
 			reconcileIdleChecker();
 			const servers = getLspServers(refreshedConfig);
+			const workspaces = new Map<string, FileWorkspaceScope>(
+				Array.from(this.#fileWorkspaces, ([key, scope]) => [
+					key,
+					{ cwd: scope.cwd, servers: new Set(scope.servers) },
+				]),
+			);
+			const addWorkspace = (cwd: string, serverName: string): void => {
+				const key = normalizePathForComparison(cwd);
+				const workspace = workspaces.get(key);
+				if (workspace) workspace.servers.add(serverName);
+				else workspaces.set(key, { cwd, servers: new Set([serverName]) });
+			};
+			const sessionRoot = normalizePathForComparison(this.session.cwd);
+			const previousServers = getLspServers(config);
+			for (const active of getActiveClients()) {
+				if (!active.cwd) continue;
+				const key = normalizePathForComparison(active.cwd);
+				const relative = path.relative(sessionRoot, key);
+				const outside = relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+				if (outside && !workspaces.has(key)) continue;
+				for (const [name, previousConfig] of previousServers) {
+					if (active.clientKey === getLspClientKey(previousConfig, active.cwd)) addWorkspace(active.cwd, name);
+				}
+			}
+			for (const [name] of servers) {
+				let hasWorkspace = false;
+				for (const workspace of workspaces.values()) {
+					if (workspace.servers.has(name)) {
+						hasWorkspace = true;
+						break;
+					}
+				}
+				if (!hasWorkspace) addWorkspace(this.session.cwd, name);
+			}
+			if (workspaces.size === 0) {
+				workspaces.set(sessionRoot, { cwd: this.session.cwd, servers: new Set() });
+			}
 			// Identity-aware client keys make a changed server resolve to a fresh
 			// client below, but the process spawned from the superseded config
 			// would stay registered and running otherwise (#8384). This also
 			// clears every old client when the refreshed config removes all servers.
-			const stopped = await shutdownStaleClients(
-				this.session.cwd,
-				servers.map(([, serverConfig]) => serverConfig),
-				signal,
-			);
+			const stopped: string[] = [];
+			const freshConfigs = servers.map(([, serverConfig]) => serverConfig);
+			for (const workspace of workspaces.values()) {
+				stopped.push(...(await shutdownStaleClients(workspace.cwd, freshConfigs, signal)));
+			}
 			if (servers.length === 0) {
 				return {
 					content: [{ type: "text", text: "No language server found for this action" }],
@@ -1328,28 +1408,31 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			if (stopped.length > 0) {
 				outputs.push(`Stopped ${stopped.length} server(s) with superseded configuration: ${stopped.join(", ")}`);
 			}
+			let success = true;
 			for (const [workspaceServerName, workspaceServerConfig] of servers) {
-				throwIfAborted(signal);
-				clearInitializationFailure(workspaceServerConfig, this.session.cwd);
-				try {
-					const workspaceClient = await getOrCreateClient(
-						workspaceServerConfig,
-						this.session.cwd,
-						undefined,
-						signal,
-					);
-					outputs.push(await reloadServer(workspaceClient, workspaceServerName, signal));
-				} catch (err) {
-					if (err instanceof ToolAbortError || signal?.aborted) {
-						throw err;
+				for (const workspace of workspaces.values()) {
+					if (!workspace.servers.has(workspaceServerName)) continue;
+					rethrowCallAbort(workspaceServerName, workspace.cwd);
+					clearInitializationFailure(workspaceServerConfig, workspace.cwd);
+					try {
+						const workspaceClient = await getOrCreateClient(
+							workspaceServerConfig,
+							workspace.cwd,
+							undefined,
+							signal,
+						);
+						outputs.push(await reloadServer(workspaceClient, workspaceServerName, signal));
+					} catch (err) {
+						rethrowCallAbort(workspaceServerName, workspace.cwd);
+						success = false;
+						const errorMessage = err instanceof Error ? err.message : String(err);
+						outputs.push(`Failed to reload ${workspaceServerName} in ${workspace.cwd}: ${errorMessage}`);
 					}
-					const errorMessage = err instanceof Error ? err.message : String(err);
-					outputs.push(`Failed to reload ${workspaceServerName}: ${errorMessage}`);
 				}
 			}
 			return {
 				content: [{ type: "text", text: outputs.join("\n") }],
-				details: { action, serverName: servers.map(([name]) => name).join(", "), success: true, request: params },
+				details: { action, serverName: servers.map(([name]) => name).join(", "), success, request: params },
 			};
 		}
 
@@ -1362,11 +1445,11 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		}
 
 		const [serverName, serverConfig] = serverInfo;
-		const serverCommand = path.basename(serverConfig.resolvedCommand ?? serverConfig.command).replace(/\.exe$/i, "");
+		const serverCommand = path
+			.basename(serverConfig.resolvedCommand ?? serverConfig.command)
+			.replace(/\.(?:exe|cmd|bat)$/i, "");
 		const isCsharpLs = serverName === "csharp-ls" || serverCommand === "csharp-ls";
-		const clientCwd = resolvedFile
-			? getFileClientCwd(resolvedFile, serverConfig, this.session.cwd)
-			: this.session.cwd;
+		const clientCwd = resolvedFile ? this.#fileClientCwd(resolvedFile, serverName, serverConfig) : this.session.cwd;
 
 		if (action === "reload") clearInitializationFailure(serverConfig, clientCwd);
 
@@ -1814,6 +1897,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					output = `Unknown action: ${action}`;
 			}
 
+			if (isCsharpLspServer(serverName, serverConfig)) {
+				output += `\n${csharpSemanticScope(serverName, serverConfig, clientCwd)}`;
+			}
 			return {
 				content: [{ type: "text", text: output }],
 				details: { serverName, action, success: true, request: params },
@@ -1821,18 +1907,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			};
 		} catch (err) {
 			if (err instanceof ToolError) throw err;
-			if (err instanceof ToolAbortError || signal?.aborted) {
-				// Distinguish a wall-clock timeout from a caller cancel:
-				// callerSignal aborting → real cancel (re-throw ToolAbortError);
-				// timeoutSignal aborting without callerSignal → emit a ToolError naming the
-				// elapsed budget and server, instead of opaque "Operation aborted".
-				if (timeoutSignal.aborted && !callerSignal?.aborted) {
-					throw new ToolError(
-						`LSP ${action} timed out after ${timeoutSec}s on ${serverName}. The server may still be indexing; try again or pass timeout=<larger>.`,
-					);
-				}
-				throw new ToolAbortError();
-			}
+			rethrowCallAbort(serverName, clientCwd);
 			const errorMessage = err instanceof Error ? err.message : String(err);
 			// Preserve the original dump and record unavailable semantics; the
 			// phrase alone is not evidence of a program-size disable.
@@ -1840,8 +1915,11 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				requestedClient && resolvedFile && isTypeScriptNoProjectError(serverName, serverConfig, err)
 					? `\n[${serverName}] ${recordTypeScriptProjectFailure(requestedClient, resolvedFile, errorMessage)}`
 					: "";
+			const scopeHint = isCsharpLspServer(serverName, serverConfig)
+				? `\n${csharpSemanticScope(serverName, serverConfig, clientCwd)}`
+				: "";
 			return {
-				content: [{ type: "text", text: `LSP error: ${errorMessage}${noProjectHint}` }],
+				content: [{ type: "text", text: `LSP error: ${errorMessage}${noProjectHint}${scopeHint}` }],
 				details: { serverName, action, success: false, request: params },
 			};
 		}

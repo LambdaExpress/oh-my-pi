@@ -563,8 +563,9 @@ export interface OpenAICompat {
 	/**
 	 * Whether the Responses WebSocket accepts `response.steer`, which queues user
 	 * input into the in-flight response (GPT-6 family). Default: rule-detected.
-	 * Set `false` for proxies that reject the event; steering then waits for the
-	 * next request boundary.
+	 * Native Codex lanes default to `false` because they reject in-flight stateful
+	 * messages. Only opt in for endpoints known to accept the event; otherwise
+	 * steering waits for the next request boundary.
 	 */
 	supportsSteering?: boolean;
 	/** Whether streamed reasoning deltas for the same field may repeat the full cumulative text snapshot. Default: false. */
@@ -1111,7 +1112,8 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 	supportsConfigurationUpdate: boolean;
 	/**
 	 * Whether the WebSocket transport may send `response.steer` to deliver user
-	 * input into the in-flight response. Rule-owned: GPT-6 family.
+	 * input into the in-flight response. Rule-owned: GPT-6 family, disabled for
+	 * the native Codex transport.
 	 */
 	supportsSteering: boolean;
 	/** Inject the `# Juice: 0 !important` developer item when reasoning is forced off (gpt-5.6+). */

@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { wasmGrammarFor } from "@oh-my-pi/pi-natives";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import type { ReadToolDetails } from "@oh-my-pi/pi-tui/tools/read";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
@@ -32,6 +33,7 @@ const LEGACY_SUMMARY_OVERRIDES: Record<string, unknown> = {
 	"read.summarize.unfoldUntil": 0,
 	"read.summarize.unfoldLimit": 0,
 };
+const csharpGrammarUnavailable = wasmGrammarFor({ lang: "csharp" })?.installed === false;
 
 function createSession(cwd: string, overrides: Record<string, unknown> = {}): ToolSession {
 	const settings = Settings.isolated({ ...LEGACY_SUMMARY_OVERRIDES, ...overrides });
@@ -81,6 +83,144 @@ describe("read summary", () => {
 		expect(text).toContain("export function beta(): number { … }");
 		expect(text).not.toContain("const clean = value.trim()");
 		expect(result.details?.summary?.elidedSpans).toBe(2);
+	});
+
+	it.skipIf(csharpGrammarUnavailable)(
+		"keeps C# declarations and accessor signatures without unfolding executable bodies",
+		async () => {
+			const fixture = path.join(tmpDir, "Counter.cs");
+			await fs.writeFile(
+				fixture,
+				[
+					"namespace Example;",
+					"public class Counter",
+					"{",
+					"    private int count = 1;",
+					"    public Counter(int initial) { count = initial; }",
+					"    public int Count { get { return count; } private set => count = value; }",
+					"    public int Next(int amount)",
+					"    {",
+					"        var result = count + amount;",
+					"        count = result;",
+					"        return result;",
+					"    }",
+					"    public int Peek() => count;",
+					"    public class Nested { public int Read() { return 42; } }",
+					"}",
+					"",
+				].join("\n"),
+			);
+			const tool = new ReadTool(
+				createSession(tmpDir, {
+					"read.summarize.minTotalLines": 5000,
+					"read.summarize.unfoldUntil": 10_000,
+					"read.summarize.unfoldLimit": 20_000,
+				}),
+			);
+			const result = await tool.execute("read-summary-csharp", { path: fixture });
+			const text = textOutput(result);
+
+			expect(text).toContain("private int count = 1;");
+			expect(text).toContain("public Counter(int initial) { … }");
+			expect(text).toContain("public int Count { get { … } private set => …; }");
+			expect(text).toContain("public int Next(int amount)");
+			expect(text).toContain("public int Peek() => …;");
+			expect(text).toContain("public class Nested { public int Read() { … } }");
+			expect(text).not.toContain("count = initial");
+			expect(text).not.toContain("return count");
+			expect(text).not.toContain("count = value");
+			expect(text).not.toContain("var result");
+			expect(text).not.toContain("return 42");
+			expect(text).not.toContain("[Showing lines");
+			expect(text).toContain("Counter.cs:5-5,6-6");
+			expect(result.details?.summary?.elidedSpans).toBe(5);
+		},
+	);
+
+	it.skipIf(csharpGrammarUnavailable)(
+		"returns every C# declaration when no executable body needs elision",
+		async () => {
+			const fixture = path.join(tmpDir, "IMany.cs");
+			await fs.writeFile(
+				fixture,
+				`public interface IMany\n{\n${Array.from({ length: 350 }, (_, index) => `    void Method${index}();`).join(
+					"\n",
+				)}\n}\n`,
+			);
+			const tool = new ReadTool(createSession(tmpDir));
+			const result = await tool.execute("read-summary-csharp-declarations", { path: fixture });
+			const text = textOutput(result);
+
+			expect(text).toContain("void Method349();");
+			expect(text).not.toContain("[Showing lines");
+			expect(result.details?.summary?.elidedSpans).toBe(0);
+		},
+	);
+
+	it.skipIf(csharpGrammarUnavailable)(
+		"does not mark a wholly projected one-line C# source as fully seen",
+		async () => {
+			const fixture = path.join(tmpDir, "Inline.cs");
+			await fs.writeFile(fixture, "class Counter { public int Next() { return 37; } }\n");
+			const session = createSession(tmpDir);
+			const tool = new ReadTool(session);
+			const result = await tool.execute("read-summary-csharp-inline-provenance", { path: fixture });
+
+			expect(textOutput(result)).toContain("~1-1:class Counter { public int Next() { … } }");
+			expect(result.details?.summary?.elidedSpans).toBe(1);
+			const store = session.editStore!;
+			const tag = store.headHash(fixture)!;
+			expect(store.seenLines(fixture, tag)).toEqual([0]);
+		},
+	);
+
+	it.skipIf(csharpGrammarUnavailable)("keeps explicit C# ranged and raw reads verbatim", async () => {
+		const fixture = path.join(tmpDir, "Counter.cs");
+		const source = "public class Counter\n{\n    public int Next() { return 37; }\n}\n";
+		await fs.writeFile(fixture, source);
+		const tool = new ReadTool(createSession(tmpDir));
+
+		const ranged = await tool.execute("read-summary-csharp-range", { path: `${fixture}:3-3` });
+		expect(textOutput(ranged)).toContain("public int Next() { return 37; }");
+		expect(ranged.details?.summary).toBeUndefined();
+
+		const raw = await tool.execute("read-summary-csharp-raw", { path: `${fixture}:raw` });
+		expect(textOutput(raw)).toBe(source);
+		expect(raw.details?.summary).toBeUndefined();
+
+		const rawRange = await tool.execute("read-summary-csharp-raw-range", { path: `${fixture}:3-3:raw` });
+		expect(textOutput(rawRange)).toBe("    public int Next() { return 37; }");
+	});
+
+	it.skipIf(csharpGrammarUnavailable)(
+		"labels unparseable C# fallback output as an incomplete source excerpt",
+		async () => {
+			const fixture = path.join(tmpDir, "Broken.cs");
+			await fs.writeFile(fixture, "class Broken { public int Next( { return 37; }\n");
+			const tool = new ReadTool(createSession(tmpDir));
+			const result = await tool.execute("read-summary-csharp-parse-failure", { path: fixture });
+			const text = textOutput(result);
+
+			expect(text).toContain("C# declarations-only summary unavailable");
+			expect(text).toContain("executable bodies may be included and declarations may be omitted");
+			expect(text).toContain("return 37;");
+			expect(result.details?.summary).toBeUndefined();
+		},
+	);
+
+	it("explains the C# parser size limit without attempting a parse", async () => {
+		const source = `// ${"x".repeat(2 * 1024 * 1024)}\nclass C {}\n`;
+		const attempt = await trySummarize(
+			createSession(tmpDir),
+			path.join(tmpDir, "Large.cs"),
+			Buffer.byteLength(source),
+			undefined,
+			source,
+		);
+
+		expect(attempt.summary).toBeNull();
+		expect(attempt.unavailable).toContain("2 MiB parser limit");
+		expect(attempt.unavailable).toContain("Showing a source excerpt instead");
 	});
 
 	it("uses the resolved path in elision recovery selectors after suffix matching", async () => {
@@ -367,8 +507,8 @@ describe("read summary", () => {
 		// read through a `.py` lexical path): the second call must not reuse
 		// the cached TypeScript summary.
 		const first = await trySummarize(session, fixture, size, undefined, code, fixture);
-		expect(first?.parsed && first?.elided).toBe(true);
+		expect(first.summary?.parsed && first.summary.elided).toBe(true);
 		const second = await trySummarize(session, fixture, size, undefined, code, path.join(tmpDir, "mod.py"));
-		expect(second).not.toBe(first);
+		expect(second.summary).not.toBe(first.summary);
 	});
 });

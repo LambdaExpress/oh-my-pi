@@ -768,11 +768,12 @@ export class EditTool implements AgentTool<TInput> {
 		onPreview?: (error: Error | null, batch: EditPreviewBatch) => void,
 	): EditSessionState {
 		const resolveContext = sessionResolveContext(this.session, { signal });
+		const internalTargets = new Map<string, ResolvedInternalEditTarget>();
 		const native = new EditSession(
 			getEditStore(this.session),
 			this.#policy(rawInput, resolveContext),
 			onPreview,
-			(_error, url) => this.#resolveUrl(url, resolveContext),
+			(_error, url) => this.#resolveUrl(url, resolveContext, internalTargets),
 		) as NativeVirtualEditSession;
 		return {
 			native,
@@ -781,7 +782,7 @@ export class EditTool implements AgentTool<TInput> {
 			streamedArgs: "",
 			pending: Promise.resolve(),
 			preparedIntents: new Set(),
-			internalTargets: new Map(),
+			internalTargets,
 			finished: false,
 		};
 	}
@@ -809,21 +810,33 @@ export class EditTool implements AgentTool<TInput> {
 
 	/**
 	 * Host answer for one internal-URL edit target: its backing file, or a model-facing refusal.
-	 * Only file-written mutable schemes ({@link InternalUrlRouter.fileWritable}) are editable;
-	 * handler-owned writes (agent:// messages, proc:// stdin, ...) never patch their backing file.
+	 * Preloaded targets use the validated protocol edit/write path. Otherwise only
+	 * file-written mutable schemes ({@link InternalUrlRouter.fileWritable}) are editable;
+	 * handler-owned messages (agent://, proc:// stdin, ...) never patch their backing file.
 	 * A line/partial selector is refused ({@link InternalUrlRouter.peelWriteSelector}): edits
 	 * address whole files.
 	 *
 	 * Host materialized it earlier (`#preloadInspection` → `preloadVirtualResource`), so
-	 * this callback only ever answers targets the preload pass missed.
+	 * this callback acknowledges those explicit targets as well as answering misses.
 	 */
-	async #resolveUrl(url: string, context: ResolveContext): Promise<EditUrlResolution> {
+	async #resolveUrl(
+		url: string,
+		context: ResolveContext,
+		internalTargets: ReadonlyMap<string, ResolvedInternalEditTarget>,
+	): Promise<EditUrlResolution> {
 		const router = InternalUrlRouter.instance();
 		try {
 			const target = router.peelWriteSelector(url, "edit");
 			const scheme = extractUriScheme(target);
 			const spec = scheme === undefined ? undefined : router.spec(scheme);
 			if (!spec) return { error: `Unknown internal URL: ${url}`, planWritable: false };
+			if (spec.write && !spec.immutable) {
+				for (const preloaded of internalTargets.values()) {
+					if (preloaded.canonicalPath === target || preloaded.displayPath === target) {
+						return { path: preloaded.canonicalPath, planWritable: spec.write.scope === "sandbox" };
+					}
+				}
+			}
 			if (!router.fileWritable(target)) {
 				const reason = spec.write?.via === "handler" ? "is written through `write`, not edited" : "is read-only";
 				return { error: `${url} ${reason}`, planWritable: false };

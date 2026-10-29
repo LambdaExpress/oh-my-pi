@@ -64,6 +64,27 @@ export function validateRequest(value: unknown): asserts value is TerminalLaunch
 	) {
 		fail("command", "Shell-input command arguments cannot contain terminal control bytes.");
 	}
+	if (request.env !== undefined) {
+		if (typeof request.env !== "object" || request.env === null || Array.isArray(request.env)) {
+			fail("env", "Terminal launch environment overrides must be an object.");
+		}
+		for (const [name, value] of Object.entries(request.env as Record<string, unknown>)) {
+			if (
+				name.length === 0 ||
+				name.includes("=") ||
+				name.includes("\0") ||
+				(value !== undefined && (typeof value !== "string" || value.includes("\0")))
+			) {
+				fail("env", "A terminal launch environment override is invalid.");
+			}
+			if (
+				capabilities.shellGrammar === "posix" &&
+				(terminalControlBytes.test(name) || (typeof value === "string" && terminalControlBytes.test(value)))
+			) {
+				fail("env", "Shell-input environment overrides cannot contain terminal control bytes.");
+			}
+		}
+	}
 	const cwd = request.cwd;
 	if (typeof cwd !== "string" || cwd.length === 0 || cwd.includes("\0")) {
 		fail("validate", "A terminal launch requires a valid working directory.");

@@ -193,51 +193,53 @@ export async function notifyFileSaved(
 }
 
 /**
- * Find the nearest marker-bearing ancestor for an LSP file.
- *
- * Project configs often store markers relative to the main checkout, such as
- * `services/app/app.sln`. When a concrete file comes from an independent Git
- * worktree, that prefix is no longer present even though the marker basename
- * is still present at the corresponding worktree root. Preserve exact marker
- * matching first, then fall back to the final path segment for path-qualified
- * markers so external worktrees get their own language-server workspace.
+ * Find a marker-bearing ancestor without leaving the file's Git checkout.
+ * Solutions take precedence over individual MSBuild projects so sibling callers
+ * are visible. Specific markers (including relocated worktree basenames) take
+ * precedence over generic `.`/`.git` roots.
  */
 export function findLspProjectRoot(filePath: string, rootMarkers: string[]): string | null {
-	const findRoot = (markers: string[]): string | null => {
-		for (let dir = path.dirname(path.resolve(filePath)); ;) {
-			if (hasRootMarkers(dir, markers)) return dir;
-			const parent = path.dirname(dir);
-			if (parent === dir) return null;
-			dir = parent;
-		}
-	};
-
-	const exactRoot = findRoot(rootMarkers);
-	if (exactRoot) return exactRoot;
-
-	const fallbackMarkers = rootMarkers
-		.map(marker => {
-			const normalized = marker.replaceAll("\\", "/");
-			const separator = normalized.lastIndexOf("/");
-			if (separator < 0) return undefined;
-			const basename = normalized.slice(separator + 1);
-			if (!basename || basename === "." || basename === "..") return undefined;
-			return { basename, glob: basename.includes("*") };
-		})
-		.filter((marker): marker is { basename: string; glob: boolean } => marker !== undefined);
-
-	// Prefer explicit solution/config files over a broad `*.csproj` fallback.
-	// This matters when one config lists multiple projects: a target in the
-	// second worktree project must not stop at the first matching project file.
-	for (const glob of [false, true]) {
-		for (const { basename, glob: isGlob } of fallbackMarkers) {
-			if (isGlob !== glob) continue;
-			const fallbackRoot = findRoot([basename]);
+	const ancestors: string[] = [];
+	for (let dir = path.dirname(path.resolve(filePath)); ;) {
+		ancestors.push(dir);
+		// Linked worktrees have a .git *file*, ordinary checkouts a directory.
+		// Neither may inherit a project from an enclosing checkout.
+		if (hasRootMarkers(dir, [".git"])) break;
+		const parent = path.dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+	const markers = rootMarkers.map(marker => marker.replaceAll("\\", "/"));
+	const generic = markers.filter(marker => marker === "." || marker === ".git");
+	const specific = markers.filter(marker => marker !== "." && marker !== ".git");
+	const solution = (marker: string): boolean => /\.(?:sln|slnx|slnf)$/i.test(marker);
+	const findRoot = (candidates: string[]): string | undefined =>
+		candidates.length > 0 ? ancestors.find(dir => hasRootMarkers(dir, candidates)) : undefined;
+	for (const candidates of [specific.filter(solution), specific.filter(marker => !solution(marker))]) {
+		const exactRoot = findRoot(candidates);
+		if (exactRoot) return exactRoot;
+		// A main-checkout-relative prefix need not exist in a separate worktree.
+		// Keep explicit basenames ahead of broad wildcard fallbacks.
+		const basenames = candidates
+			.filter(marker => marker.includes("/"))
+			.map(marker => marker.slice(marker.lastIndexOf("/") + 1))
+			.filter(marker => marker !== "" && marker !== "." && marker !== ".." && marker !== ".git");
+		for (const glob of [false, true]) {
+			const fallbackRoot = findRoot(basenames.filter(marker => marker.includes("*") === glob));
 			if (fallbackRoot) return fallbackRoot;
 		}
 	}
+	return findRoot(generic) ?? null;
+}
 
-	return null;
+/** Resolve every concrete tool target independently, never into an unrelated session checkout. */
+export function getLspFileCwd(filePath: string, config: ServerConfig, sessionCwd: string): string {
+	const root = findLspProjectRoot(filePath, config.rootMarkers) ?? findLspProjectRoot(filePath, [".git"]);
+	if (root) return root;
+	const relative = path.relative(path.resolve(sessionCwd), path.resolve(filePath));
+	return relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
+		? path.dirname(path.resolve(filePath))
+		: sessionCwd;
 }
 
 function isCustomLinter(serverConfig: ServerConfig): boolean {
@@ -277,6 +279,14 @@ export function getLspServerForFile(config: LspConfig, filePath: string): [strin
 
 export function isProjectAwareLspServer(serverConfig: ServerConfig): boolean {
 	return !serverConfig.createClient && !serverConfig.isLinter;
+}
+
+export function isCsharpLspServer(serverName: string, config: ServerConfig): boolean {
+	return (
+		serverName === "csharp-ls" ||
+		config.languageId === "csharp" ||
+		config.fileTypes.some(fileType => /^\.?csx?$/i.test(fileType))
+	);
 }
 
 /** True when an LSP error indicates the server doesn't implement the requested method. */
@@ -337,6 +347,22 @@ export function reloadConfigurationParams(config: ServerConfig): { settings: Rec
 
 export async function reloadServer(client: LspClient, serverName: string, signal?: AbortSignal): Promise<string> {
 	throwIfAborted(signal);
+	if (isCsharpLspServer(serverName, client.config)) {
+		// didChangeConfiguration does not reload csharp-ls/MSBuild's project graph.
+		// Restart the process rooted at this file's workspace, not the session's
+		// main checkout. A mux detach alone would reuse the same stale graph.
+		const files = Array.from(client.openFiles.keys(), uriToFile);
+		if (client.proc.sharedMux) {
+			await sendNotification(client, MUX_RESTART_METHOD, undefined, signal);
+		}
+		if (!(await shutdownClientInstance(client))) {
+			throw new Error(`Failed to restart ${serverName} in ${client.cwd}: server process did not exit after kill`);
+		}
+		throwIfAborted(signal);
+		const replacement = await getOrCreateClient(client.config, client.cwd, undefined, signal);
+		for (const file of files) await refreshFile(replacement, file, signal);
+		return `Restarted ${serverName} in ${client.cwd}`;
+	}
 	// Reconcile every open overlay with disk before asking the server to reload.
 	// A configuration notification alone does not invalidate tsgo/tsserver's
 	// cached dependency snapshots, so a target file can keep reporting errors

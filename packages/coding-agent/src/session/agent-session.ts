@@ -115,6 +115,7 @@ import { loadAdvisorTranscriptCosts } from "../advisor";
 import {
 	ASYNC_JOB_MANAGER_SHUTDOWN_REASON,
 	type AsyncJob,
+	type AsyncJobDeliveryOutcome,
 	type AsyncJobFilter,
 	AsyncJobManager,
 	type AsyncJobRecord,
@@ -169,7 +170,7 @@ import { createExtensionModelQuery } from "../extensibility/extensions/model-api
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import type { CustomCommandContext } from "../extensibility/custom-commands/types";
 import { SkillDescriptionCatalog } from "../extensibility/skill-descriptions";
-import type { Skill, SkillWarning } from "../extensibility/skills";
+import { isManagedSkillAvailable, type Skill, type SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand, loadSlashCommands } from "../extensibility/slash-commands";
 import { normalizeToolEventInput, resolveToolEventInput } from "../extensibility/tool-event-input";
 import { GoalRuntime } from "../goals/runtime";
@@ -2367,7 +2368,9 @@ export class AgentSession implements SettingsScope {
 				this.#deliverAsyncJobResult(manager, jobId, text, job),
 			);
 			this.yieldQueue.register<AsyncResultEntry>("async-result", {
-				isStale: entry => entry.epoch !== this.#asyncDeliveryEpoch || manager.isDeliverySuppressed(entry.jobId),
+				isStale: entry =>
+					entry.epoch !== this.#asyncDeliveryEpoch ||
+					manager.isDeliverySuppressed(entry.jobId, { includeWatched: false }),
 				build: buildAsyncResultBatchMessage,
 			});
 		}
@@ -3405,18 +3408,23 @@ export class AgentSession implements SettingsScope {
 	 * follow-up, and settle only after the yield queue injects or discards it.
 	 * This keeps the job body recoverable through `proc://` while injection is pending.
 	 */
-	async #deliverAsyncJobResult(manager: AsyncJobManager, jobId: string, text: string, job?: AsyncJob): Promise<void> {
-		if (this.#isDisposed) return;
-		if (manager.isDeliverySuppressed(jobId)) return;
+	async #deliverAsyncJobResult(
+		manager: AsyncJobManager,
+		jobId: string,
+		text: string,
+		job?: AsyncJob,
+	): Promise<AsyncJobDeliveryOutcome> {
+		if (this.#isDisposed) return "discarded";
+		if (manager.isDeliverySuppressed(jobId)) return "deferred";
 		// Snapshot the generation before the async format step: a `/new` during it
 		// bumps the epoch, so this delivery belongs to the replaced session and
 		// must not enqueue — the suppression marker alone is unreliable because
 		// job-id reuse clears it.
 		const epoch = this.#asyncDeliveryEpoch;
 		const formatted = await this.#formatAsyncResultForFollowUp(text, job?.latestDetails?.meta);
-		if (this.#isDisposed) return;
-		if (epoch !== this.#asyncDeliveryEpoch) return;
-		if (manager.isDeliverySuppressed(jobId)) return;
+		if (this.#isDisposed) return "discarded";
+		if (epoch !== this.#asyncDeliveryEpoch) return "discarded";
+		if (manager.isDeliverySuppressed(jobId)) return "deferred";
 		const durationMs = job ? Math.max(0, (job.endTime ?? Date.now()) - job.startTime) : undefined;
 		await this.yieldQueue.enqueueWithReceipt<AsyncResultEntry>("async-result", {
 			jobId,
@@ -10170,7 +10178,9 @@ export class AgentSession implements SettingsScope {
 			this.#promptSkillsSource = skills;
 			this.#promptSkills = this.#skillDescriptions.snapshot(skills);
 		}
-		return this.#promptSkills;
+		// Description compression stays frozen, availability does not: the
+		// underlying managed file can be deleted without replacing `skills`.
+		return this.#promptSkills.filter(isManagedSkillAvailable);
 	}
 
 	/** Frozen skill-URI hint visibility snapshot (see {@link SessionTools.skillHintVisible}). */

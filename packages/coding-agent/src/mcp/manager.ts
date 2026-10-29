@@ -47,6 +47,7 @@ import {
 	isMCPTimeoutEnabled,
 	resolveMCPRequestTimeoutMs,
 	resolveMCPStartupTimeoutMs,
+	resolveMCPTimeoutMs,
 } from "./timeout";
 
 import type { MCPToolDetails } from "@oh-my-pi/pi-tui/tools/mcp";
@@ -1306,7 +1307,8 @@ export class MCPManager {
 	 * {@link #pendingToolLoads} and therefore invisible to
 	 * {@link getConnectedServers}. Awaiting the pending work lets those callers
 	 * observe the final attached/failed state instead of racing mid-handshake.
-	 * Read-only wait budgets apply independently of a server's tool timeout.
+	 * Connection readiness honors the configured handshake budget; once connected,
+	 * catalog loading and resource execution use their shorter read-only budgets.
 	 * A failed wait does not cancel shared startup work; callers can still inspect
 	 * catalogs from servers that did connect.
 	 */
@@ -1356,7 +1358,7 @@ export class MCPManager {
 		throw new Error("MCP connections are still changing; inspect the MCP server logs before reading resources.");
 	}
 
-	/** Bound a caller's wait without aborting a shared connection or catalog refresh. */
+	/** Respect startup budgets while bounding catalogs, without aborting shared work. */
 	#waitForResourceReadiness<T>(
 		name: string,
 		stage: "connection" | "resource catalog",
@@ -1364,7 +1366,11 @@ export class MCPManager {
 		options?: MCPRequestOptions,
 		startedAt = Date.now(),
 	): Promise<T> {
-		const timeoutMs = resolveMCPRequestTimeoutMs("resources/read", this.getServerConfig(name)?.timeout);
+		const configTimeout = this.getServerConfig(name)?.timeout;
+		const timeoutMs =
+			stage === "connection"
+				? resolveMCPTimeoutMs(configTimeout)
+				: resolveMCPRequestTimeoutMs("resources/list", configTimeout);
 		if (!isMCPTimeoutEnabled(timeoutMs)) return untilAborted(options?.signal, promise);
 		const error = new MCPTransportError({
 			transport: "unknown",

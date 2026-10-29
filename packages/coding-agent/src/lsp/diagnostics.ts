@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import { formatPathRelativeToCwd } from "../tools/path-utils";
-import { throwIfAborted } from "../tools/tool-errors";
+import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import {
 	getOrCreateClient,
 	prepareFileForRequest,
@@ -262,6 +262,13 @@ function isProvisionalColdPublish(
 	);
 }
 
+function throwIfDiagnosticWaitAborted(uri: string, signal?: AbortSignal): void {
+	if (!signal?.aborted) return;
+	const reason = signal.reason;
+	const message = reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "caller aborted";
+	throw new ToolAbortError(`LSP diagnostics cancelled for ${uriToFile(uri)}: ${message}`, { cause: reason });
+}
+
 export async function waitForDiagnostics(
 	client: LspClient,
 	uri: string,
@@ -276,7 +283,7 @@ export async function waitForDiagnostics(
 	let settledRef: PublishedDiagnostics | undefined;
 	let settledAt = 0;
 	while (Date.now() < deadline) {
-		throwIfAborted(signal);
+		throwIfDiagnosticWaitAborted(uri, signal);
 		if (!pullAttempted && supportsDocumentDiagnostics(client)) {
 			pullAttempted = true;
 			pullResultPromise = requestDocumentDiagnostics(client, uri, signal, Math.max(1, deadline - Date.now()));
@@ -344,7 +351,7 @@ export async function waitForDiagnostics(
 		if (outcome.diagnostics !== undefined) pulled = outcome.diagnostics;
 		else if (outcome.failed !== undefined) pullFailure = outcome.failed;
 	}
-	throwIfAborted(signal);
+	throwIfDiagnosticWaitAborted(uri, signal);
 	if (pulled === undefined) {
 		// A failed pull (timeout/RPC error) leaves the file's state unknown; never
 		// let it collapse into a clean empty result the caller renders as "OK".

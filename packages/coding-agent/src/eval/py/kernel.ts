@@ -310,7 +310,11 @@ export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 		const scriptPath = await stageRunnerScript("omp-python-runner", "py", RUNNER_SCRIPT);
 		const kernel = new PythonKernel(Snowflake.next());
 
-		const proc = Bun.spawn([runtime.pythonPath, "-u", scriptPath], {
+		// PYTHONIOENCODING only configures stdio, not subprocess text capture.
+		// Enable UTF-8 mode at startup so Windows reader threads do not decode
+		// UTF-8 child output using the host ANSI code page. The CLI flag also
+		// takes precedence over an inherited PYTHONUTF8=0.
+		const proc = Bun.spawn([runtime.pythonPath, "-X", "utf8", "-u", scriptPath], {
 			cwd: options.cwd,
 			detached: shouldDetachKernel(process.platform),
 			env: spawnEnv,

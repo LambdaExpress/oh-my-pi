@@ -37,15 +37,42 @@ import { detectLanguageId, EquivalentUriMap, fileToUri, readTextFromDisk, uriToF
 
 const clients = new Map<string, LspClient>();
 interface PendingClient {
+	key: string;
 	promise: Promise<LspClient>;
 	cwd: string;
 	config: ServerConfig;
 	token: symbol;
+	controller: AbortController;
+	waiters: number;
 }
 const clientLocks = new Map<string, PendingClient>();
 const invalidatedClientKeys = new Set<string>();
 const clientReloadBarriers = new Map<string, Promise<unknown>>();
 const fileOperationLocks = new Map<string, Promise<void>>();
+
+/** A caller owns its wait, not the initialization shared with other requests. */
+async function waitForPendingClient(
+	pending: PendingClient,
+	signal?: AbortSignal,
+	initTimeoutMs?: number,
+): Promise<LspClient> {
+	const budgetMs = initTimeoutMs ?? (signal ? undefined : DEFAULT_REQUEST_TIMEOUT_MS);
+	const deadline = budgetMs === undefined ? undefined : AbortSignal.timeout(budgetMs);
+	const waitSignal = deadline ? (signal ? AbortSignal.any([signal, deadline]) : deadline) : signal;
+	pending.waiters++;
+	try {
+		return await untilAborted(waitSignal, pending.promise);
+	} catch (error) {
+		if (signal?.aborted) throw abortReason(signal);
+		if (deadline?.aborted) throw new Error(`LSP request initialize timed out after ${budgetMs}ms`);
+		throw error;
+	} finally {
+		pending.waiters--;
+		if (pending.waiters === 0 && clientLocks.get(pending.key) === pending) {
+			pending.controller.abort(new ToolAbortError("LSP initialization cancelled: no active requests remain"));
+		}
+	}
+}
 
 interface TypeScriptProjectStatus {
 	file: string;
@@ -1294,11 +1321,10 @@ export function clearInitializationFailure(config: ServerConfig, cwd: string): v
  * Get or create an LSP client for the given server configuration and working directory.
  * @param config - Server configuration
  * @param cwd - Working directory
- * @param initTimeoutMs - Optional hard deadline for the initialize handshake (warmup / other
- *   short-lived callers). When set it takes precedence over `signal` inside `sendRequest`.
- * @param signal - Optional caller abort signal. Threaded into the initialize `sendRequest`
- *   and the `initialized` notification so a wedged server surfaces the caller's
- *   timeout/cancel instead of falling back to the internal 30s default.
+ * @param initTimeoutMs - Optional deadline for this caller's initialize wait.
+ * @param signal - Optional caller abort signal. Shared initialization is cancelled
+ *   only once all callers have stopped waiting, so one file's deadline cannot
+ *   abort unrelated requests waiting for the same server.
  */
 export async function getOrCreateClient(
 	config: ServerConfig,
@@ -1306,6 +1332,7 @@ export async function getOrCreateClient(
 	initTimeoutMs?: number,
 	signal?: AbortSignal,
 ): Promise<LspClient> {
+	if (signal?.aborted) throw abortReason(signal);
 	const normalizedCwd = normalizePathForComparison(cwd);
 	const key = clientKey(config, normalizedCwd);
 	// Check if client already exists
@@ -1324,7 +1351,7 @@ export async function getOrCreateClient(
 	// Check if another coroutine is already creating this client
 	const existingLock = clientLocks.get(key);
 	if (existingLock) {
-		return await untilAborted(signal, existingLock.promise);
+		return await waitForPendingClient(existingLock, signal, initTimeoutMs);
 	}
 	if (invalidatedClientKeys.has(key)) {
 		throw new Error(`LSP configuration was superseded during reload: ${config.command}`);
@@ -1351,7 +1378,7 @@ export async function getOrCreateClient(
 			}
 		}
 		const lockAfterReload = clientLocks.get(key);
-		if (lockAfterReload) return await untilAborted(signal, lockAfterReload.promise);
+		if (lockAfterReload) return await waitForPendingClient(lockAfterReload, signal, initTimeoutMs);
 		if (invalidatedClientKeys.has(key)) {
 			throw new Error(`LSP configuration was superseded during reload: ${config.command}`);
 		}
@@ -1373,6 +1400,8 @@ export async function getOrCreateClient(
 	// exactly once while retaining this outer lock so concurrent callers cannot
 	// acquire the dead first attempt.
 	const lockToken = Symbol();
+	const initializationController = new AbortController();
+	const initializationSignal = initializationController.signal;
 	const clientPromise = (async () => {
 		let cleanInitializationExitRetries = 0;
 		while (true) {
@@ -1392,8 +1421,16 @@ export async function getOrCreateClient(
 			// to a private spawn so LSP never regresses on broker trouble.
 			let proc: LspTransport | null = null;
 			if (sharedLspEnabled && command === baseCommand) {
-				proc = await connectSharedLspTransport({ command, args, cwd, env, initializationOptions, signal });
+				proc = await connectSharedLspTransport({
+					command,
+					args,
+					cwd,
+					env,
+					initializationOptions,
+					signal: initializationSignal,
+				});
 			}
+			throwIfAborted(initializationSignal);
 			proc ??= ptree.spawn([command, ...args], {
 				cwd,
 				stdin: "pipe",
@@ -1501,8 +1538,7 @@ export async function getOrCreateClient(
 						initializationOptions,
 						workspaceFolders: currentWorkspaceFolders(client),
 					},
-					signal,
-					initTimeoutMs,
+					initializationSignal,
 				)) as { capabilities?: unknown };
 
 				if (!initResult) {
@@ -1512,12 +1548,12 @@ export async function getOrCreateClient(
 				client.serverCapabilities = initResult.capabilities as LspClient["serverCapabilities"];
 
 				// Finish the initialize handshake before publishing the client as ready.
-				await sendNotification(client, "initialized", {}, signal);
+				await sendNotification(client, "initialized", {}, initializationSignal);
 				await sendNotification(
 					client,
 					"workspace/didChangeConfiguration",
 					{ settings: config.settings ?? {} },
-					signal,
+					initializationSignal,
 				);
 				if (initializationExit || proc.exitCode !== null) {
 					throw initializationExit ?? processExitError(proc, proc.exitCode, true);
@@ -1549,7 +1585,7 @@ export async function getOrCreateClient(
 					cleanInitializationExit &&
 					cleanInitializationExitRetries < CLEAN_INITIALIZATION_EXIT_RETRY_COUNT &&
 					!invalidatedClientKeys.has(key) &&
-					!signal?.aborted
+					!initializationSignal.aborted
 				) {
 					cleanInitializationExitRetries++;
 					await proc.exited.catch(() => {});
@@ -1562,12 +1598,7 @@ export async function getOrCreateClient(
 				// A clean code-0 initialization exit is transient too, even if the
 				// bounded replacement also exits; surface the concrete failure without
 				// poisoning the next independent request with a stale negative cache.
-				if (
-					!cleanInitializationExit &&
-					!invalidatedClientKeys.has(key) &&
-					!signal?.aborted &&
-					!(initTimeoutMs !== undefined && message.includes("timed out"))
-				) {
+				if (!cleanInitializationExit && !invalidatedClientKeys.has(key) && !initializationSignal.aborted) {
 					initFailures.set(key, { at: Date.now(), message });
 				}
 				throw initializationError;
@@ -1575,7 +1606,16 @@ export async function getOrCreateClient(
 		}
 	})();
 
-	clientLocks.set(key, { promise: clientPromise, cwd, config, token: lockToken });
+	const pending: PendingClient = {
+		key,
+		promise: clientPromise,
+		cwd,
+		config,
+		token: lockToken,
+		controller: initializationController,
+		waiters: 0,
+	};
+	clientLocks.set(key, pending);
 	// Only the outer creation attempt owns this lock. Individual process exits
 	// must not delete it while a bounded replacement is being initialized.
 	clientPromise.then(
@@ -1586,7 +1626,7 @@ export async function getOrCreateClient(
 			if (clientLocks.get(key)?.token === lockToken) clientLocks.delete(key);
 		},
 	);
-	return clientPromise;
+	return await waitForPendingClient(pending, signal, initTimeoutMs);
 }
 
 /** Return an active or already-starting client without starting a language server. */
@@ -1612,7 +1652,7 @@ export async function getActiveOrPendingClient(
 	const pending = clientLocks.get(key);
 	if (!pending) return undefined;
 	try {
-		return await untilAborted(signal, pending.promise);
+		return await waitForPendingClient(pending, signal);
 	} catch {
 		throwIfAborted(signal);
 		return undefined;

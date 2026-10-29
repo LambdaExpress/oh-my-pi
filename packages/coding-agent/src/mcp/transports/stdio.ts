@@ -409,6 +409,10 @@ export function writeFrame(stdin: FrameSink, frame: string): boolean {
 const TERM_GRACE_MS = 1000;
 /** Grace window to observe SIGKILL taking effect before `close()` gives up and returns. */
 const KILL_GRACE_MS = 500;
+/** Let EOF diagnostics observe the exit status and stderr without waiting on a still-live server. */
+const EXIT_DIAGNOSTIC_GRACE_MS = 250;
+/** Leave room for the EOF summary inside MCPTransportError's bounded diagnostic message. */
+const STDERR_TAIL_CHARS = 600;
 
 /**
  * The subset of `Subprocess` that termination needs. Decoupled from the
@@ -550,6 +554,9 @@ export class StdioTransport implements MCPTransport {
 	>();
 	#connected = false;
 	#readLoop: Promise<void> | null = null;
+	#stderrLoop: Promise<void> | null = null;
+	#stderrTail = "";
+	#stderrTailTruncated = false;
 	/**
 	 * Set from `resolveStdioSpawnCommand()`'s `detached` flag in `connect()`.
 	 * Gates process-group signaling in `close()` — only a transport that
@@ -610,19 +617,20 @@ export class StdioTransport implements MCPTransport {
 		this.#detached = spawnCommand.detached;
 
 		this.#connected = true;
+		this.#stderrTail = "";
+		this.#stderrTailTruncated = false;
 
-		// Start reading stdout
+		// Drain stderr before stdout can finish, keeping only a bounded diagnostic tail.
+		this.#stderrLoop = this.#startStderrLoop();
 		this.#readLoop = this.#startReadLoop();
-
-		// Log stderr for debugging
-		this.#startStderrLoop();
 	}
 
 	async #startReadLoop(): Promise<void> {
-		if (!this.#process?.stdout) return;
+		const proc = this.#process;
+		if (!proc?.stdout) return;
 		let closeError: MCPTransportError | undefined;
 		try {
-			for await (const line of readJsonl(this.#process.stdout)) {
+			for await (const line of readJsonl(proc.stdout)) {
 				if (!this.#connected) break;
 				try {
 					this.#handleMessage(line as JsonRpcMessage);
@@ -640,43 +648,74 @@ export class StdioTransport implements MCPTransport {
 			}
 		} finally {
 			if (this.#connected && closeError === undefined) {
-				const exitCode = this.#process?.exitCode;
-				closeError = new MCPTransportError({
-					transport: "stdio",
-					stage: "receive",
-					failure: "eof",
-					message:
+				// Pipe EOF can arrive before the exit watcher and stderr reader settle.
+				// The bounded grace also handles a server that closes stdout but stays alive.
+				await waitForProcessExit(
+					Promise.all([proc.exited, this.#stderrLoop]).then(([exitCode]) => exitCode),
+					EXIT_DIAGNOSTIC_GRACE_MS,
+				);
+				if (this.#connected) {
+					const exitCode = proc.exitCode;
+					let stderr = this.#stderrTail;
+					if (this.#stderrTailTruncated) {
+						// A cut through "Authorization: Bearer ..." must not expose a secret
+						// suffix whose redaction prefix is no longer in the retained buffer.
+						const newline = stderr.indexOf("\n");
+						stderr = newline < 0 ? "" : stderr.slice(newline + 1);
+					}
+					stderr = stderr.trim();
+					const stderrDiagnostic = stderr
+						? `\nStderr tail${this.#stderrTailTruncated ? " (truncated)" : ""}:\n${stderr}`
+						: this.#stderrTailTruncated
+							? "\nStderr tail: [overlong line omitted]"
+							: "";
+					const summary =
 						exitCode === null || exitCode === undefined
 							? "MCP subprocess closed stdout before responding"
-							: `MCP subprocess exited with code ${exitCode} before responding`,
-					retryable: true,
-					code: exitCode ?? undefined,
-				});
+							: `MCP subprocess exited with code ${exitCode} before responding`;
+					closeError = new MCPTransportError({
+						transport: "stdio",
+						stage: "receive",
+						failure: "eof",
+						message: summary + stderrDiagnostic,
+						retryable: true,
+						code: exitCode ?? undefined,
+					});
+				}
 			}
 			this.#handleClose(closeError);
 		}
 	}
 
-	async #startStderrLoop(): Promise<void> {
-		if (!this.#process?.stderr) return;
+	#appendStderr(text: string): void {
+		if (!text) return;
+		const tail = this.#stderrTail + text;
+		if (tail.length > STDERR_TAIL_CHARS) {
+			this.#stderrTailTruncated = true;
+			this.#stderrTail = tail.slice(-STDERR_TAIL_CHARS);
+		} else {
+			this.#stderrTail = tail;
+		}
+	}
 
-		const reader = this.#process.stderr.getReader();
+	async #startStderrLoop(): Promise<void> {
+		const proc = this.#process;
+		if (!proc?.stderr) return;
+
+		const reader = proc.stderr.getReader();
 		const decoder = new TextDecoder();
 
 		try {
 			while (this.#connected) {
 				const { done, value } = await reader.read();
 				if (done) break;
-				// Log stderr but don't treat as error - servers use it for logging
-				const text = decoder.decode(value, { stream: true });
-				if (text.trim()) {
-					// Could expose via onStderr callback if needed
-					// For now, silent - MCP spec says clients MAY capture/ignore
-				}
+				// Logging on stderr is not itself an error; only expose it if stdout closes.
+				if (this.#process === proc) this.#appendStderr(decoder.decode(value, { stream: true }));
 			}
 		} catch {
 			// Ignore stderr read errors
 		} finally {
+			if (this.#process === proc) this.#appendStderr(decoder.decode());
 			reader.releaseLock();
 		}
 	}
@@ -950,6 +989,9 @@ export class StdioTransport implements MCPTransport {
 			this.#readLoop.catch(() => {});
 			this.#readLoop = null;
 		}
+		this.#stderrLoop = null;
+		this.#stderrTail = "";
+		this.#stderrTailTruncated = false;
 	}
 }
 

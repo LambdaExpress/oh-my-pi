@@ -870,6 +870,7 @@ export function formatReadSummary(
 	type Unit =
 		| { kind: "line"; line: number; text: string }
 		| { kind: "elided"; startLine: number; endLine: number }
+		| { kind: "signature"; startLine: number; endLine: number; text: string }
 		| {
 				kind: "merged";
 				startLine: number;
@@ -882,6 +883,15 @@ export function formatReadSummary(
 	for (const segment of summary.segments) {
 		if (segment.kind === "elided") {
 			raw.push({ kind: "elided", startLine: segment.startLine, endLine: segment.endLine });
+			continue;
+		}
+		if (segment.kind === "signature") {
+			raw.push({
+				kind: "signature",
+				startLine: segment.startLine,
+				endLine: segment.endLine,
+				text: segment.text ?? "…",
+			});
 			continue;
 		}
 		const text = segment.text ?? "";
@@ -924,6 +934,20 @@ export function formatReadSummary(
 		if (unit.kind === "elided") {
 			modelParts.push("…");
 			displayParts.push("…");
+			elidedRanges.push({ start: unit.startLine, end: unit.endLine });
+			elidedLines += unit.endLine - unit.startLine + 1;
+			continue;
+		}
+		if (unit.kind === "signature") {
+			// Projected text is not an editable source line, even if the
+			// omitted body occupied just one line. The projection marker must
+			// precede the range: native seen-line parsing accepts bare ranges
+			// as fully displayed boundary lines.
+			const range = `~${unit.startLine}-${unit.endLine}`;
+			modelParts.push(
+				shouldAddHashLines ? `${range}:${unit.text}` : shouldAddLineNumbers ? `${range}|${unit.text}` : unit.text,
+			);
+			displayParts.push(unit.text);
 			elidedRanges.push({ start: unit.startLine, end: unit.endLine });
 			elidedLines += unit.endLine - unit.startLine + 1;
 			continue;

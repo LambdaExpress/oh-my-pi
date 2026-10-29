@@ -8,17 +8,16 @@
 - Job delivery: `packages/coding-agent/src/async/job-manager.ts`
 
 ## Input and availability
-`wait` has no arguments. It is an essential, read-approved, interruptible tool available when async jobs, peer messaging, or supervised services are enabled; it does not select a particular peer or job.
+`wait` accepts optional `timeoutMs`: a positive value bounds this wait, `0` waits without a limit, and omission uses the 30-minute safety cap. It is an essential, read-approved, interruptible tool available when async jobs, peer messaging, or supervised services are enabled; it does not select a particular peer or job.
 
 ## Behavior
 - Returns on the first settled caller-owned job or incoming peer message. Job results delivered by this call are consumed so no duplicate async-result follows.
 - A steering/tool interrupt returns `Wait interrupted by message.` with `details.interrupted=true`; other aborts propagate. Handle the incoming notice before calling `wait` again.
-- An owned-job or owned-service wait has a 30-minute safety cap. There is no caller-selectable timeout.
-- If only running peers can wake it, a message-only window returns control after 5, 10, 30, 60, then 300 seconds on consecutive waits. A gap of at least 60 seconds resets the ladder. An elapsed window names running peers and, when detectable, the owner waiting on this agent's result.
-- If no owned job, running visible peer, or owned service can wake it, returns immediately with “Nothing to wait for” and a snapshot.
+- If no owned job or owned service can wake it and no message is already queued, throws “Nothing to wait for”. Other agents' work does not sustain a wait.
 - With no owned jobs, a service finishing returns a notice directing the caller to `proc://` for status/output; with jobs, the call returns their current snapshot/result instead.
 - Results and peer messages also auto-deliver without calling `wait`. Continue useful work instead of polling.
 - Queued peer messages are checked first. Already-settled but undelivered owned jobs are returned without another wait. If a peer message wins a race with job completion, that job remains eligible for normal async delivery.
+- Watching a job temporarily pauses its accepted completion delivery. Releasing the watch resumes the same queued result; only transcript delivery or foreground receipt consumes it. A wait distinguishes receiving a queued result from recovering a genuine undelivered snapshot.
 - Job waits emit progress snapshots every 500 ms when an update callback is present. Job results/snapshots use `details: { op: "wait", jobs: ... }`; peer-message results use the messaging result shape.
 
 ## Related surfaces

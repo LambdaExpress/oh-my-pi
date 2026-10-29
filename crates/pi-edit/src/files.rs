@@ -252,21 +252,13 @@ impl FileCache {
 		{
 			return Err(EditError::apply(message));
 		}
-		let is_notebook = notebook::is_notebook_path(&resolved.absolute);
-		let (bom, text) = if is_notebook {
-			let editable = notebook::notebook_to_editable_text(&raw, &resolved.display)
-				.map_err(|err| EditError::apply(err.to_string()))?;
-			("", normalize_to_lf(&editable).into_owned())
-		} else {
-			let (bom, body) = strip_bom(&raw);
-			(bom, normalize_to_lf(body).into_owned())
-		};
-		let (ending, mixed_endings) = if is_notebook {
-			(LineEnding::Lf, None)
-		} else {
-			let body = strip_bom(&raw).1;
-			(detect_line_ending(body), scan_line_terminators(body))
-		};
+		// Host resources expose the handler's whole UTF-8 text, not the local
+		// notebook cell projection. In particular, remote .ipynb reads return
+		// JSON; patching it must preserve bytes outside the edited lines.
+		let (bom, body) = strip_bom(&raw);
+		let text = normalize_to_lf(body).into_owned();
+		let ending = detect_line_ending(body);
+		let mixed_endings = scan_line_terminators(body);
 		let read = Arc::new(FileRead {
 			canonical: resolved.absolute.clone(),
 			resolved: resolved.clone(),
@@ -275,7 +267,7 @@ impl FileCache {
 			ending,
 			mixed_endings,
 			text,
-			is_notebook,
+			is_notebook: false,
 		});
 		self
 			.virtual_reads

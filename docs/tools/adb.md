@@ -83,6 +83,8 @@ Malformed input and unknown or missing operations classify as exec rather than f
 
 Most successful operations return text. Text execution streams recent output to the renderer and uses the shared output limits. When output exceeds the inline spill threshold, the complete text is retained as a session artifact and the result points to `artifact://<id>`; previews retain the bounded tail. A successful command with no stdout returns `(no output)`.
 
+Finite `logcat` dumps retain at most `lines` recent physical lines in both the result and its artifact. Buffer headers and multiline-message continuations count toward this limit; a terminating newline does not add another line. With `follow: true`, `lines` remains the initial native tail request and does not cap subsequent streamed output.
+
 `screenshot` is different:
 
 1. It runs `adb -s <serial> exec-out screencap -p` and requires a valid PNG signature.

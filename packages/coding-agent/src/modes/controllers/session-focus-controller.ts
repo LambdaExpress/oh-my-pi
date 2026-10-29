@@ -249,7 +249,6 @@ export class SessionFocusController {
 			if (target.isStreaming) await this.ctx.eventController.handleEvent({ type: "agent_start" });
 			else {
 				setRunStatus({ state: "idle" });
-				this.ctx.eventController.markViewIdle();
 			}
 			if (generation !== this.#attachGeneration) return false;
 			await this.ctx.renderInitialMessages({ clearTerminalHistory: true, recoverCompletedRunAnchor: true });

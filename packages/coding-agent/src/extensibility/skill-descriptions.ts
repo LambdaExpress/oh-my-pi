@@ -18,7 +18,7 @@ import type { Settings } from "../config/settings";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import compressDescriptionPrompt from "../prompts/skills/compress-description.md" with { type: "text" };
 import { Semaphore } from "../task/parallel";
-import type { Skill } from "./skills";
+import { isManagedSkillAvailable, type Skill } from "./skills";
 
 const MAX_PREVIEW_CHARS = 100;
 const MAX_COMPRESSED_CHARS = 160;
@@ -333,7 +333,7 @@ export class SkillDescriptionCatalog {
 
 	/** Read the session's frozen prompt hints without starting new model work. */
 	snapshot(skills: readonly Skill[]): Array<Skill & { description: string }> {
-		return skills.map(skill => ({
+		return skills.filter(isManagedSkillAvailable).map(skill => ({
 			...skill,
 			description: this.#snapshot.get(keyFor(skill)) ?? previewSkillDescription(skill.description),
 		}));
@@ -342,7 +342,7 @@ export class SkillDescriptionCatalog {
 	render(skills: readonly Skill[]): Array<Skill & { description: string }> {
 		if (skills.length === 0) return [];
 		const store = this.#store;
-		return skills.map(skill => {
+		return skills.filter(isManagedSkillAvailable).map(skill => {
 			const key = keyFor(skill);
 			let description = this.#snapshot.get(key);
 			if (description === undefined) {

@@ -759,9 +759,9 @@ exit 64
 		expect(next.output.trim()).toBe("still_persistent");
 	});
 
-	it("aborts the shell without aborting its native signal when the JavaScript timeout fallback wins", async () => {
-		// Compress the JS-side fallback timer (floored at 1000ms in the source) so
-		// the safety-net fires deterministically without a real 1s wait. Only long
+	it("aborts the shell and its native signal when the JavaScript timeout fallback wins", async () => {
+		// Compress the JS-side fallback timer so the safety-net fires
+		// deterministically without a real 1s wait. Only long
 		// timers are shrunk — fs/subprocess setup keeps real scheduling — and the
 		// reported "1 seconds" derives from the configured timeout, not the timer.
 		const realSetTimeout = globalThis.setTimeout;
@@ -794,7 +794,7 @@ exit 64
 		// Watchdog-win path: native never returned, so the result must be
 		// distinguishable from a confirmed empty run (#10308).
 		expect(result.output).toContain("the shell backend did not respond");
-		expect(nativeSignal?.aborted).toBe(false);
+		expect(nativeSignal?.aborted).toBe(true);
 		expect(abortSpy).toHaveBeenCalledTimes(1);
 	});
 

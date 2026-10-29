@@ -4,9 +4,15 @@ import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { Shell } from "@oh-my-pi/pi-natives";
 import type { ReadToolDetails } from "@oh-my-pi/pi-tui/tools/read";
-import { DEFAULT_MAX_LINES, truncateHead, truncateTail } from "@oh-my-pi/pi-tui/tools/streaming-output";
+import {
+	DEFAULT_MAX_BYTES,
+	DEFAULT_MAX_LINES,
+	truncateHead,
+	truncateHeadBytes,
+	truncateTail,
+} from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-import { isEnoent, sanitizeText } from "@oh-my-pi/pi-utils";
+import { isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../sdk";
 import { quotePosixArgument } from "../utils/shell-quote";
 import { resolveReadPath } from "./path-utils";
@@ -413,10 +419,11 @@ export async function readJson(
 
 	const output = prependSuffixResolutionNotice(queryOutput, resolvedJsonPath.suffixResolution);
 
+	let result: AgentToolResult<ReadToolDetails> | undefined;
 	if (lineSelector) {
 		const parsedSel = parseSel(lineSelector);
 		if (parsedSel.kind !== "none") {
-			return buildInMemorySelectorResult(session, output, parsedSel, {
+			result = await buildInMemorySelectorResult(session, output, parsedSel, {
 				details,
 				sourcePath: resolvedJsonPath.absolutePath,
 				entityLabel: "JSON query output",
@@ -425,14 +432,45 @@ export async function readJson(
 		}
 	}
 
-	const truncation = truncateHead(output, { maxLines: DEFAULT_MAX_LINES });
-	details.truncation = truncation.truncated ? toReadTruncationStats(truncation) : undefined;
-	const resultBuilder = toolResult<ReadToolDetails>(details)
-		.text(truncation.content)
-		.sourcePath(resolvedJsonPath.absolutePath);
-	if (truncation.truncated) {
-		resultBuilder.truncation(truncation, { direction: "head" });
+	if (!result) {
+		const truncation = truncateHead(output, { maxLines: DEFAULT_MAX_LINES });
+		if (truncation.firstLineExceedsLimit) {
+			// Line-oriented truncation retains no complete line here. Preserve a
+			// nonempty UTF-8 byte window instead of returning an unrecoverable 0B.
+			const newlineAt = output.indexOf("\n");
+			const snippet = truncateHeadBytes(newlineAt === -1 ? output : output.slice(0, newlineAt), DEFAULT_MAX_BYTES);
+			truncation.content = snippet.text;
+			truncation.outputBytes = snippet.bytes;
+			truncation.outputLines = snippet.bytes > 0 ? 1 : 0;
+			details.displayContent = { text: snippet.text, startLine: 1, lineNumbers: snippet.bytes > 0 ? [1] : [] };
+		}
+		details.truncation = truncation.truncated ? toReadTruncationStats(truncation) : undefined;
+		const resultBuilder = toolResult<ReadToolDetails>(details)
+			.text(truncation.content)
+			.sourcePath(resolvedJsonPath.absolutePath);
+		if (truncation.truncated) {
+			resultBuilder.truncation(truncation, { direction: "head" });
+		}
+		result = resultBuilder.done();
 	}
 
-	return resultBuilder.done();
+	const truncationMeta = result.details?.meta?.truncation;
+	if (truncationMeta) {
+		try {
+			const artifact = await session.allocateOutputArtifact?.("read");
+			if (artifact?.id && artifact.path) {
+				// Save before discarding the query output; the global result wrapper
+				// otherwise only sees the already-truncated preview. Do not persist
+				// path-resolution guidance as if it were part of jq's result.
+				await Bun.write(artifact.path, queryOutput);
+				truncationMeta.artifactId = artifact.id;
+			}
+		} catch (error) {
+			logger.warn("Failed to preserve JSON query output artifact", {
+				path: resolvedJsonPath.absolutePath,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	return result;
 }

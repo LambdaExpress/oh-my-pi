@@ -9,8 +9,8 @@
  * A remote path resolves to a UTF-8 text file (≤ 1 MiB) or, when it is a
  * directory, a one-level listing. Binary/non-UTF-8 or oversized files are
  * rejected with an explicit error. This handler exposes no `sourcePath`;
- * directory listings carry `isDirectory` so `search` refuses to grep the
- * listing text instead of the directory's real contents.
+ * directory listings carry `isDirectory`; filesystem walkers obtain immediate
+ * children through `readDir` and search real file contents, never listing text.
  *
  * Host resolution flows through the shared registry so command and ssh:// tools
  * observe the same session and persistent aliases.
@@ -21,6 +21,8 @@ import {
 	deleteRemoteFile,
 	listRemoteDir,
 	moveRemoteFile,
+	type RemoteDirEntry,
+	type RemoteFileReadResult,
 	type RemotePathKind,
 	readRemoteFile,
 	statRemotePath,
@@ -288,26 +290,31 @@ export class SshProtocolHandler implements ProtocolHandler {
 		// Classify before reading. A FIFO with no writer would block `head` until the
 		// timeout, and a device (e.g. /dev/zero) would stream the whole probe, so a
 		// special file must fail fast. Only a regular file is read; a directory lists.
-		// `missing`/stat-failure falls through to the read so its original remote stderr
-		// (e.g. "No such file or directory") still surfaces.
-		let kind: RemotePathKind | undefined;
+		// Missing paths and failed probes must not fall through to a file read:
+		// a clone can create a directory between that probe and `head`.
+		const kind = await statRemotePath(target, remotePath, { signal: context?.signal });
+		if (kind !== "file") {
+			return this.#resolveNonFile(kind, target, remotePath, url, context);
+		}
+		let fileResult: RemoteFileReadResult;
 		try {
-			kind = await statRemotePath(target, remotePath, { signal: context?.signal });
-		} catch {
-			// stat failed (host/connection issue) — fall through; the read gives a clearer error.
+			fileResult = await readRemoteFile(target, remotePath, {
+				maxBytes: SSH_TEXT_MAX_BYTES,
+				signal: context?.signal,
+			});
+		} catch (error) {
+			if (context?.signal?.aborted) throw error;
+			// A previously regular file can still be replaced after stat. Recheck
+			// its type once, without retrying the transfer or masking its error.
+			let currentKind: RemotePathKind;
+			try {
+				currentKind = await statRemotePath(target, remotePath, { signal: context?.signal });
+			} catch {
+				throw error;
+			}
+			if (currentKind === "file") throw error;
+			return this.#resolveNonFile(currentKind, target, remotePath, url, context);
 		}
-		if (kind === "directory") {
-			return this.#resolveDirectory(target, remotePath, url, context?.signal, context?.skipDirectoryListing);
-		}
-		if (kind === "other") {
-			throw new Error(
-				`ssh://: ${remotePath} is not a regular file (FIFO, socket, or device); ssh:// reads UTF-8 text files only — use \`bash\` with a remote SSH command for special files`,
-			);
-		}
-		const fileResult = await readRemoteFile(target, remotePath, {
-			maxBytes: SSH_TEXT_MAX_BYTES,
-			signal: context?.signal,
-		});
 		if (fileResult.truncated) {
 			throw new Error(
 				`ssh://: ${remotePath} exceeds the 1 MiB limit; ssh:// supports text files up to 1 MiB — use an sshfs mount for larger files`,
@@ -329,7 +336,25 @@ export class SshProtocolHandler implements ProtocolHandler {
 		};
 	}
 
-	/** Resolve a remote directory to a one-level listing (no `sourcePath`; `isDirectory` so search refuses it; immutable). */
+	async #resolveNonFile(
+		kind: Exclude<RemotePathKind, "file">,
+		target: SSHConnectionTarget,
+		remotePath: string,
+		url: InternalUrl,
+		context?: ResolveContext,
+	): Promise<InternalResource> {
+		if (kind === "directory") {
+			return this.#resolveDirectory(target, remotePath, url, context?.signal, context?.skipDirectoryListing);
+		}
+		if (kind === "missing") {
+			throw new Error(`ssh://: path not found or not yet available: ${remotePath}`);
+		}
+		throw new Error(
+			`ssh://: ${remotePath} is not a regular file (FIFO, socket, or device); ssh:// reads UTF-8 text files only — use \`bash\` with a remote SSH command for special files`,
+		);
+	}
+
+	/** Resolve a remote directory to an immutable one-level listing, without a local `sourcePath`. */
 	async #resolveDirectory(
 		target: SSHConnectionTarget,
 		remotePath: string,
@@ -337,8 +362,7 @@ export class SshProtocolHandler implements ProtocolHandler {
 		signal?: AbortSignal,
 		skipListing?: boolean,
 	): Promise<InternalResource> {
-		// `search`/`find` reject an ssh:// directory outright, so they pass `skipListing`
-		// to avoid draining a full remote `ls` we would only discard.
+		// Filesystem walkers request structured entries separately through readDir.
 		const content = skipListing ? "" : formatDirectoryListing(await listRemoteDir(target, remotePath, { signal }));
 		return {
 			url: url.href,
@@ -376,6 +400,12 @@ export class SshProtocolHandler implements ProtocolHandler {
 		const target = await resolveTarget(url, context);
 		const remotePath = remotePathFromUrl(url);
 		return statRemotePath(target, remotePath, { signal: context?.signal });
+	}
+
+	async readDir(url: InternalUrl, context?: ResolveContext): Promise<RemoteDirEntry[]> {
+		const target = await resolveTarget(url, context);
+		const remotePath = remotePathFromUrl(url);
+		return listRemoteDir(target, remotePath, { signal: context?.signal });
 	}
 
 	canonicalKey(url: InternalUrl): string {

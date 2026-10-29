@@ -103,6 +103,7 @@ For each discovered server in `connectServers()`:
 - sends `notifications/initialized` before any further session traffic,
 - for Streamable HTTP, starts the background SSE listener only after `notifications/initialized`,
 - uses timeout precedence `OMP_MCP_TIMEOUT_MS`, then `config.timeout`, then 30s; `0` disables the client-side timeout,
+- lets resource callers wait for that same initialization budget before applying the shorter resource catalog/read budget,
 - records the server's negotiated protocol revision; Streamable HTTP carries it on subsequent requests in `MCP-Protocol-Version`,
 - closes transport on init failure.
 

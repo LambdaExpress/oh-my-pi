@@ -253,21 +253,54 @@ describe("SSH file transfer core", () => {
 		expect(spawn).not.toHaveBeenCalled();
 	});
 
-	it("rejects a zero-byte remote sink write and cleans the stage", async () => {
+	it("reports a zero-byte remote sink write and retains partial evidence without touching the destination", async () => {
 		const localPath = path.join(testDir, "upload.bin");
+		const destination = path.join(testDir, "destination.bin").replaceAll("\\", "/");
+		const id = "00000000-0000-4000-8000-000000000039";
+		const stage = path.join(testDir, `.omp-transfer-${id}.part`);
 		await fs.writeFile(localPath, new Uint8Array([1, 2, 3]));
+		await fs.writeFile(destination, "previous destination");
+		vi.spyOn(crypto, "randomUUID").mockReturnValue(id);
 		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockResolvedValue({ args: ["stage"] });
 		let spawnIndex = 0;
+		let acceptedBytes = 0;
 		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() => {
 			spawnIndex++;
 			if (spawnIndex === 1) {
-				return createChild<In>({ sink: { write: () => 0, end() {} } });
+				return createChild<In>({
+					sink: {
+						async write(chunk) {
+							if (acceptedBytes > 0) return 0;
+							await fs.writeFile(stage, chunk.subarray(0, 1));
+							acceptedBytes = 1;
+							return 1;
+						},
+						end() {},
+					},
+				});
 			}
-			return createChild<In>();
+			return Object.assign(createChild<In>(), {
+				async bytes() {
+					await fs.rm(stage, { force: true });
+					return new Uint8Array();
+				},
+			});
 		});
 
-		await expect(executeSshFileTransfer(uploadPlan(localPath, 3))).rejects.toThrow(/accepted zero bytes/);
-		expect(spawnIndex).toBe(2);
+		const error = await executeSshFileTransfer({
+			...uploadPlan(localPath, 3),
+			remotePath: destination,
+			overwrite: true,
+			commitStrategy: "remote-posix-mv",
+		}).catch(error => error);
+
+		expect(error.message).toContain("accepted zero bytes");
+		expect(error.message).toContain("commit was not attempted");
+		expect(error.message).toContain(stage.replaceAll("\\", "/"));
+		expect(error.message).toContain("not deleted");
+		expect(await fs.readFile(stage)).toEqual(Buffer.from([1]));
+		expect(await fs.readFile(localPath)).toEqual(Buffer.from([1, 2, 3]));
+		expect(await fs.readFile(destination, "utf8")).toBe("previous destination");
 	});
 
 	it("cancels before the commit gate and waits for artifact cleanup", async () => {

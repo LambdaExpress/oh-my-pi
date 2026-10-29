@@ -437,6 +437,16 @@ export class InternalUrlFilesystem {
 		if (!node.directory) throw new UrlFsError("ENOTDIR", `Not a directory: ${node.url}`);
 		if (node.entries) return { entries: Array.from(node.entries, ([name, fileType]) => ({ name, fileType })) };
 		if (node.sourcePath) return { local: node.sourcePath };
+		const { handler } = this.#route(node.url);
+		if (handler?.readDir) {
+			const entries = await handler.readDir(parseInternalUrl(node.url), this.#context);
+			return {
+				entries: entries.map(entry => ({
+					name: entry.name,
+					fileType: entry.isDirectory ? ShellFsFileType.Dir : ShellFsFileType.File,
+				})),
+			};
+		}
 		throw new UrlFsError("ENOTSUP", `${node.url} lists only through the read tool`);
 	}
 

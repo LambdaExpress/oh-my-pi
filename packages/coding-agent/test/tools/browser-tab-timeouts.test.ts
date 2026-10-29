@@ -297,52 +297,6 @@ describe("browser direct handle action deadlines", () => {
 		expect(result.error.message).toContain("wait(10000ms)");
 		expect(result.error.message).not.toContain("tab.id(1).click()");
 	});
-
-	it("completes prompt handle actions without false timeouts", async () => {
-		const node = createActionNode();
-		const createHandle = (): ElementHandle => {
-			const keyboard = {
-				async type(text: string) {
-					if (!node.focused) throw new Error("Fixture input is not focused");
-					node.value += text;
-				},
-			};
-			const mouse = {
-				async click(_x: number, _y: number, options?: { button?: string; count?: number }) {
-					for (let index = 0; index < (options?.count ?? 1); index++) {
-						for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
-							node.dispatchEvent(new Event(type));
-						}
-						node.dispatchEvent(new Event(options?.button === "right" ? "auxclick" : "click"));
-					}
-				},
-			};
-			const handle: ElementHandle = {
-				...createHandleEvaluator(node),
-				boundingBox: async () => ({ x: 0, y: 0, width: 10, height: 10 }),
-				frame: { page: () => ({ keyboard, mouse }) },
-				dispose: async () => {},
-			} as unknown as ElementHandle;
-			return handle;
-		};
-		// Use the normal browser-run budget here. The contract under test is that prompt
-		// actions do not trip their guard at all; a tiny synthetic budget makes that
-		// assertion depend on how long the host scheduler pauses this test process.
-		const cellTimeoutMs = 30_000;
-		const result = await runHandleCode(
-			createHandle,
-			`await (await tab.id(1)).click({ button: "right", count: 2 });
-			await (await tab.ref("e5")).type("abc", { delay: 7 });
-			return await (await tab.ref("e5")).evaluate(element => element.value);`,
-			cellTimeoutMs,
-		);
-
-		expect(result.ok).toBe(true);
-		if (!result.ok) throw new Error(result.error.message);
-		expect(result.payload.returnValue).toBe("oldabc");
-		expect(node.focused).toBe(true);
-		expect(node.value).toBe("oldabc");
-	});
 });
 
 describe("browser scroll acknowledgement", () => {

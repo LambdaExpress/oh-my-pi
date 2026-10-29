@@ -9,7 +9,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { commitStagedFileAtomic } from "@oh-my-pi/pi-natives";
-import { isEexist, ptree, readLines } from "@oh-my-pi/pi-utils";
+import { isEexist, ptree, readLines, sleepLong } from "@oh-my-pi/pi-utils";
 import { quotePosixArgument } from "../utils/shell-quote";
 import {
 	buildPowerShellCommand,
@@ -23,6 +23,8 @@ import { quotePowerShellString, wrapInPosixShell } from "./utils";
 
 /** Per-operation timeout for remote transfers (matches the ssh tool's grep window). */
 const DEFAULT_TIMEOUT_MS = 30_000;
+const SSH_TRANSFER_PREFLIGHT_MAX_ATTEMPTS = 3;
+const SSH_TRANSFER_PREFLIGHT_RETRY_MS = 500;
 const SSH_TRANSFER_FINALIZE_MS = 10_000;
 const SSH_TRANSFER_COMMIT_POSIX_TIMEOUT_MS = 8_000;
 const SSH_TRANSFER_COMMIT_POWERSHELL_TIMEOUT_MS = 20_000;
@@ -796,51 +798,121 @@ function assertDestinationMayBeReplaced(kind: RemotePathEntryKind, destination: 
 	}
 }
 
+function isTransientSshPreflightError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	if (error instanceof ptree.NonZeroExitError && error.exitCode !== 255) return false;
+	// Authentication and host-key failures can also end with a closed connection.
+	if (
+		/permission denied|authentication failed|too many authentication failures|host key verification failed|remote host identification has changed|bad permissions|unprotected private key file|no matching (?:host key type|key exchange method|cipher|mac)/i.test(
+			error.message,
+		)
+	) {
+		return false;
+	}
+	// Our read-only probes use other exit codes for remote file errors. SSH
+	// transport failures use 255, sometimes with only "Unknown error" on Windows.
+	if (error instanceof ptree.NonZeroExitError) return true;
+	return /connection (?:closed|reset|refused|timed out)|connection to [^\r\n]+ closed|operation timed out|broken pipe|\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT)\b/i.test(
+		error.message,
+	);
+}
+
+export class SshFileTransferPreparationError extends Error {
+	constructor(
+		operation: SshTransferOperation,
+		readonly totalBytes: number | undefined,
+		cause: unknown,
+		readonly attempts: number,
+	) {
+		super(
+			`SSH ${operation} preflight failed${attempts > 1 ? ` after ${attempts} attempts` : ""} (${describeTransferError(cause)}). ` +
+				(totalBytes === undefined ? "Source size was not determined. " : `Source size: ${totalBytes} bytes. `) +
+				"No file content was transferred; the destination was not modified.",
+			{ cause },
+		);
+		this.name = "SshFileTransferPreparationError";
+	}
+}
+
 export async function prepareSshFileTransfer(request: SshFileTransferRequest): Promise<SshFileTransferPlan> {
-	request.signal?.throwIfAborted();
-	const mode = await resolveRemoteTransferMode(request.target);
-	request.signal?.throwIfAborted();
+	let totalBytes: number | undefined;
+	let attempts = 0;
+	while (true) {
+		try {
+			if (attempts > 0) {
+				await sleepLong(SSH_TRANSFER_PREFLIGHT_RETRY_MS * 2 ** (attempts - 1), request.signal);
+			}
+			attempts++;
+			request.signal?.throwIfAborted();
+			// A local source can be measured even when the SSH route cannot connect.
+			const localSourceBytes =
+				request.operation === "upload" ? await getLocalSourceSize(request.localPath) : undefined;
+			if (localSourceBytes !== undefined) totalBytes = localSourceBytes;
+			request.signal?.throwIfAborted();
+			const mode = await resolveRemoteTransferMode(request.target);
+			request.signal?.throwIfAborted();
 
-	const totalBytes =
-		request.operation === "upload"
-			? await getLocalSourceSize(request.localPath)
-			: await getRemoteSourceSize(request.target, mode, request.remotePath, request.signal);
-	const destinationKind =
-		request.operation === "upload"
-			? await getRemoteDestinationKind(request.target, mode, request.remotePath, request.signal)
-			: await getLocalDestinationKind(request.localPath);
+			if (mode.kind === "powershell") {
+				if (
+					!/^[A-Za-z]:[\\/]/.test(request.remotePath) &&
+					!/^[/\\]{2}[^/\\]+[/\\][^/\\]+/.test(request.remotePath)
+				) {
+					throw new Error("SSH transfer remote_path must be an absolute drive or UNC path on Windows hosts.");
+				}
+			} else if (!path.posix.isAbsolute(request.remotePath)) {
+				throw new Error("SSH transfer remote_path must be an absolute POSIX path.");
+			}
 
-	if (!request.overwrite && destinationKind !== "missing") {
-		const destination =
-			request.operation === "upload" ? `${request.target.name}:${request.remotePath}` : request.localPath;
-		throw new Error(`SSH transfer destination already exists: ${destination}`);
-	}
-	if (request.overwrite) {
-		const destination =
-			request.operation === "upload" ? `${request.target.name}:${request.remotePath}` : request.localPath;
-		assertDestinationMayBeReplaced(destinationKind, destination);
-	}
+			const sourceBytes =
+				localSourceBytes ?? (await getRemoteSourceSize(request.target, mode, request.remotePath, request.signal));
+			totalBytes = sourceBytes;
+			const destinationKind =
+				request.operation === "upload"
+					? await getRemoteDestinationKind(request.target, mode, request.remotePath, request.signal)
+					: await getLocalDestinationKind(request.localPath);
 
-	let commitStrategy: SshTransferCommitStrategy;
-	if (!request.overwrite) {
-		commitStrategy = "no-replace";
-	} else if (request.operation === "download") {
-		commitStrategy = "local-native";
-	} else if (mode.kind === "powershell") {
-		commitStrategy = "remote-windows-replace";
-	} else {
-		commitStrategy = await probeRemotePosixCommitStrategy(request.target, mode, request.signal);
+			if (!request.overwrite && destinationKind !== "missing") {
+				const destination =
+					request.operation === "upload" ? `${request.target.name}:${request.remotePath}` : request.localPath;
+				throw new Error(`SSH transfer destination already exists: ${destination}`);
+			}
+			if (request.overwrite) {
+				const destination =
+					request.operation === "upload" ? `${request.target.name}:${request.remotePath}` : request.localPath;
+				assertDestinationMayBeReplaced(destinationKind, destination);
+			}
+
+			let commitStrategy: SshTransferCommitStrategy;
+			if (!request.overwrite) {
+				commitStrategy = "no-replace";
+			} else if (request.operation === "download") {
+				commitStrategy = "local-native";
+			} else if (mode.kind === "powershell") {
+				commitStrategy = "remote-windows-replace";
+			} else {
+				commitStrategy = await probeRemotePosixCommitStrategy(request.target, mode, request.signal);
+			}
+			request.signal?.throwIfAborted();
+			return {
+				operation: request.operation,
+				target: request.target,
+				localPath: request.localPath,
+				remotePath: request.remotePath,
+				totalBytes: sourceBytes,
+				overwrite: request.overwrite,
+				commitStrategy,
+			};
+		} catch (error) {
+			if (
+				request.signal?.aborted ||
+				attempts >= SSH_TRANSFER_PREFLIGHT_MAX_ATTEMPTS ||
+				!isTransientSshPreflightError(error)
+			) {
+				throw new SshFileTransferPreparationError(request.operation, totalBytes, error, attempts);
+			}
+			// Only read-only preflight probes are replayed; staging and commit are not.
+		}
 	}
-	request.signal?.throwIfAborted();
-	return {
-		operation: request.operation,
-		target: request.target,
-		localPath: request.localPath,
-		remotePath: request.remotePath,
-		totalBytes,
-		overwrite: request.overwrite,
-		commitStrategy,
-	};
 }
 
 interface RemoteTransferArtifacts {
@@ -944,11 +1016,9 @@ function createRemoteTransferArtifacts(remotePath: string, mode: RemoteTransferM
 function buildPosixUploadStageScript(remotePath: string, artifacts: RemoteTransferArtifacts): string {
 	const parent = quotePosixArgument(path.posix.dirname(remotePath));
 	const stage = quotePosixArgument(artifacts.stagePath);
-	const proof = quotePosixArgument(artifacts.proofPath);
 	return `set -u
 parent=${parent}
 stage=${stage}
-proof=${proof}
 progress_pid=
 stop_transfer_progress() {
 	if [ -n "\${progress_pid:-}" ]; then
@@ -957,11 +1027,7 @@ stop_transfer_progress() {
 		progress_pid=
 	fi
 }
-cleanup_transfer_stage() {
-	stop_transfer_progress
-	rm -f -- "$stage" "$proof"
-}
-trap 'cleanup_transfer_stage; exit 130' HUP INT TERM
+trap 'stop_transfer_progress; exit 130' HUP INT TERM
 mkdir -p -- "$parent" || exit 1
 umask 077
 ( set -C; : > "$stage" ) || exit 1
@@ -975,7 +1041,7 @@ umask 077
 ) &
 progress_pid=$!
 if ! cat > "$stage"; then
-	cleanup_transfer_stage
+	stop_transfer_progress
 	exit 1
 fi
 stop_transfer_progress
@@ -989,7 +1055,6 @@ function buildPowerShellUploadStageScript(remotePath: string, artifacts: RemoteT
 	return wrapPowerShellTransferScript(`
 $destination = ${quotePowerShellString(normalizePowerShellSshPath(remotePath))}
 $stage = ${quotePowerShellString(artifacts.stagePath)}
-$proof = ${quotePowerShellString(artifacts.proofPath)}
 $parent = [System.IO.Path]::GetDirectoryName($destination)
 [System.IO.Directory]::CreateDirectory($parent) | Out-Null
 $stream = $null
@@ -1016,13 +1081,6 @@ try {
 	$stream.Flush($true)
 	[Console]::Out.WriteLine("${SSH_TRANSFER_PROGRESS_MARKER}$total")
 	[Console]::Out.Flush()
-} catch {
-	if ($null -ne $stream) {
-		$stream.Dispose()
-		$stream = $null
-	}
-	Remove-Item -LiteralPath $stage, $proof -Force -ErrorAction SilentlyContinue
-	throw
 } finally {
 	if ($null -ne $stream) {
 		$stream.Dispose()
@@ -1143,6 +1201,11 @@ async function streamUploadStage(
 			signal,
 			env: invocation.env,
 		});
+		const cleanExit = child.exitedCleanly;
+		const exitFailure = cleanExit.then(
+			() => undefined,
+			(error: unknown) => error,
+		);
 		const remoteProgress = observeRemoteUploadProgress(child.stdout, reporter);
 		let sourceBytes = 0;
 		try {
@@ -1162,10 +1225,26 @@ async function streamUploadStage(
 				);
 			}
 			await child.stdin.end();
-			await Promise.all([remoteProgress, child.exitedCleanly]);
+			await Promise.all([remoteProgress, cleanExit]);
 		} catch (error) {
+			let transportError: unknown = child.exitReason;
+			const brokenPipe =
+				error instanceof Error &&
+				(("code" in error && (error.code === "EPIPE" || error.code === "ECONNRESET")) ||
+					/\b(?:broken pipe|EPIPE|ECONNRESET)\b/i.test(error.message));
+			if (!signal?.aborted && transportError === undefined && brokenPipe) {
+				// A closed stdin can be observed just before SSH reports its exit.
+				// Let that diagnostic settle before our own kill could replace it.
+				transportError = await Promise.race([exitFailure, Bun.sleep(SSH_TRANSFER_STAGE_TERMINATE_MS)]);
+			}
 			await terminateTransferStageChild(child);
 			await remoteProgress.catch(() => undefined);
+			if (!signal?.aborted && transportError instanceof ptree.NonZeroExitError && transportError !== error) {
+				throw new Error(
+					`${describeTransferError(transportError)}; local upload stream also failed: ${describeTransferError(error)}`,
+					{ cause: transportError },
+				);
+			}
 			throw error;
 		}
 		if (sourceBytes !== plan.totalBytes) {
@@ -1561,9 +1640,14 @@ function buildRemoteArtifactCleanupCommand(mode: RemoteTransferMode, artifacts: 
 	return buildPowerShellCommand(
 		mode.executable,
 		wrapPowerShellTransferScript(`
-Remove-Item -LiteralPath ${quotePowerShellString(artifacts.stagePath)}, ${quotePowerShellString(
+$artifacts = @(${quotePowerShellString(artifacts.stagePath)}, ${quotePowerShellString(
 			artifacts.proofPath,
-		)}, ${quotePowerShellString(artifacts.backupPath)} -Force -ErrorAction SilentlyContinue
+		)}, ${quotePowerShellString(artifacts.backupPath)})
+foreach ($artifact in $artifacts) {
+	if (Test-Path -LiteralPath $artifact -ErrorAction Stop) {
+		Remove-Item -LiteralPath $artifact -Force -ErrorAction Stop
+	}
+}
 `),
 	);
 }
@@ -1713,7 +1797,15 @@ export class SshFileTransferCancelledError extends Error {
 }
 
 function describeTransferError(error: unknown): string {
-	if (error instanceof Error) return error.message;
+	if (error instanceof Error) {
+		if (error instanceof ptree.NonZeroExitError && error.exitCode === 255) {
+			return (
+				`${error.message} SSH transport exited with status 255; its stderr may identify an intermediate ` +
+				"jump/proxy host and does not by itself establish that the destination host is unavailable."
+			);
+		}
+		return error.message;
+	}
 	return String(error);
 }
 
@@ -1727,6 +1819,17 @@ async function executeUploadTransfer(
 	try {
 		await streamUploadStage(plan, mode, artifacts, reporter, signal);
 	} catch (error) {
+		if (!signal?.aborted) {
+			throw new Error(
+				`SSH upload staging failed (${describeTransferError(error)}); commit was not attempted and this transfer did not modify the destination. ` +
+					`Local source was not modified: ${plan.localPath}. ` +
+					`Remote stage was not deleted: ${plan.target.name}:${artifacts.stagePath} ` +
+					`(${reporter.transferredBytes} of ${plan.totalBytes} bytes acknowledged). ` +
+					"The stage may be partial or absent if the transport failed before creation; its remote presence could not be confirmed. " +
+					"Inspect it against the source before manual recovery, or remove it when no longer needed.",
+				{ cause: error },
+			);
+		}
 		let cleanupError: unknown;
 		try {
 			await cleanupRemoteTransferArtifacts(
@@ -1740,18 +1843,12 @@ async function executeUploadTransfer(
 		}
 		const residual =
 			cleanupError === undefined
-				? ""
+				? " Partial upload artifacts were removed."
 				: ` Cleanup failed; possible residual paths: ${artifacts.stagePath}, ${artifacts.proofPath}, ${
 						artifacts.backupPath
 					}. ${describeTransferError(cleanupError)}`;
-		if (signal?.aborted) {
-			throw new SshFileTransferCancelledError(
-				`SSH upload cancelled before commit; this transfer did not modify the destination.${residual}`,
-				{ cause: error },
-			);
-		}
-		throw new Error(
-			`SSH upload staging failed (${describeTransferError(error)}); commit was not attempted and this transfer did not modify the destination.${residual}`,
+		throw new SshFileTransferCancelledError(
+			`SSH upload cancelled before commit; this transfer did not modify the destination.${residual}`,
 			{ cause: error },
 		);
 	}
@@ -1771,7 +1868,7 @@ async function executeUploadTransfer(
 		}
 		const suffix =
 			cleanupError === undefined
-				? ""
+				? " Partial upload artifacts were removed."
 				: ` Cleanup failed; possible residual paths: ${artifacts.stagePath}, ${artifacts.proofPath}, ${
 						artifacts.backupPath
 					}. ${describeTransferError(cleanupError)}`;
@@ -1853,33 +1950,59 @@ async function executeDownloadTransfer(
 	const parent = path.dirname(plan.localPath);
 	await ensureDownloadParentDirectory(parent);
 	const stagePath = path.join(parent, `.omp-transfer-${crypto.randomUUID()}.part`);
+	let commitStarted = false;
 	try {
 		await streamDownloadStage(plan, mode, stagePath, reporter, signal);
 		if (signal?.aborted) {
 			throw new SshFileTransferCancelledError("SSH download cancelled before commit");
 		}
+		commitStarted = true;
 		commitStagedFileAtomic(stagePath, plan.localPath, plan.overwrite);
 	} catch (error) {
-		let cleanupError: unknown;
+		const destinationState = commitStarted
+			? "The atomic local commit failed; inspect its diagnostic for destination state."
+			: "Commit was not attempted; this transfer did not modify the local destination.";
+		const sourceState = `This transfer did not modify the remote source: ${plan.target.name}:${plan.remotePath}.`;
+		if (signal?.aborted || error instanceof SshFileTransferCancelledError) {
+			let cleanupError: unknown;
+			try {
+				await fs.rm(stagePath, { force: true });
+			} catch (caughtCleanupError) {
+				cleanupError = caughtCleanupError;
+			}
+			const cleanup =
+				cleanupError === undefined
+					? "Partial download was removed."
+					: `Cleanup failed; possible residual path: ${stagePath}. ${describeTransferError(cleanupError)}`;
+			throw new SshFileTransferCancelledError(
+				`SSH download cancelled. ${destinationState} ${sourceState} ${cleanup}`,
+				{
+					cause: error,
+				},
+			);
+		}
+		let partialState: string;
 		try {
-			await fs.rm(stagePath, { force: true });
-		} catch (caughtCleanupError) {
-			cleanupError = caughtCleanupError;
+			const stage = await fs.lstat(stagePath);
+			if (stage.isFile() && stage.size === 0) {
+				await fs.rm(stagePath);
+				partialState = `Empty local stage was removed: ${stagePath}; no recoverable bytes remain.`;
+			} else {
+				partialState =
+					`${commitStarted ? "Local staged file" : "Partial download"} retained at ${stagePath} ` +
+					`(${stage.size} of ${plan.totalBytes} expected bytes). ` +
+					"Inspect it against the source before manual recovery, or remove it when no longer needed.";
+			}
+		} catch (inspectionError) {
+			partialState = isMissingFileSystemError(inspectionError)
+				? `No local stage was found at ${stagePath}.`
+				: `Local stage was not deleted; inspect ${stagePath}. Its state could not be determined: ${describeTransferError(inspectionError)}`;
 		}
-		const residual =
-			cleanupError === undefined
-				? ""
-				: ` Cleanup failed; possible residual path: ${stagePath}. ${describeTransferError(cleanupError)}`;
-		if (signal?.aborted && !(error instanceof SshFileTransferCancelledError)) {
-			throw new SshFileTransferCancelledError(`SSH download cancelled.${residual}`, { cause: error });
-		}
-		if (error instanceof SshFileTransferCancelledError && residual.length > 0) {
-			throw new SshFileTransferCancelledError(`${error.message}.${residual}`, { cause: error });
-		}
-		if (cleanupError !== undefined) {
-			throw new Error(`${describeTransferError(error)}.${residual}`, { cause: error });
-		}
-		throw error;
+		throw new Error(
+			`SSH download ${commitStarted ? "atomic commit failed" : "failed before commit"} (${describeTransferError(error)}). ` +
+				`${destinationState} ${sourceState} ${partialState}`,
+			{ cause: error },
+		);
 	}
 }
 
@@ -1888,7 +2011,16 @@ export async function executeSshFileTransfer(
 	options: SshFileTransferExecuteOptions = {},
 ): Promise<SshFileTransferProgress> {
 	options.signal?.throwIfAborted();
-	const mode = await resolveRemoteTransferMode(plan.target);
+	let mode: RemoteTransferMode;
+	try {
+		mode = await resolveRemoteTransferMode(plan.target);
+	} catch (error) {
+		const message =
+			`SSH ${plan.operation} transport setup failed (${describeTransferError(error)}); staging was not started. ` +
+			"This transfer did not modify the source or destination, and no partial file was created.";
+		if (options.signal?.aborted) throw new SshFileTransferCancelledError(message, { cause: error });
+		throw new Error(message, { cause: error });
+	}
 	options.signal?.throwIfAborted();
 	const reporter = new SshTransferProgressReporter(plan.totalBytes, options.onProgress);
 	reporter.emitInitial();

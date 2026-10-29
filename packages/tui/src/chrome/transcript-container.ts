@@ -110,7 +110,7 @@ interface TranscriptEntry {
 	snapshot?: SnapshotWatermark;
 	/** Provider-declared settled prefix of a still-mutable block. */
 	partial?: PartialWatermark;
-	/** Physical head of a settled block committed while its on-screen tail remains live. */
+	/** Physical head of a settled block or stable stream prefix committed while its tail remains live. */
 	split: RowSplit | undefined;
 }
 
@@ -1103,13 +1103,47 @@ export class TranscriptContainer extends Container {
 			}
 		}
 
+		const next =
+			split === undefined
+				? live.find(({ entry, index }) => {
+						if (commitEntries.includes(index)) return false;
+						const full = measure(entry);
+						return (
+							full.length > this.#retiredPrefixLength(entry, width, full) ||
+							(!allowsSuccessorRetirement(entry.component) && entry.snapshot?.separator !== true)
+						);
+					})
+				: undefined;
+		const partial =
+			next === undefined ||
+			(next.entry.component as Component & FinalizableBlock).getTranscriptBlockSettledPrefix === undefined
+				? undefined
+				: this.#legacyPrefix(next.entry, width, measure(next.entry));
+		if (
+			policy === "pressure" &&
+			split === undefined &&
+			partial === undefined &&
+			next?.entry.state === "active" &&
+			next.entry.mode === "appendOnly" &&
+			next.entry.stableRows.length > 0
+		) {
+			let remainingRows = 0;
+			let previous: Component | undefined;
+			for (const candidate of live) {
+				if (commitEntries.includes(candidate.index)) continue;
+				const full = measure(candidate.entry);
+				const height = full.length - this.#retiredPrefixLength(candidate.entry, width, full);
+				if (height === 0) continue;
+				const component = candidate.entry.component;
+				if (previous !== undefined && this.#keepsBlankBetween(previous, component)) remainingRows++;
+				remainingRows += height;
+				previous = component;
+			}
+			const offer = this.#stableSplitOffer(next.entry, width, remainingRows - room);
+			if (offer !== undefined) split = { entry: next.index, rows: offer.rows, watermark: offer.split };
+		}
+
 		if (commitEntries.length > 0 || split !== undefined) {
-			const next = split === undefined ? live.find(({ index }) => !commitEntries.includes(index)) : undefined;
-			const partial =
-				next === undefined ||
-				(next.entry.component as Component & FinalizableBlock).getTranscriptBlockSettledPrefix === undefined
-					? undefined
-					: this.#legacyPrefix(next.entry, width, measure(next.entry));
 			pushLoopPhase("ui.transcript-retire");
 			let retirement: { rows: readonly string[]; count: number; tail: Component | undefined };
 			try {
@@ -1249,6 +1283,31 @@ export class TranscriptContainer extends Container {
 		}
 		if (policy === "pressure") this.#notePinnedFrontier();
 		return undefined;
+	}
+
+	/**
+	 * A publication can exceed the viewport, or sit behind a transparent run
+	 * gate. Split its verified stable rows at the physical screen edge instead
+	 * of waiting for an entire semantic publication to leave the screen.
+	 */
+	#stableSplitOffer(
+		entry: TranscriptEntry,
+		width: number,
+		overflow: number,
+	): { rows: readonly string[]; split: RowSplit } | undefined {
+		if (
+			overflow <= 0 ||
+			entry.stableFrozen ||
+			entry.snapshot !== undefined ||
+			!allowsMidStreamRetirement(entry.component)
+		)
+			return undefined;
+		const full = this.#measuredRows(entry, width);
+		const start = this.#retiredPrefixLength(entry, width, full);
+		const stable = entry.renderedStableByWidth.get(width);
+		const end = Math.min(stable?.length ?? 0, start + overflow);
+		if (end <= start) return undefined;
+		return { rows: full.slice(start, end), split: rowSplit(full, end, width) };
 	}
 
 	/**

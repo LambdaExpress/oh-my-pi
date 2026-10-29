@@ -148,6 +148,8 @@ System prompt construction (`src/system-prompt.ts`) uses discovered skills as fo
 
 When no tool metadata is supplied, the prompt builder uses the presence of `read` as a compatibility fallback.
 
+Managed skill files are checked before their metadata is advertised or offered as a URI completion. Deleting a managed `SKILL.md` withdraws it from retained prompt catalogs without rescanning every skill directory. Discovery reads current frontmatter rather than a permanent content-cache entry. If a file disappears during a read, the error identifies the skill and asks for a skill refresh.
+
 `hide: true` does not disable the skill. Hidden skills are still loaded and remain reachable through `skill://<name>` and `/skill:<name>` when skill commands are enabled.
 
 Task tool subagents receive the session's discovered/provided skills list via normal session creation; there is no per-task skill pinning override.

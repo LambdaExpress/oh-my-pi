@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import { untilAborted } from "@oh-my-pi/pi-utils";
-import type { HTTPRequest, HTTPResponse, Page } from "puppeteer-core";
+import type { CDPSession, Frame, HTTPRequest, HTTPResponse, Page, Protocol } from "puppeteer-core";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 /** Maximum number of request records retained per tab; the oldest are evicted first. */
@@ -165,6 +165,7 @@ export class BrowserNetworkManager {
 	#interceptionEnabled = false;
 	#started = false;
 	#harSession?: HarSession;
+	#stopInterceptionDrain?: () => void;
 	/** Main-frame document requests that have neither a response nor a final failure/finish yet. */
 	readonly #pendingNavigations = new Set<HTTPRequest>();
 
@@ -264,6 +265,8 @@ export class BrowserNetworkManager {
 			await this.#page.setRequestInterception(false).catch(() => undefined);
 		}
 		this.#interceptionEnabled = false;
+		this.#stopInterceptionDrain?.();
+		this.#stopInterceptionDrain = undefined;
 	}
 
 	/** Whether routes or allowed domains require interception to remain enabled between runs. */
@@ -278,7 +281,47 @@ export class BrowserNetworkManager {
 
 	/** Restore the interception state after raw page interception used by one run. */
 	async restoreInterception(signal?: AbortSignal): Promise<void> {
-		await this.#setInterception(this.hasPersistentInterception(), signal, true);
+		const persistent = this.hasPersistentInterception();
+		if (!persistent) this.#startInterceptionDrain();
+		await this.#setInterception(persistent, signal, true);
+		this.#stopInterceptionDrain?.();
+		this.#stopInterceptionDrain = undefined;
+	}
+
+	/**
+	 * Fetch.disable can take longer than a run's cleanup grace. While it is pending (or rejected), Puppeteer
+	 * already considers interception disabled, so its normal request handlers cannot release new pauses.
+	 * Drain only after run listeners are detached, and only without persistent routes/allowlists to preserve.
+	 */
+	#startInterceptionDrain(): void {
+		if (this.#stopInterceptionDrain) return;
+		const clients = new Map<CDPSession, (event: Protocol.Fetch.RequestPausedEvent) => void>();
+		const attach = (frame: Frame): void => {
+			const client = frame.client;
+			if (clients.has(client)) return;
+			const resume = (event: Protocol.Fetch.RequestPausedEvent): void => {
+				// Fetch.disable or a handler already in flight may have released this same pause.
+				void client.send("Fetch.continueRequest", { requestId: event.requestId }).catch(() => undefined);
+			};
+			clients.set(client, resume);
+			client.on("Fetch.requestPaused", resume);
+		};
+		for (const frame of this.#page.frames()) attach(frame);
+		this.#page.on("frameattached", attach);
+		this.#page.on("framenavigated", attach);
+		this.#stopInterceptionDrain = () => {
+			this.#page.off("frameattached", attach);
+			this.#page.off("framenavigated", attach);
+			for (const [client, resume] of clients) client.off("Fetch.requestPaused", resume);
+		};
+		for (const record of this.#records) {
+			const request = record.request;
+			if (request.isInterceptResolutionHandled() || request.interceptResolutionState().action === "disabled") {
+				continue;
+			}
+			// A request dispatched before the guard was installed may still be queued on a run-owned handler.
+			void request.continue().catch(() => undefined);
+		}
 	}
 
 	/** Register a persistent tab-level route. */

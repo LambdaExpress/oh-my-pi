@@ -1791,6 +1791,18 @@ export interface DaemonBrokerStartOptions {
 
 /** Start the detached project or global daemon broker selected by the CLI worker host. */
 export async function startDaemonBrokerFromEnvironment(options: DaemonBrokerStartOptions = {}): Promise<void> {
+	// The CLI worker host runs as a floating promise in compiled bytecode
+	// builds. Native I/O and Bun.file promises alone do not keep Bun's Windows
+	// event loop alive before IpcServer.listen has installed its server handle.
+	const startupKeepalive = setInterval(() => {}, 1_000);
+	try {
+		await startDaemonBroker(options, () => clearInterval(startupKeepalive));
+	} finally {
+		clearInterval(startupKeepalive);
+	}
+}
+
+async function startDaemonBroker(options: DaemonBrokerStartOptions, onListening: () => void): Promise<void> {
 	const projectDir = process.env[DAEMON_PROJECT_DIR_ENV];
 	const runtimeDir = process.env[DAEMON_RUNTIME_DIR_ENV];
 	if (!projectDir || !runtimeDir) throw new Error("Daemon broker environment is incomplete");
@@ -1826,21 +1838,27 @@ export async function startDaemonBrokerFromEnvironment(options: DaemonBrokerStar
 			error: error instanceof Error ? error.message : String(error),
 		});
 	});
-	const token = (await Bun.file(path.join(runtimeDir, TOKEN_FILE)).text()).trim();
-	if (!token) throw new Error("Daemon broker token is empty");
-	const broker = new DaemonBroker(
-		projectDir,
-		runtimeDir,
-		token,
-		idleGraceMs,
-		restartBackoffBaseMs,
-		options.endpointCheckMs ?? ENDPOINT_CHECK_MS,
-	);
-	const cancelCleanup = postmortem.register("daemon-broker", () => broker.shutdown());
 	try {
-		await broker.run(options.onListening);
+		const token = (await fs.readFile(path.join(runtimeDir, TOKEN_FILE), "utf8")).trim();
+		if (!token) throw new Error("Daemon broker token is empty");
+		const broker = new DaemonBroker(
+			projectDir,
+			runtimeDir,
+			token,
+			idleGraceMs,
+			restartBackoffBaseMs,
+			options.endpointCheckMs ?? ENDPOINT_CHECK_MS,
+		);
+		const cancelCleanup = postmortem.register("daemon-broker", () => broker.shutdown());
+		try {
+			await broker.run(() => {
+				onListening();
+				options.onListening?.();
+			});
+		} finally {
+			cancelCleanup();
+		}
 	} finally {
-		cancelCleanup();
 		await releaseBrokerLease(lease);
 	}
 }

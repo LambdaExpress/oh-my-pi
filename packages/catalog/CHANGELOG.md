@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed GPT-6 Codex models inheriting Responses API live-steering support that the native Codex transport rejects; bundled and discovered Codex models now defer input to the next request boundary.
 - Fixed model-cache database files staying locked on Windows after the cache is closed.
 - Fixed OpenCode Go DeepSeek V4 models losing the `max` thinking effort during startup or after Responses API routing: the bundled pre-discovery catalog and runtime derivation now both preserve the model-defined `low`/`high`/`max` ladder.
 - Fixed DeepSeek V4.1 Flash (`deepseek-flash`) dropping image parts as a text-only id; the canonical id now carries vision while the retired `deepseek-v4-flash` ids keep the placeholder.

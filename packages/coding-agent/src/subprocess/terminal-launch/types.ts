@@ -89,6 +89,8 @@ type RequestForPlacement<Multiplexer extends TerminalMultiplexer, Placement exte
 	placement: Placement;
 	command: readonly string[];
 	cwd: string;
+	/** Child overrides applied after shell startup; undefined or empty values remove inherited variables. */
+	env?: Readonly<Record<string, string | undefined>>;
 } & RequestOptions<C>;
 
 /** Requests a provider accepts, derived from that provider's own capability entry. */

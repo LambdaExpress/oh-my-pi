@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { supportsOutputTokenLimit } from "@oh-my-pi/pi-catalog/compat/output-limits";
 import { requiresNativeTools, requiresToolFreeHistoryForToolOptOut } from "@oh-my-pi/pi-catalog/compat/tools";
 import { getBundledModel, getBundledModels, type GeneratedProvider } from "@oh-my-pi/pi-catalog/models";
@@ -38,4 +39,14 @@ test("requiresNativeTools marks only cursor-agent transports", () => {
 test("requiresToolFreeHistoryForToolOptOut marks only bedrock-converse-stream", () => {
 	expect(requiresToolFreeHistoryForToolOptOut(fixture("amazon-bedrock", m => m.reasoning))).toBe(true);
 	expect(requiresToolFreeHistoryForToolOptOut(getBundledModel("anthropic", "claude-sonnet-4-6")!)).toBe(false);
+});
+
+test("native Codex lanes veto model steering without changing the Responses API capability", () => {
+	const reference = getBundledModel<"openai-codex-responses">("openai-codex", "gpt-6.1-sol");
+	expect(reference.compat.supportsSteering).toBe(false);
+	const { compat: _compat, ...spec } = reference;
+	const native = buildModel<"openai-codex-responses">({ ...spec, provider: "custom-codex" });
+	const responses = getBundledModel<"openai-responses">("openai", "gpt-6.1-sol");
+	expect(native.compat.supportsSteering).toBe(false);
+	expect(responses.compat.supportsSteering).toBe(true);
 });

@@ -30,6 +30,7 @@ The critical distinction: **notebook support is file conversion/editing, not not
 - Existing notebook metadata is preserved when a marker references an existing unused `cell:N`; new cells get fresh empty metadata.
 - A missing notebook passed to the serializer starts from an empty nbformat 4.5 notebook.
 - The standalone `write` tool is not notebook-aware: it replaces the file content rather than converting cell markers. Use it only with valid notebook JSON, not the virtual marker representation.
+- Handler-owned remote resources retain their supplied UTF-8 text representation. A remote `.ipynb` exposed as JSON can be patched as whole-file JSON, including non-ASCII URL paths, without reserializing unrelated bytes; immutable and read-only schemes remain uneditable. Local notebook cell projection is unchanged.
 
 No kernel lifecycle exists in this path:
 

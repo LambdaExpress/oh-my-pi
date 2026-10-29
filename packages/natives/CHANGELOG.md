@@ -14,6 +14,10 @@
 
 ### Fixed
 
+- Fixed fuzzy patch matching discarding unmatched structural punctuation even when similar punctuation appeared elsewhere in the replacement.
+- Fixed handler-owned remote notebook JSON being converted to local cell projections instead of preserving its original UTF-8 bytes.
+- Fixed C# summaries exposing executable bodies or hiding member declarations; signature projections retain exact source recovery ranges.
+- Fixed shell cancellation missing snapshot startup or cancelling the wrong queued command while preserving the Promise-returning JavaScript abort API.
 - Fixed ambiguous complete patches selecting the first match instead of rejecting the entire batch before writes, including normalized duplicate matches.
 - Fixed native Windows `sed` reading post-open file truncations instead of the bytes captured when the regular file was opened.
 - Fixed `rmdir` removing the shell's current directory through final `.` components on Windows, including ancestor removal and ignored-nonempty modes.

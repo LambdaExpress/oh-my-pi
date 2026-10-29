@@ -479,7 +479,12 @@ export async function scanSkillsFromDir(
 	}
 	const loadSkill = async (skillPath: string) => {
 		try {
-			const content = await readFile(skillPath);
+			// Skill inventories are reloadable. The shared capability file cache
+			// pins old frontmatter (including descriptions and enabled/name flags)
+			// after an external edit, even though this directory listing is fresh.
+			// Keep the file-type gate: opening a FIFO/device could hang discovery.
+			if (!(await fs.promises.stat(skillPath)).isFile()) return;
+			const content = await fs.promises.readFile(skillPath, "utf8");
 			if (!content) return;
 			const { frontmatter, body } = parseFrontmatter(content, { source: skillPath });
 			if (frontmatter.enabled === false) {

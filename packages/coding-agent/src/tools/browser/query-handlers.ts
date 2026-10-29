@@ -139,7 +139,6 @@ export function queryByTitle(node: QueryNode, selector: string): Element[] {
  * accessible name.
  */
 export function queryByRole(node: QueryNode, selector: string): Element[] {
-	const root = node as unknown as QueryRoot;
 	const roleMatch = /^\s*([^\s[]+)/.exec(selector);
 	const wantedRole = (roleMatch?.[1] ?? "").toLocaleLowerCase();
 	const nameMatch = /\[\s*name\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\]\s]+))(?:\s+(exact))?\s*\]/i.exec(selector);
@@ -183,17 +182,22 @@ export function queryByRole(node: QueryNode, selector: string): Element[] {
 	const accessibleName = (element: Element): string => {
 		const ariaLabel = element.getAttribute("aria-label");
 		if (ariaLabel) return ariaLabel.trim();
+		// ID references and native labels belong to the element's own document/shadow tree.
+		const scopedElement = element as unknown as {
+			getRootNode(): QueryRoot & { getElementById(id: string): Element | null };
+		};
+		const tree = scopedElement.getRootNode();
 		const labelledBy = element.getAttribute("aria-labelledby");
 		if (labelledBy) {
 			const value = labelledBy
 				.split(/\s+/)
-				.map(id => element.ownerDocument?.getElementById(id)?.textContent ?? "")
+				.map(id => tree.getElementById(id)?.textContent ?? "")
 				.join(" ")
 				.trim();
 			if (value) return value;
 		}
 		if (element.id) {
-			for (const label of element.ownerDocument?.querySelectorAll("label") ?? []) {
+			for (const label of tree.querySelectorAll("label")) {
 				if (label.getAttribute("for") === element.id) return (label.textContent ?? "").trim();
 			}
 		}
@@ -210,13 +214,28 @@ export function queryByRole(node: QueryNode, selector: string): Element[] {
 			""
 		).trim();
 	};
-	return Array.from(root.querySelectorAll("*")).filter(element => {
+	const matches = (element: Element): boolean => {
 		const role = (element.getAttribute("role")?.trim().split(/\s+/)[0] ?? implicitRole(element))?.toLocaleLowerCase();
 		if (role !== wantedRole) return false;
 		if (wantedName === undefined) return true;
 		const name = accessibleName(element).toLocaleLowerCase();
 		return exact ? name === wantedName : name.includes(wantedName);
-	});
+	};
+	const result: Element[] = [];
+	const visit = (root: QueryNode): void => {
+		// queryAll is serialized on its own, so keep the deep walk inside this handler.
+		const element = root as unknown as {
+			readonly children?: ArrayLike<Element>;
+			readonly shadowRoot?: QueryNode | null;
+		};
+		if (element.shadowRoot) visit(element.shadowRoot);
+		for (const child of Array.from(element.children ?? [])) {
+			if (matches(child)) result.push(child);
+			visit(child as unknown as QueryNode);
+		}
+	};
+	visit(node);
+	return result;
 }
 
 /** Semantic selector prefixes (`label/`, `role/`, …) and their self-contained `queryAll` handlers. */

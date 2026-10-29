@@ -131,29 +131,31 @@ describe("read URL binary dispatch", () => {
 		expect(text).not.toContain("�");
 	});
 
-	it("downloads a generic-MIME convertible document body only once", async () => {
+	it("converts generic-MIME PDF bytes from the original HTTP response", async () => {
 		const url = uniqueUrl("report", ".pdf");
-		const bodyReads: string[] = [];
+		const pdfBytes = Buffer.from("%PDF-1.4 fixture");
 		const loadPage = vi.spyOn(scrapers, "loadPage").mockImplementation(async (requestedUrl, options) => {
 			const contentType = "application/octet-stream";
-			if (options?.skipBodyForContentType?.(contentType)) {
-				return { ok: true, status: 200, finalUrl: requestedUrl, contentType, content: "", bodySkipped: true };
-			}
-			bodyReads.push(requestedUrl);
-			return { ok: true, status: 200, finalUrl: requestedUrl, contentType, content: "%PDF-1.4 binary" };
+			expect(options?.binaryBodyForContentType?.(contentType, requestedUrl)).toBe(true);
+			return {
+				ok: true,
+				status: 200,
+				finalUrl: requestedUrl,
+				contentType,
+				content: "",
+				binary: { buffer: pdfBytes },
+			};
 		});
-		const fetchBinary = vi
-			.spyOn(scraperUtils, "fetchBinary")
-			.mockImplementation(async () => ({ ok: false, error: "offline" }));
+		const fetchBinary = vi.spyOn(scraperUtils, "fetchBinary");
+		const convert = vi.spyOn(scraperUtils, "convertWithMarkit").mockResolvedValue({ ok: true, content: "PDF text" });
 
 		const tool = new ReadTool(makeSession(testDir));
 		const result = await tool.execute("read-url-generic-pdf", { path: url });
 
 		expect(loadPage).toHaveBeenCalledTimes(1);
-		expect(bodyReads).toEqual([]);
-		// One download even when it fails: the binary fallback reuses the conversion attempt.
-		expect(fetchBinary).toHaveBeenCalledTimes(1);
-		expect(textOutput(result).split("Binary fetch failed: offline").length - 1).toBe(1);
+		expect(fetchBinary).not.toHaveBeenCalled();
+		expect(convert).toHaveBeenCalledWith(pdfBytes, ".pdf", expect.any(Number), expect.any(AbortSignal));
+		expect(textOutput(result)).toContain("PDF text");
 	});
 
 	it("returns a metadata notice when a hinted binary refetch fails", async () => {

@@ -937,6 +937,11 @@ only after confirming the destination shell uses POSIX grammar; the factory reje
 a missing assertion. Extensions can continue using `ctx.ui.openTerminal(...)` with
 explicit typed requests.
 
+All supported providers accept an optional `env` map for the launched command.
+Overrides are applied after the destination shell starts, so they replace stale
+multiplexer-server values without changing the shell's startup environment.
+An undefined or empty value removes an inherited variable.
+
 ```ts
 const result = await ctx.ui.openTerminal?.({
   multiplexer: "tmux",
@@ -993,10 +998,15 @@ with an error naming the required version; the dispatcher checks `zellij --versi
 once per process.
 
 Herdr `pane run` types text into the destination's interactive shell, so the
-adapter writes the POSIX-quoted argv to a private, self-deleting `/bin/sh` script
-under the temp directory and types only its absolute path. Any interactive shell
-that runs a bare path (POSIX shells, fish, Nushell) launches the exact argv, so
-Herdr requests take no `shellGrammar`. Herdr launches are rejected on Windows.
+adapter prepares a private, self-deleting script under the temp directory before
+creating the pane or tab. On POSIX, it writes POSIX-quoted argv and invokes
+`/bin/sh` with a shell-neutral absolute script path. On Windows, an ASCII-only
+`powershell.exe -EncodedCommand` bootstrap invokes a PowerShell script that
+preserves native argv, applies the child environment, and starts the command
+inside the existing console with `Start-Process -NoNewWindow`. It uses built-in
+Windows PowerShell and does not require PowerShell 7, Git Bash, or a Unix `env`
+executable. Both paths avoid interpreting command arguments in the destination's
+interactive shell, so Herdr requests take no `shellGrammar`.
 
 CMUX `--command` and Orca `terminal split`/`terminal create`
 submit shell command text to the destination's interactive shell rather than

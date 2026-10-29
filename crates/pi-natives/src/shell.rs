@@ -291,11 +291,11 @@ impl Shell {
 
 	/// Abort all running commands for this shell session.
 	///
-	/// Returns `Ok(())` even when no commands are running.
-	#[napi]
-	pub async fn abort(&self) -> Result<()> {
-		self.inner.abort().await;
-		Ok(())
+	/// Resolves even when no commands are running.
+	#[napi(ts_return_type = "Promise<void>")]
+	pub fn abort<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, ()>> {
+		self.inner.abort();
+		task::future(env, "shell.abort", std::future::ready(Ok(())))
 	}
 
 	/// Count live background jobs (`&`/`nohup` children still running) on this

@@ -115,7 +115,8 @@ The tool returns a single text block in `content[0].text` plus structured `detai
 5. **Internal URL paths**
    - Native grep walks and reads them through the URL filesystem (`skill://<name>` searches the skill directory; `omp://` walks every embedded documentation file, so it works as a docs search root). Hits are named by full URL.
    - URL globs split into base URL + glob (`local://notes/**/*.md`, `local://*.md`).
-   - A directory resource the filesystem cannot list (a remote `ssh://` directory) fails with `… lists only through the read tool` instead of searching its listing text.
+   - SSH directories are enumerated one level at a time through their protocol handler; the native walker keeps the same regex, gitignore, case and pagination behavior as local scans. Semicolon-separated SSH directories remain separate search roots.
+   - A directory resource whose handler cannot enumerate children fails explicitly instead of searching its listing text.
    - Sources from immutable schemes suppress editable hashline anchors; `local://` hits keep them.
 
 ## Side Effects

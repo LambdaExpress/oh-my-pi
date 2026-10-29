@@ -466,11 +466,11 @@ describe("TranscriptContainer", () => {
 
 		head.finalize(["mutable head"]);
 		const retired = transcript.peekFinalizedBatch(80, 1);
-		expect(retired?.rows).toEqual(["mutable head", ""]);
+		expect(retired?.rows).toEqual(["mutable head", "", "later stable"]);
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["later partial"]);
 		transcript.acknowledgeFinalizedBatch(retired!.id);
 
-		const emitted = transcript.peekFinalizedBatch(80, 1);
-		expect(emitted?.rows).toEqual(["later stable"]);
+		expect(transcript.peekFinalizedBatch(80, 1)).toBeUndefined();
 		expect(transcript.renderViewport(80, 1, frame)).toEqual(["later partial"]);
 	});
 
@@ -527,12 +527,13 @@ describe("TranscriptContainer", () => {
 		const block = new ReflowingAppendBlock();
 		transcript.addChild(block);
 
-		// Room 2: "efgh" is still on screen, so its stable prefix stays live —
-		// committing it would strand that row above the live tail.
-		expect(transcript.peekFinalizedBatch(4, 2)).toBeUndefined();
-		// Room 1: the whole two-row stable prefix has left the screen.
+		// Only the offscreen half of this semantic row retires initially.
+		const first = transcript.peekFinalizedBatch(4, 2)!;
+		expect(first.rows).toEqual(["abcd"]);
+		expect(transcript.renderViewport(4, 2, frame)).toEqual(["efgh", "partial"]);
+		transcript.acknowledgeFinalizedBatch(first.id);
 		const emitted = transcript.peekFinalizedBatch(4, 1)!;
-		expect(emitted.rows).toEqual(["abcd", "efgh"]);
+		expect(emitted.rows).toEqual(["efgh"]);
 		transcript.acknowledgeFinalizedBatch(emitted.id);
 		expect(transcript.renderViewport(8, 1, frame)).toEqual(["partial"]);
 

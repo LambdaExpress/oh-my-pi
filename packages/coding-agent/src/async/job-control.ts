@@ -58,8 +58,8 @@ export function visibleJobs(manager: AsyncJobManager, ids: string[], ownerId: st
 /**
  * Settled jobs owned by `ownerId` whose completion was accepted but has not
  * reached the owner yet: delivery queued or awaiting yield-queue injection,
- * dead-lettered, or skipped while a `wait` watched it. Consumed, acknowledged,
- * and currently watched results are excluded.
+ * or dead-lettered. Consumed, acknowledged, and currently watched results
+ * are excluded.
  */
 export function undeliveredJobs(manager: AsyncJobManager, ownerId: string | undefined): AsyncJob[] {
 	return manager
@@ -276,6 +276,7 @@ export function buildJobResult(
 	});
 	const jobResults = snapshotJobs(session, uniqueJobs, { includeResults: op !== "jobs" });
 	const alreadyConsumed = new Set(jobResults.filter(job => manager.isJobResultConsumed(job.id)).map(job => job.id));
+	const pendingDeliveries = new Set(jobResults.filter(job => manager.hasJobDelivery(job.id)).map(job => job.id));
 
 	if (op !== "jobs") {
 		manager.consumeJobResults(jobResults.filter(j => j.status !== "running").map(j => j.id));
@@ -318,7 +319,9 @@ export function buildJobResult(
 				lines.push(
 					alreadyConsumed.has(j.id)
 						? "Delivery: already delivered or recovered."
-						: "Delivery: not auto-delivered; recovered by this snapshot.",
+						: pendingDeliveries.has(j.id)
+							? `Delivery: received by this ${op === "wait" ? "wait" : "snapshot"}.`
+							: "Delivery: not auto-delivered; recovered by this snapshot.",
 				);
 			}
 			if (j.resultText) {

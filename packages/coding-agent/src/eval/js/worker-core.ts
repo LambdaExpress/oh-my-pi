@@ -10,6 +10,7 @@ import type {
 } from "./worker-protocol";
 
 interface PendingTool {
+	owner: ActiveRun;
 	resolve(value: unknown): void;
 	reject(error: Error): void;
 }
@@ -115,6 +116,9 @@ export class WorkerCore {
 	#runtime: JsRuntime | null = null;
 	#runs = new Map<string, ActiveRun>();
 	#pendingTools = new Map<string, PendingTool>();
+	// Host error stacks need not contain the calling cell. Keep their origin
+	// even when a floated bridge promise rejects after that cell has settled.
+	#toolRejectionOwners = new WeakMap<Error, ActiveRun>();
 	#recentCellFiles = new Set<string>();
 	#unsubscribe: () => void;
 	#uninstallRejectionGuard: () => void;
@@ -162,6 +166,12 @@ export class WorkerCore {
 	 * cell activity and must keep the default fatal path.
 	 */
 	#consumeRejection(reason: unknown): boolean {
+		const toolOwner = reason instanceof Error ? this.#toolRejectionOwners.get(reason) : undefined;
+		if (toolOwner) {
+			if (this.#runs.get(toolOwner.runId) === toolOwner) toolOwner.floatingRejections.push(reason);
+			else this.#reportFinishedCellRejection(toolOwner.filename, reason);
+			return true;
+		}
 		const stack = reason instanceof Error && typeof reason.stack === "string" ? reason.stack : undefined;
 		if (stack) {
 			// The stack can name several cells (helper defined by an earlier cell,
@@ -190,12 +200,7 @@ export class WorkerCore {
 				}
 			}
 			if (recent) {
-				this.#transport.send({
-					type: "log",
-					level: "warn",
-					msg: "Unhandled rejection from a finished eval cell (missing await?)",
-					meta: { filename: recent, error: errorPayload(reason) },
-				});
+				this.#reportFinishedCellRejection(recent, reason);
 				return true;
 			}
 		}
@@ -217,6 +222,15 @@ export class WorkerCore {
 			return true;
 		}
 		return false;
+	}
+
+	#reportFinishedCellRejection(filename: string, reason: unknown): void {
+		this.#transport.send({
+			type: "log",
+			level: "warn",
+			msg: "Unhandled rejection from a finished eval cell (missing await?)",
+			meta: { filename, error: errorPayload(reason) },
+		});
 	}
 
 	#handle(msg: WorkerInbound): void {
@@ -459,7 +473,7 @@ export class WorkerCore {
 	async #callTool(active: ActiveRun, name: string, args: unknown, identity?: RuntimeCallIdentity): Promise<unknown> {
 		const id = `tc-${active.runId}-${crypto.randomUUID()}`;
 		const { promise, resolve, reject } = Promise.withResolvers<unknown>();
-		this.#pendingTools.set(id, { resolve, reject });
+		this.#pendingTools.set(id, { owner: active, resolve, reject });
 		try {
 			this.#transport.send({ type: "tool-call", id, runId: active.runId, name, args, identity });
 		} catch (error) {
@@ -477,7 +491,11 @@ export class WorkerCore {
 		if (!pending) return;
 		this.#pendingTools.delete(id);
 		if (reply.ok) pending.resolve(reply.value);
-		else pending.reject(errorFromPayload(reply.error));
+		else {
+			const error = errorFromPayload(reply.error);
+			this.#toolRejectionOwners.set(error, pending.owner);
+			pending.reject(error);
+		}
 	}
 
 	#close(): void {

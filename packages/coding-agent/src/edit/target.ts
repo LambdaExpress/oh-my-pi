@@ -157,6 +157,9 @@ function mutableHandlerForTarget(
 	displayPath: string,
 ): MutableEditProtocolHandler {
 	const handler = InternalUrlRouter.instance().getHandler(scheme);
+	if (handler && (!handler.spec.write || handler.spec.immutable)) {
+		throw new Error(`${displayPath} is read-only`);
+	}
 	if (!handlerSupportsOperation(handler, op, move)) {
 		throw new Error(
 			`${scheme}:// edit ${operationName(op, move)} requires a protocol handler with resolve, stat, canonicalKey, and ${
@@ -199,7 +202,9 @@ function tryParseInternalEditTarget(
 		url,
 		handler,
 		canonicalPath,
-		displayPath: url.href,
+		// Keep the authored URL as a virtual-resource alias. WHATWG href
+		// percent-encodes Unicode paths, while native lookups use the patch header.
+		displayPath: wholeFilePath,
 	};
 }
 

@@ -251,7 +251,6 @@ const DEFAULT_TAB_CLOSE_TIMEOUT_MS = 5_000;
 const RECYCLE_RESETS =
 	"Tab state set since it was opened was reset (tab.route routes, emulation and user agent, init scripts, element ids, the request log, HAR recording, run globals), any open dialog was dismissed, and any page still loading was stopped.";
 const RENDERER_RELOADED_NOTE = `This tab's renderer had crashed, so the tab was reattached to a new worker and its page reloaded. ${RECYCLE_RESETS}`;
-class RecoverableWorkerError extends ToolError {}
 /** A worker `tab.goto` outlasted its budget; the page stays on what loaded. */
 class NavigationTimeoutError extends ToolError {}
 /** The page's renderer crashed; the run that reports it recycles the worker. */
@@ -957,20 +956,6 @@ async function runInTabWithSnapshot(
 				"Browser code execution hung past grace; tab killed",
 				async reason => await forceKillTab(name, reason),
 			);
-			if (result.recoverTab) {
-				const reattached = await recoverWorkerTab(
-					tab,
-					name,
-					opts.timeoutMs,
-					"Browser request interception cleanup failed; tab killed",
-				);
-				result.displays.push({
-					type: "text",
-					text: reattached
-						? `Browser request interception could not be reset after this run; the tab was reattached to a new worker. ${RECYCLE_RESETS}`
-						: "Browser request interception could not be reset after this run; the tab was closed.",
-				});
-			}
 			return result;
 		} catch (error) {
 			if (error instanceof RendererCrashedError) {
@@ -988,11 +973,8 @@ async function runInTabWithSnapshot(
 			}
 			const runTimedOut =
 				error instanceof ToolError && error.message.startsWith("Browser code execution timed out after ");
-			if (runTimedOut || error instanceof RecoverableWorkerError) {
-				const reason = runTimedOut
-					? "Browser code execution timed out; tab killed"
-					: "Browser request interception cleanup failed; tab killed";
-				await recoverWorkerTab(tab, name, opts.timeoutMs, reason);
+			if (runTimedOut) {
+				await recoverWorkerTab(tab, name, opts.timeoutMs, "Browser code execution timed out; tab killed");
 			}
 			throw error;
 		}
@@ -1643,14 +1625,13 @@ async function buildInitPayload(browser: PuppeteerBrowserHandle, opts: AcquireTa
 			ignoreHttpsErrors: opts.ignoreHttpsErrors,
 		};
 	}
-	// Connected and relay browsers are user-driven. When no target is requested,
-	// adopt the visible tab and avoid raising it before screenshots. An explicit
-	// target may be backgrounded, so retain activation for target-correct pixels.
+	// Selecting a user's target is not permission to raise its tab/window for screenshots. Automatic
+	// adoption still prefers the visible tab; hidden cross-origin captures fail explicitly in the worker.
 	const userDriven = browser.kind.kind === "connected" || browser.kind.kind === "relay";
-	const activateForScreenshot = !userDriven || !shouldPreserveConnectedBrowserFocus(opts.target);
+	const activateForScreenshot = !userDriven;
 	const page = await pickElectronTarget(browser.browser, {
 		matcher: opts.target,
-		preferVisible: !activateForScreenshot,
+		preferVisible: userDriven && shouldPreserveConnectedBrowserFocus(opts.target),
 		relayJson: browser.kind.kind === "relay" ? browser.kind.cdpUrl : undefined,
 		signal: opts.signal,
 	});
@@ -1988,15 +1969,13 @@ async function targetIdForTarget(target: Target): Promise<string> {
 function errorFromPayload(payload: RunErrorPayload): Error {
 	const error = payload.rendererCrashed
 		? new RendererCrashedError(payload.message)
-		: payload.recoverTab
-			? new RecoverableWorkerError(payload.message)
-			: payload.isAbort
-				? new ToolAbortError()
-				: payload.navigationTimeout
-					? new NavigationTimeoutError(payload.message)
-					: payload.isToolError
-						? new ToolError(payload.message)
-						: new Error(payload.message);
+		: payload.isAbort
+			? new ToolAbortError()
+			: payload.navigationTimeout
+				? new NavigationTimeoutError(payload.message)
+				: payload.isToolError
+					? new ToolError(payload.message)
+					: new Error(payload.message);
 	error.name = payload.name;
 	if (payload.stack) error.stack = payload.stack;
 	return error;

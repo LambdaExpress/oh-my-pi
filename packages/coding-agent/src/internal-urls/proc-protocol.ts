@@ -127,7 +127,11 @@ export class ProcProtocolHandler implements ProtocolHandler {
 						job.endTime === undefined
 							? `up ${formatDuration(now - job.startTime)}`
 							: `in ${formatDuration(job.endTime - job.startTime)}`;
-					return `${job.id} [${job.type}] ${job.status} ${duration} — ${job.label.replace(/\s+/g, " ")}`;
+					const state =
+						job.status === "running" && job.process?.phase?.() === "starting"
+							? "starting (launch pending)"
+							: job.status;
+					return `${job.id} [${job.type}] ${state} ${duration} — ${job.label.replace(/\s+/g, " ")}`;
 				}),
 				...runningAgentsOutsideJobs(session).map(
 					agent =>
@@ -158,7 +162,11 @@ export class ProcProtocolHandler implements ProtocolHandler {
 			);
 		}
 		if (job) {
-			const lines = [`${job.id} [${job.type}] — ${job.status} — ${job.label}`];
+			const state =
+				job.status === "running" && job.process?.phase?.() === "starting"
+					? "starting (launch pending)"
+					: job.status;
+			const lines = [`${job.id} [${job.type}] — ${state} — ${job.label}`];
 			if (job.resultText) lines.push(job.resultText);
 			if (job.errorText) lines.push(`Error: ${job.errorText}`);
 			if (job.status === "running") {

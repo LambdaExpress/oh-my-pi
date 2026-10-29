@@ -495,7 +495,7 @@ export declare class Shell {
   /**
    * Abort all running commands for this shell session.
    *
-   * Returns `Ok(())` even when no commands are running.
+   * Resolves even when no commands are running.
    */
   abort(): Promise<void>
   /**
@@ -3611,13 +3611,17 @@ export interface SummaryOptions {
   lang?: string
   /** File path used to infer language by extension when `lang` is omitted. */
   path?: string
-  /** Minimum total node lines before eliding a body/literal node. */
+  /**
+   * Minimum total node lines before eliding a body/literal node.
+   * C# always projects executable bodies, regardless of this threshold.
+   */
   minBodyLines?: number
   /** Minimum total comment lines before eliding a multiline block comment. */
   minCommentLines?: number
   /**
    * Target visible-line count for BFS unfold. `None` or `0` keeps only
    * the outermost elisions (no progressive unfolding).
+   * C# declaration projections are never unfolded.
    */
   unfoldUntilLines?: number
   /**
@@ -3632,7 +3636,7 @@ export interface SummaryResult {
   language?: string
   /** True when tree-sitter parsed the source without syntax errors. */
   parsed: boolean
-  /** True when at least one elision span was emitted. */
+  /** True when at least one source region was omitted. */
   elided: boolean
   /** Total source lines. */
   totalLines: number
@@ -3641,13 +3645,17 @@ export interface SummaryResult {
 }
 
 export interface SummarySegment {
-  /** "kept" or "elided". */
+  /** "kept", "elided", or "signature". */
   kind: string
   /** 1-based inclusive start line. */
   startLine: number
   /** 1-based inclusive end line. */
   endLine: number
-  /** Verbatim text for kept segments; absent for elided segments. */
+  /**
+   * Verbatim text for kept segments; absent for elided segments.
+   * A signature is a non-editable projection with inline `…` omissions,
+   * recoverable by reading its entire start/end line range.
+   */
   text?: string
 }
 

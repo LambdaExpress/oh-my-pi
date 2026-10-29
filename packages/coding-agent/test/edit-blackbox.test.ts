@@ -207,6 +207,79 @@ describe("edit parse-regression blackbox", () => {
 });
 
 describe("apply_patch 回归", () => {
+	test("缺少前导结构字符的子串和高相似度补丁都不能删除未匹配字符", async () => {
+		const oldLine =
+			'    else if (action === "apply") { clearTimeout(previewTimer); state.localError = ""; state.pendingCommit = emit("apply", requestData()); updateControls(); }';
+		const newLine =
+			'    else if (action === "apply") { state.localError = ""; state.pendingCommit = emit("apply", requestData()); updateControls(); }';
+		const original = [
+			"function handle(action) {",
+			'    if (action === "preview") {',
+			"        updateControls();",
+			oldLine.replace("    else", "    } else"),
+			"}",
+			"const version = 1;",
+			"",
+		].join("\n");
+		const source = path.join(tempDir, "structure.js");
+		for (const [name, removed, extraHunk] of [
+			["substring", oldLine, ["@@", "-const version = 1;", "+const version = 2;"]],
+			["fuzzy-character", oldLine.replace("clearTimeout", "clearTimeuot"), []],
+		] as const) {
+			await Bun.write(source, original);
+			const result = await new EditTool(session, "apply_patch").execute(name, {
+				input: [
+					"*** Begin Patch",
+					"*** Update File: structure.js",
+					"@@",
+					`-${removed}`,
+					`+${newLine}`,
+					...extraHunk,
+					"*** End Patch",
+				].join("\n"),
+			});
+			expect(result.isError).toBe(true);
+			expect(await Bun.file(source).text()).toBe(original);
+			expect(await Bun.file(logPath).exists()).toBe(false);
+		}
+	});
+
+	test("完整旧行继续支持精确和仅缩进有差异的匹配", async () => {
+		const oldLine = '    } else if (action === "apply") { clearTimeout(previewTimer); updateControls(); }';
+		const newLine = '    } else if (action === "apply") { updateControls(); }';
+		const original = [
+			"function handle(action) {",
+			'    if (action === "preview") {',
+			"        updateControls();",
+			oldLine,
+			"}",
+			"const version = 1;",
+			"",
+		].join("\n");
+		const source = path.join(tempDir, "complete.js");
+		for (const removeIndent of [false, true]) {
+			await Bun.write(source, original);
+			const result = await new EditTool(session, "apply_patch").execute("complete-line", {
+				input: [
+					"*** Begin Patch",
+					"*** Update File: complete.js",
+					"@@",
+					`-${removeIndent ? oldLine.trimStart() : oldLine}`,
+					`+${removeIndent ? newLine.trimStart() : newLine}`,
+					"@@",
+					"-const version = 1;",
+					"+const version = 2;",
+					"*** End Patch",
+				].join("\n"),
+			});
+			expect(result.isError).not.toBe(true);
+			expect(await Bun.file(source).text()).toBe(
+				original.replace(oldLine, newLine).replace("const version = 1;", "const version = 2;"),
+			);
+			expect(await Bun.file(logPath).exists()).toBe(false);
+		}
+	});
+
 	test("只移动的补丁通过工具完整保留原始字节", async () => {
 		const source = path.join(tempDir, "validation.cs");
 		const destination = path.join(tempDir, "staged", "validation.cs.pending");

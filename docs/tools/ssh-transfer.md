@@ -35,6 +35,9 @@
 - Existing destination without `overwrite: true` is rejected.
 - Non-absolute `remote_path` for the detected remote platform is rejected.
 - Transfer failures surface the remote error, including connection and permission failures.
+- Read-only preflight retries SSH transport failures and transient connection-establishment errors up to three total attempts, waiting 500 ms and 1,000 ms before retrying. Explicit authentication and host-key failures, file validation errors, and cancellation stop immediately; cancellation also interrupts the retry delay. Staging and commit are never automatically replayed.
+- Preflight failures retain a known source size, elapsed preparation time, and the number of attempts when retries were exhausted. SSH status 255 preserves transport stderr; a named jump/proxy host does not establish that the destination itself is unavailable.
+- Non-cancellation failures retain a nonempty partial stage and report its path and confirmed bytes without modifying the source or committing over an existing destination. Empty stages are removed. Cancellation requests cleanup and reports any stage it could not remove; retained stages can be inspected for manual recovery or deleted.
 - Lost commit acknowledgement is reported as uncertain completion with available identity/preservation evidence. Recovery confirms only matching proof identity and never replaces an unrelated destination; matching size alone is insufficient.
 
 ## Notes

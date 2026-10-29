@@ -951,7 +951,13 @@ interface RunPageScope {
 	/** Restore the page's own listener methods and remove every handler this run registered. */
 	detach(): void;
 	/** Return request interception to the tab's persistent route/allowlist state. */
-	restoreInterception(): Promise<void>;
+	restoreInterception(): Promise<void> | undefined;
+}
+
+interface InterceptionCleanup {
+	promise: Promise<void>;
+	state: "pending" | "failed";
+	error?: unknown;
 }
 
 /**
@@ -1131,28 +1137,21 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 			}
 			handlers.clear();
 		},
-		async restoreInterception() {
+		restoreInterception() {
 			if (!interceptionChanged) return;
-			try {
-				await withTimeout(
-					restoreInterception(),
-					REQUEST_INTERCEPTION_CLEANUP_TIMEOUT_MS,
-					"Timed out restoring browser request interception",
-				);
-			} catch (error) {
+			return restoreInterception().catch(error => {
 				throw new RequestInterceptionCleanupError(
 					"Failed to restore browser request interception after browser.run",
 					{
 						error: error instanceof Error ? error.message : String(error),
 					},
 				);
-			}
+			});
 		},
 	};
 }
 
 function errorPayload(error: unknown): RunErrorPayload {
-	const recoverTab = error instanceof RequestInterceptionCleanupError || undefined;
 	const navigationTimeout = error instanceof NavigationTimeoutError || undefined;
 	const rendererCrashed = error instanceof RendererCrashedError || undefined;
 	if (error instanceof ToolAbortError) {
@@ -1165,7 +1164,6 @@ function errorPayload(error: unknown): RunErrorPayload {
 			stack: error.stack,
 			isToolError: true,
 			isAbort: false,
-			recoverTab,
 			navigationTimeout,
 			rendererCrashed,
 		};
@@ -1488,14 +1486,13 @@ export async function preparePageForScreenshot(
 	 * User-driven browsers (connected CDP attach, browser relay): the tab's document can
 	 * be legitimately hidden — the user may be looking at another window — so
 	 * `document.visibilityState` is not a reliable gate, and `bringToFront()` would steal
-	 * the user's focus without fixing it (in relay mode it only switches the user's
-	 * visible tab). CDP `Page.captureScreenshot` renders the target tab's own surface
-	 * regardless of visibility, so skip the gate entirely. Never set for tabs we launch.
+	 * the user's focus. The capture helper separately refuses hidden cross-origin iframe
+	 * surfaces that Chromium may leave unpainted. Never set for tabs we launch.
 	 */
 	allowInvisible = false,
 ): Promise<void> {
 	if (activate) {
-		await untilAborted(signal, () => page.bringToFront()).catch(() => undefined);
+		await untilAborted(signal, () => page.bringToFront());
 		return;
 	}
 	if (allowInvisible) return;
@@ -1543,6 +1540,8 @@ export class WorkerCore {
 	#network?: BrowserNetworkManager;
 	#initScripts?: InitScriptManager;
 	#downloads?: DownloadManager;
+	#httpsErrorsSession?: CDPSession;
+	#interceptionCleanup?: InterceptionCleanup;
 	readonly #consoleCapture = new PageConsoleCapture();
 	#tracing?: BrowserTracingController;
 	#ariaSnapshotBaselines = new Map<string, AriaSnapshotBaseline>();
@@ -1744,7 +1743,7 @@ export class WorkerCore {
 			this.#webmcp = await installWebMcp(this.#page);
 			await installVitalsObservers(this.#page);
 			if (payload.userAgent !== undefined) await applyUserAgentOverride(this.#page, payload.userAgent);
-			if (payload.ignoreHttpsErrors) await applyIgnoreHttpsErrors(this.#page);
+			if (payload.ignoreHttpsErrors) this.#httpsErrorsSession = await applyIgnoreHttpsErrors(this.#page);
 			this.#targetId = await targetIdForPage(this.#page);
 			this.#initScripts = new InitScriptManager(this.#page);
 			for (const source of payload.initScripts ?? []) await this.#initScripts.add(source);
@@ -1752,6 +1751,7 @@ export class WorkerCore {
 				perTab: payload.mode === "headless" || payload.userDriven !== true,
 			});
 			if (payload.downloadsPath) await this.#downloads.enable(payload.downloadsPath);
+			else await this.#downloads.start();
 			const baseUserAgent = await this.#page.evaluate(() => navigator.userAgent);
 			this.#emulation = new BrowserEmulationController(
 				this.#page,
@@ -1773,6 +1773,9 @@ export class WorkerCore {
 			const page = this.#page;
 			await this.#webmcp?.dispose().catch(() => undefined);
 			this.#webmcp = undefined;
+			await this.#downloads?.close().catch(() => undefined);
+			await this.#httpsErrorsSession?.detach().catch(() => undefined);
+			this.#httpsErrorsSession = undefined;
 			if (payload.mode === "headless" && page && !page.isClosed()) {
 				await page.close().catch(() => undefined);
 			}
@@ -1952,6 +1955,24 @@ export class WorkerCore {
 			});
 			return;
 		}
+		if (this.#interceptionCleanup) {
+			const cleanup = this.#interceptionCleanup;
+			const detail =
+				cleanup.state === "pending"
+					? "is still pending; wait for cleanup to finish before retrying"
+					: `failed; close and reopen this tab before running more code (${cleanup.error instanceof Error ? cleanup.error.message : String(cleanup.error)})`;
+			this.#transport.send({
+				type: "result",
+				id: msg.id,
+				ok: false,
+				error: errorPayload(
+					new ToolError(
+						`Browser request interception cleanup ${detail}. The existing tab and its state were preserved.`,
+					),
+				),
+			});
+			return;
+		}
 		const timeoutSignal = AbortSignal.timeout(msg.timeoutMs);
 		const ac = new AbortController();
 		const runAc = new AbortController();
@@ -1978,7 +1999,6 @@ export class WorkerCore {
 		let completed = false;
 		let returnValue: unknown;
 		let failure: { error: unknown } | undefined;
-		let recoverTab = false;
 		let runPage: RunPageScope | undefined;
 		try {
 			throwIfAborted(signal);
@@ -2083,17 +2103,37 @@ export class WorkerCore {
 			// that navigation because Page.stopLoading also cancels every fetch and subresource
 			// load in flight. A run that merely ended keeps an unawaited goto going.
 			if (ac.signal.aborted && this.#network?.hasPendingMainFrameNavigation()) await this.#stopLoading();
-			try {
-				await runPage?.restoreInterception();
-			} catch (error) {
-				// A finished run keeps its result; the supervisor still recycles the tab.
-				if (completed && active.floatingRejections.length === 0) {
-					recoverTab = true;
-					this.#log("warn", "Browser tab state could not be restored after a completed run", {
-						error: error instanceof Error ? error.message : String(error),
-					});
-				} else {
-					failure = { error };
+			const restoring = runPage?.restoreInterception();
+			if (restoring) {
+				const cleanup: InterceptionCleanup = {
+					promise: restoring,
+					state: "pending",
+				};
+				this.#interceptionCleanup = cleanup;
+				cleanup.promise = restoring.then(
+					() => {
+						if (this.#interceptionCleanup === cleanup) this.#interceptionCleanup = undefined;
+					},
+					error => {
+						cleanup.state = "failed";
+						cleanup.error = error;
+						throw error;
+					},
+				);
+				try {
+					await withTimeout(
+						cleanup.promise,
+						REQUEST_INTERCEPTION_CLEANUP_TIMEOUT_MS,
+						"Browser request interception cleanup is still pending",
+					);
+				} catch (error) {
+					const detail =
+						cleanup.state === "pending"
+							? "is still pending; wait for it to finish before running more code"
+							: `failed: ${error instanceof Error ? error.message : String(error)}; close and reopen the tab before running more code`;
+					const note = `Browser request interception cleanup ${detail}. The worker, tab state, and in-flight page loads were preserved; no tab was reattached or reloaded.`;
+					if (completed && active.floatingRejections.length === 0) output.push({ type: "text", text: note });
+					else failure = { error: new RequestInterceptionCleanupError(note, { cause: failure?.error }) };
 				}
 			}
 			// Rejection observers report through a zero-delay task. Cleanup can finish in
@@ -2123,7 +2163,6 @@ export class WorkerCore {
 					displays: output.finish(),
 					returnValue: cloneSafe(returnValue),
 					screenshots,
-					recoverTab: recoverTab || undefined,
 				},
 			});
 		}
@@ -3143,26 +3182,9 @@ export class WorkerCore {
 		opts: ScreenshotOptions = {},
 	): Promise<string | ScreenshotChangeResult> {
 		const page = this.#requirePage();
-		// Multiple tabs can share one Chromium (sibling headless tabs on a shared
-		// endpoint, cdp/app attach). CDP `Page.captureScreenshot` reads the
-		// compositor surface, which follows the *active* target: a backgrounded
-		// page can stall waiting for a fresh frame (the 20s screenshot timeouts)
-		// or hand back a sibling tab's pixels. Activate first; best-effort so an
-		// already-active or freshly-closed target never fails the capture.
-		//
-		// For a user-driven browser, redundant activation would steal window focus,
-		// so the supervisor disables it after adopting the visible tab. For tabs we
-		// launched, activation before capture avoids sibling-tab pixels on shared
-		// endpoints (a backgrounded page can stall or hand back another tab's frame).
-		//
-		// User-driven tabs (connected/relay) drop the visibility gate instead of
-		// rejecting: `visibilityState` reads "hidden" whenever the user is in another
-		// window — even after `bringToFront()`, which in relay mode merely switches the
-		// user's visible tab — so the check would fail for tabs the user is legitimately
-		// not looking at. The sibling-pixel worry does not apply: a user-driven tab
-		// renders on its own CDP surface, and `Page.captureScreenshot` captures that
-		// tab's content, not window pixels. A silent screenshot is the user's explicit
-		// request, so capture without raising the tab and without requiring visibility.
+		// Owned tabs activate before capture to refresh their compositor surface on shared endpoints.
+		// User-driven tabs stay in place. The capture helper refuses hidden cross-origin frame surfaces
+		// that Chromium may leave unpainted, rather than returning a misleading blank application.
 		await preparePageForScreenshot(page, signal, this.#activateForScreenshot, this.#userDriven);
 		screenshotQuality(opts);
 		const threshold = screenshotThreshold(opts.threshold);
@@ -3267,7 +3289,7 @@ export class WorkerCore {
 		opts: DiffScreenshotOptions = {},
 	): Promise<DiffScreenshotResult> {
 		const page = this.#requirePage();
-		await preparePageForScreenshot(page, signal, this.#activateForScreenshot);
+		await preparePageForScreenshot(page, signal, this.#activateForScreenshot, this.#userDriven);
 		const absoluteBaseline = resolveToCwd(baselinePath, session.cwd);
 		const baseline = await untilAborted(signal, () => fs.promises.readFile(absoluteBaseline));
 		const current = await captureScreenshotBuffer(page, {}, signal, async () => null, "png");
@@ -3416,20 +3438,26 @@ export class WorkerCore {
 		const page = this.#requirePage();
 		const isRegex = pattern instanceof RegExp;
 		const matcher = isRegex ? pattern.source : pattern;
-		const flags = isRegex ? pattern.flags : "";
-		await untilAborted(signal, () =>
-			page.waitForFunction(
-				(m: string, isRe: boolean, fl: string) => {
-					const url = (globalThis as unknown as { location: { href: string } }).location.href;
-					return isRe ? new RegExp(m, fl).test(url) : url.includes(m);
-				},
-				{ timeout, polling: 200, signal },
-				matcher,
-				isRegex,
-				flags,
-			),
-		);
-		return page.url();
+		const regex = isRegex ? new RegExp(matcher, pattern.flags) : null;
+		const deadline = Date.now() + timeout;
+		// A renderer WaitTask can lose its context as navigation commits. Our stealth
+		// runtime acquires the next context lazily, so that poller has nothing to restart
+		// it. CDP's committed frame URL is already available without evaluating either world.
+		for (;;) {
+			throwIfAborted(signal);
+			if (page.isClosed()) throw new ToolError("tab.waitForUrl() failed: browser tab closed");
+			const url = page.url();
+			// Match as a fresh RegExp on each poll, without changing the caller's lastIndex.
+			if (regex) regex.lastIndex = 0;
+			if (regex ? regex.test(url) : url.includes(matcher)) return url;
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) {
+				const error = new Error(`Waiting failed: ${timeout}ms exceeded`);
+				error.name = "TimeoutError";
+				throw error;
+			}
+			await untilAborted(signal, () => Bun.sleep(Math.min(200, remaining)));
+		}
 	}
 
 	async #waitForResponse(
@@ -3550,6 +3578,8 @@ export class WorkerCore {
 		this.#dialogs?.dispose();
 		await this.#network?.close();
 		await this.#downloads?.close();
+		await this.#httpsErrorsSession?.detach().catch(() => undefined);
+		this.#httpsErrorsSession = undefined;
 		await this.#tracing?.dispose();
 		await this.#consoleCapture.detach();
 		this.#emulation?.dispose();

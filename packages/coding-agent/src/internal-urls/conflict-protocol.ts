@@ -28,7 +28,7 @@ export class ConflictProtocolHandler implements ProtocolHandler {
 	readonly scheme = "conflict";
 	readonly spec: SchemeSpec = {
 		backing: "virtual",
-		selectors: "none",
+		selectors: "lines",
 		immutable: false,
 		// Verbatim: `conflict://*` per-id directives must be parsed before hashline
 		// stripping, so the handler strips copied prefixes itself.

@@ -104,6 +104,8 @@ interface JsSession {
 	packageEnvironment?: string;
 	worker: JsEvalWorkerHandle;
 	state: "alive" | "dead";
+	/** Carried across an unexpected restart until the first replacement cell reports it. */
+	lossNotice?: string;
 	stateSessions: Set<ToolSession>;
 	pending: Map<string, PendingRun>;
 	pendingSnapshots: Map<string, PromiseWithResolvers<Extract<WorkerOutbound, { type: "shadow-snapshot" }>>>;
@@ -205,6 +207,10 @@ export async function executeInVmContext(options: {
 		options.timeoutMs,
 		options.ownerId,
 	);
+	if (session.lossNotice) {
+		options.runState.onText?.(`${session.lossNotice}\n`);
+		session.lossNotice = undefined;
+	}
 	const result = await runOnce(session, options);
 	if (session.state === "alive" && path.isAbsolute(options.filename)) {
 		updateEvalState(options.session, {
@@ -641,6 +647,7 @@ async function acquireSession(
 			packageEnvironment: snapshot.packageEnvironment,
 			worker,
 			state: "alive",
+			lossNotice: existing?.lossNotice,
 			stateSessions: new Set(),
 			pending: new Map(),
 			pendingSnapshots: new Map(),
@@ -877,9 +884,13 @@ function settlePending(session: JsSession, msg: Extract<WorkerOutbound, { type: 
 }
 
 async function killSessionFor(session: JsSession, error: Error, options: { force: boolean }): Promise<void> {
-	if (sessions.get(session.sessionKey) === session) {
-		sessions.delete(session.sessionKey);
+	if (session.state === "alive") {
+		session.lossNotice =
+			`[JS kernel state lost] The retained JS worker stopped (${error.message}); ` +
+			"the next cell runs in a new kernel and variables from earlier cells are gone. Reload setup before reusing them.";
 	}
+	// Keep the dead session as the restart tombstone. Explicit reset/disposal
+	// removes it; an automatic replacement carries its notice forward.
 	await killSession(session, error, options);
 }
 

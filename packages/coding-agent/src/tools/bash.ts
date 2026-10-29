@@ -43,6 +43,7 @@ import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { resolveEvalBackends } from "./eval-backends";
 import { invalidateGithubCacheForBashCommand } from "./gh-cache-invalidation";
 import { serviceLogs, startService, type ServiceReady } from "../launch/services";
+import { CommandDeadline, CommandStoppedError } from "../subprocess/command-deadline";
 import { isFindEnabled } from "./jfind";
 import { formatArtifactErrorNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { formatOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
@@ -808,6 +809,9 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		if (options.notices?.length) {
 			lines.push(...options.notices, "");
 		}
+		if (this.session.asyncJobManager?.getJob(jobId)?.process?.phase?.() === "starting") {
+			lines.push("Launch pending (starting); no command process or output observed yet.", "");
+		}
 		lines.push(formatBackgroundNotice(jobId, timeoutSec));
 		return {
 			content: [{ type: "text", text: lines.join("\n") }],
@@ -845,6 +849,8 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		let latestText = "";
 		let latestProgressDetails: BashProgressDetails | undefined;
 		let backgrounded = !options.foreground;
+		let observedExecution = false;
+		const deadlineAt = options.timeoutMs === undefined ? undefined : performance.now() + options.timeoutMs;
 		const completion = Promise.withResolvers<ManagedBashJobCompletion>();
 
 		const jobId = manager.register(
@@ -865,13 +871,16 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					});
 					await reported;
 				};
-				const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
 				const wallTimeStart = performance.now();
+				const launchDeadline = new CommandDeadline(options.timeoutMs, runSignal, deadlineAt);
 				try {
+					const { path: artifactPath, id: artifactId } =
+						(await launchDeadline.wait(() => this.session.allocateOutputArtifact?.("bash"))) ?? {};
 					const result = await executeBash(options.command, {
 						cwd: options.commandCwd,
 						sessionKey: `${this.session.getSessionId?.() ?? ""}:async:${jobId}`,
 						timeout: options.timeoutMs ?? 0,
+						deadlineAt,
 						signal: runSignal,
 						gitGuard: cfgBashGitGuard.get(this.session.settings),
 						// Bound to the job's own signal: the job outlives the call that started it.
@@ -879,6 +888,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 						artifactPath,
 						artifactId,
 						onPreview: text => {
+							observedExecution = true;
 							void report(text, { output: text, async: { state: "running", jobId, type: "bash" } });
 						},
 						onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
@@ -918,14 +928,25 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					});
 					return finalText;
 				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
-					completion.resolve({ kind: "failed", error });
+					const failure =
+						error instanceof CommandStoppedError
+							? new ToolError(
+									error.reason === "timeout"
+										? `Command timed out after ${options.timeoutSec} seconds during launch preparation; command was not launched`
+										: "Command cancelled during launch preparation; command was not launched",
+								)
+							: error;
+					const message = failure instanceof Error ? failure.message : String(failure);
+					completion.resolve({ kind: "failed", error: failure });
 					// Only a cancel aborts the job's own signal (deadlines end in a timed-out result).
 					await report(message, {
 						...latestProgressDetails,
 						async: { state: runSignal.aborted ? "cancelled" : "failed", jobId, type: "bash" },
 					});
-					throw error;
+					throw failure;
+				} finally {
+					pids = NO_PIDS;
+					launchDeadline.dispose();
 				}
 			},
 			{
@@ -934,7 +955,15 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				scopeId: this.session.getAgentScopeId?.() ?? undefined,
 				timeoutMs: options.timeoutMs,
 				foreground: options.foreground,
-				process: { command: options.command, cwd: options.commandCwd, pids: () => pids() },
+				process: {
+					command: options.command,
+					cwd: options.commandCwd,
+					pids: () => pids(),
+					phase: () => {
+						observedExecution ||= pids().length > 0;
+						return observedExecution ? "running" : "starting";
+					},
+				},
 			},
 		);
 
@@ -1129,6 +1158,8 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		const maxTimeout = cfgToolsMaxTimeout.get(this.session.settings);
 		const timeoutSec = timeoutDisabled ? undefined : clampTimeout("bash", requestedTimeoutSec, maxTimeout);
 		const timeoutMs = timeoutSec === undefined ? undefined : timeoutSec * 1000;
+		const commandWallTimeStart = performance.now();
+		const deadlineAt = timeoutMs === undefined ? undefined : commandWallTimeStart + timeoutMs;
 		if (timeoutSec !== undefined) {
 			const timeoutClampNotice = formatTimeoutClampNotice(requestedTimeoutSec, timeoutSec, maxTimeout);
 			if (timeoutClampNotice) pendingNotices.push(timeoutClampNotice);
@@ -1243,15 +1274,49 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		// `callerTimeoutMs` clamps the direnv load to a positive command timeout
 		// (the backend's own timeout is installed only after this await), matching
 		// the executeBash branch so a cold `.envrc` can't outlast a short call.
-		const backendPreflight =
-			bridgeTerminalAvailable || canUseInteractiveBashPty(pty === true, ctx)
-				? await applyDirenvPreflight(command, commandCwd, {
-						signal,
+		const preparationDeadline = new CommandDeadline(timeoutMs, signal, deadlineAt);
+		let backendPreflight: { command: string; env: Record<string, string> | undefined } | undefined;
+		let artifact: { path?: string; id?: string } | undefined;
+		try {
+			if (bridgeTerminalAvailable || canUseInteractiveBashPty(pty === true, ctx)) {
+				backendPreflight = await preparationDeadline.wait(() =>
+					applyDirenvPreflight(command, commandCwd, {
+						signal: preparationDeadline.signal,
 						timeoutMs: cfgBashDirenvLoadTimeoutMs.get(this.session.settings),
-						callerTimeoutMs: timeoutMs,
+						callerTimeoutMs: preparationDeadline.remainingMs,
 						direnvSetting: cfgBashDirenv.get(this.session.settings),
-					})
-				: undefined;
+					}),
+				);
+			}
+			if (!bridgeTerminalAvailable) {
+				artifact = await preparationDeadline.wait(() => this.session.allocateOutputArtifact?.("bash"));
+			}
+			preparationDeadline.throwIfStopped();
+		} catch (error) {
+			if (!(error instanceof CommandStoppedError)) throw error;
+			return this.#buildCompletedResult(
+				{
+					output:
+						error.reason === "timeout"
+							? `[Command timed out after ${timeoutSec} seconds during launch preparation; command was not launched]\n`
+							: "[Command cancelled during launch preparation; command was not launched]\n",
+					exitCode: undefined,
+					cancelled: true,
+					timedOut: error.reason === "timeout",
+					truncated: false,
+					totalLines: 0,
+					totalBytes: 0,
+					outputLines: 0,
+					outputBytes: 0,
+				},
+				timeoutSec,
+				{ requestedTimeoutSec, notices: pendingNotices, wallTimeMs: performance.now() - commandWallTimeStart },
+			);
+		} finally {
+			preparationDeadline.dispose();
+		}
+		const executionTimeoutMs =
+			deadlineAt === undefined ? undefined : Math.max(1, Math.ceil(deadlineAt - performance.now()));
 
 		// Route through the client terminal when the client advertises the terminal capability.
 		// Skip when pty=true (PTY needs the local terminal UI) or the cwd is a URL
@@ -1266,7 +1331,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				throw new ToolAbortError("Command aborted");
 			}
 
-			const bridgeWallTimeStart = performance.now();
+			const bridgeWallTimeStart = commandWallTimeStart;
 			const bridgeGraphics = new TerminalSnapshotDecoder();
 			const killGraceMs = 1000;
 			const outputSnapshotGraceMs = 2000;
@@ -1278,7 +1343,9 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			const { promise: timeoutPromise, resolve: resolveTimeout } = Promise.withResolvers<{
 				kind: "timeout";
 			}>();
-			const timeoutTimer = timeoutMs ? setTimeout(() => resolveTimeout({ kind: "timeout" }), timeoutMs) : undefined;
+			const timeoutTimer = executionTimeoutMs
+				? setTimeout(() => resolveTimeout({ kind: "timeout" }), executionTimeoutMs)
+				: undefined;
 			const { promise: abortedP, resolve: resolveAborted } = Promise.withResolvers<void>();
 			let handle: ClientBridgeTerminalHandle | undefined;
 			let killStarted = false;
@@ -1528,14 +1595,13 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			}
 		}
 
-		// Allocate artifact for truncated output storage
-		const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
+		const { path: artifactPath, id: artifactId } = artifact ?? {};
 
 		const interactiveUi = canUseInteractiveBashPty(pty === true, ctx) ? ctx?.ui : undefined;
 		if (pty && !interactiveUi) {
 			pendingNotices.push("pty requested but unavailable in this environment; ran without a terminal");
 		}
-		const wallTimeStart = performance.now();
+		const wallTimeStart = commandWallTimeStart;
 		const result: BashResult | BashInteractiveResult = interactiveUi
 			? await runInteractiveBashPty(interactiveUi, {
 					// PTY bypasses executeBash, so feed it the direnv-transformed
@@ -1543,7 +1609,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					// branch runs, since both gate on canUseInteractiveBashPty).
 					command: backendPreflight?.command ?? command,
 					cwd: commandCwd,
-					timeoutMs,
+					timeoutMs: executionTimeoutMs,
 					signal,
 					env: backendPreflight?.env,
 					artifactPath,
@@ -1555,6 +1621,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					cwd: commandCwd,
 					sessionKey: this.session.getSessionId?.() ?? undefined,
 					timeout: timeoutMs ?? 0,
+					deadlineAt,
 					signal,
 					gitGuard: cfgBashGitGuard.get(this.session.settings),
 					filesystem: this.#urlFilesystem(signal, approvalTier).shellFilesystem(),

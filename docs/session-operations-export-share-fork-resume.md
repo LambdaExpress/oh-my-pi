@@ -297,6 +297,11 @@ Placement commands autodetect tmux, Zellij, Herdr, CMUX, or Orca from the termin
 Plain terminals, `screen`, and `wmux` cannot host this fork placement and receive
 an explicit error; use bare `/fork` there instead.
 
+Herdr pane and tab forks work on Windows using built-in Windows PowerShell to
+start the child in the destination's existing console. No Git Bash or Unix `env`
+executable is required; Unicode paths, spaces, and quoted or empty arguments are
+preserved. POSIX hosts continue to use `/bin/sh`.
+
 ### Preconditions and immediate guards
 
 - Bare `/fork` is rejected with a warning while the agent is streaming.

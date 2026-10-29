@@ -53,8 +53,12 @@ committed block lifecycle for the coding agent. Blocks are mutable by default. A
 explicitly opt into append-only presentation and publish only a monotonically
 extending prefix of complete stable semantic rows. Each row re-renders at the
 current width; open Markdown and the current partial suffix remain mutable. Under pressure,
-only the current logical head can emit enough stable rows to relieve overflow without finalizing. Final
-retirement writes only its un-emitted suffix.
+only the first eligible head after transparent ordering markers can emit stable
+rows without finalizing. A semantic publication can span more than a viewport:
+its offscreen physical rows may retire while the rest of that publication stays
+live. Retiring finalized predecessors and that stable head prefix is one history
+transaction, so a coalesced stream update cannot expose a gap between them.
+Final retirement writes only the un-emitted suffix.
 
 ## 2. Rendering a frame
 
@@ -83,6 +87,9 @@ Ordinary renders never audit or rewrite terminal history.
 The provider also keeps its live rows, status chrome, and editor contiguous on
 ordinary contractions. The writer retains the native-history anchor and clears
 the freed rows below the editor; no synthetic band is inserted above the input.
+Retirement and viewport layout must use the same current chrome measurement,
+including growing loaders, subagent panels, and drafts. No later viewport crop
+may silently remove transcript rows that have not entered terminal history.
 
 Visible overlays are screen-coordinate content. They composite over the
 viewport and never become history. Showing, updating, or closing an overlay

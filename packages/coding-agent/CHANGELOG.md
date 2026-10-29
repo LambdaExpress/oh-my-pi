@@ -10,6 +10,29 @@
 
 ### Fixed
 
+- Fixed Herdr pane and tab forks on Windows, preserving native command arguments and child configuration scope without requiring Unix shell utilities.
+- Fixed Alt+O leaving earlier tool cards expanded in terminal scrollback while a later run is active; completed-run toggles now replay history immediately while preserving live output and editor drafts.
+- Fixed conflict-block ranges and local archive-member URLs, and kept bounded raw reads free of spurious pagination and repetition notices.
+- Fixed oversized compact JSON queries returning an empty preview without a recoverable full-output artifact.
+- Fixed C# bare reads exposing executable bodies; declaration projections now identify precise source ranges without granting edit access to hidden lines.
+- Fixed PyPI release URLs silently showing the latest version and PDF range reads treating failed fetches as short documents.
+- Fixed recursive SSH directory searches and directory-creation races while preserving native regex, filtering and pagination behavior.
+- Fixed fuzzy patches discarding unmatched structural characters and remote notebook JSON edits rejecting non-ASCII URLs or rewriting unrelated bytes.
+- Fixed language-server requests crossing Git worktree boundaries, shared initialization cancellation affecting unrelated callers, and C# reload retaining stale processes; C# results now disclose project-graph limitations.
+- Fixed finite shell deadlines excluding launch preparation, background commands reporting execution before launch, and Windows broker workers exiting before binding their named pipes.
+- Fixed watched task completions being dropped or consumed before reaching the parent; concurrent waits and peer messages retain exactly-once result delivery.
+- Fixed browser role selectors missing open shadow roots and pointer helpers silently accepting unconfirmed clicks; navigation waits survive document replacement.
+- Fixed managed browser Worker scripts being rewritten to CSP-blocked Blob URLs.
+- Fixed HTTPS certificate bypass expiring before navigation and interception cleanup resetting live browser tabs.
+- Fixed native Blob downloads being omitted from inventory and relay tracking falsely reporting success; background cross-origin screenshots now disclose capture limitations without stealing focus.
+- Fixed JavaScript Eval losing retained state after late browser-call failures without warning, and Windows Python Eval dropping UTF-8 child output or hiding thread decoding errors.
+- Fixed MCP resource readiness truncating configured cold-start budgets and stdio startup failures omitting available stderr and exit status.
+- Fixed interrupted SSH transfers losing source-size diagnostics and recoverable partial stages while preserving source files and existing destinations.
+- Fixed SSH uploads and downloads failing immediately on transient preflight disconnects; read-only preparation now makes up to three attempts with cancellable backoff while authentication and host-key failures stop immediately.
+- Fixed deleted managed skills remaining advertised and edited skill frontmatter being served from a permanent content cache.
+- Fixed finite ADB log dumps exceeding their physical-line cap in both inline output and saved artifacts.
+- Fixed long answers appearing truncated during streaming and recovering only after completion, including when completed-run collapse is enabled and folded tool rows precede the answer.
+- Fixed tool cards visually merging or losing output while status rows, subagent panels, or editor drafts grow; collapsing panels keeps the input adjacent to the remaining transcript without rewriting terminal history.
 - Fixed raw reads treating a terminal newline as an extra addressable line; bounded EOF and tail reads preserve the original BOM and line endings.
 - Fixed plan-mode MCP discovery losing explicit tool permissions or exposing write tools during mode transitions.
 - Fixed LSP file renames waiting for unrelated project indexing or modifying files after the caller's deadline.

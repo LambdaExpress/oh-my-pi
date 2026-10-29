@@ -769,19 +769,21 @@ describe("GrepTool internal URL resolution", () => {
 		await expect(tool.execute("dir-search", { pattern: "file\\.txt", path: "dirstub://host/dir" })).rejects.toThrow();
 	});
 
-	it("rejects an ssh:// directory in search without draining a remote listing", async () => {
+	it("searches an empty ssh:// directory through structured entries", async () => {
 		vi.spyOn(capability, "loadCapability").mockResolvedValue({
 			items: [],
 			all: [],
 			warnings: [],
 			providers: [],
 		} as CapabilityResult<unknown>);
-		vi.spyOn(sshFileTransfer, "readRemoteFile").mockRejectedValue(new Error("Is a directory"));
+		const readSpy = vi.spyOn(sshFileTransfer, "readRemoteFile").mockRejectedValue(new Error("Is a directory"));
 		vi.spyOn(sshFileTransfer, "statRemotePath").mockResolvedValue("directory");
 		const listSpy = vi.spyOn(sshFileTransfer, "listRemoteDir").mockResolvedValue([]);
 		const tool = new GrepTool(createSession());
-		await expect(tool.execute("ssh-dir-search", { pattern: "x", path: "ssh://h/etc" })).rejects.toThrow();
-		expect(listSpy).not.toHaveBeenCalled();
+		const result = await tool.execute("ssh-dir-search", { pattern: "x", path: "ssh://h/etc" });
+		expect(getResultText(result)).toContain("No matches found");
+		expect(listSpy).toHaveBeenCalled();
+		expect(readSpy).not.toHaveBeenCalled();
 	});
 
 	it("searches a session SSH alias with the same credential-bearing target", async () => {

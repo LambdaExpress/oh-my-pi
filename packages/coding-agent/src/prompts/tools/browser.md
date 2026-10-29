@@ -24,6 +24,7 @@ Drive real Chromium tabs from JavaScript or Python Eval with the global `browser
   - Clipboard: `clipboardRead()` returns `{text, source}`; `clipboardWrite(text)`, `clipboardCopy()`, and `clipboardPaste()` return `{source}` (`page` or write/read-only `shim` fallback).
   - Storage: `cookies`, `setCookies`, `clearCookies`, `storage`, `setStorage`, `clearStorage`, `saveState`, `loadState`; cookie imports accept objects, raw `Cookie:` headers, DevTools cURL dumps, or JSON arrays.
   - Initialization: `addInitScript`, `removeInitScript`, `initScripts`; downloads: `waitForDownload`, `downloads`.
+  - Combine a download wait and its triggering action inside one `tab.run`. Unsupported relay tracking reports a capability error; inventory never scans download history.
   - Diagnostics: `console`, `errors`, `clearConsole`, `traceStart`, `traceStop`, `profileStart`, `profileStop`, `metrics`.
   - Recording: `recordStart(path, options?)`, `recordStop`, `recordRestart(path, options?)`, `recording`; `.mp4` uses H.264 and `.webm` uses VP9/VP8, with optional cursor overlay and changed-frame contact sheet.
   - Web Vitals + React: `vitals`, `reactEnable` (installs the hook and reloads), `reactTree`, `reactInspect`, `reactRenders`, `reactSuspense`; call `reactEnable` before other `react*` helpers.
@@ -42,6 +43,7 @@ Drive real Chromium tabs from JavaScript or Python Eval with the global `browser
 - Navigation and re-renders invalidate observed ids and refs. Re-observe, then act in the same cell. Use `pushState(url)` for SPA navigation without a document load.
 - Use `tab.select` for `<select>` elements; `tab.fill` does not support them.
 - Raw `page.setRequestInterception` and `page.on("request")` inside `tab.run` coexist with persistent `tab.route` handlers and are cleaned up after that run; `tab.route` persists until `tab.unroute` or tab close.
+- Interception cleanup errors preserve tab state and remain explicit. Background connected/relay captures covering cross-origin frames require foregrounding the tab; screenshots never activate it implicitly.
 - `browser.open({ allowed_domains: […] })` allows exact hosts and `*.example.com` patterns (including the bare domain), aborting other navigation, subresource, fetch, and WebSocket requests.
 
 Application modes:

@@ -9,6 +9,7 @@ import type {
 	LiveSteerClaim,
 	LiveSteering,
 	Model,
+	ModelSpec,
 	ProviderSessionState,
 	ToolResultMessage,
 	UserMessage,
@@ -86,7 +87,10 @@ function installSocket(onFrame: (frame: Frame, socket: ScriptedWebSocket) => voi
 	global.WebSocket = ScriptedWebSocket as unknown as typeof WebSocket;
 }
 
-function createGpt6Model(): Model<"openai-codex-responses"> {
+/** Protocol fixtures explicitly opt in; production native lanes keep steering disabled. */
+function createGpt6Model(
+	compat: ModelSpec<"openai-codex-responses">["compat"] = { supportsSteering: true },
+): Model<"openai-codex-responses"> {
 	return buildModel({
 		id: "gpt-6-sol",
 		name: "GPT-6 Sol",
@@ -99,6 +103,7 @@ function createGpt6Model(): Model<"openai-codex-responses"> {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 272000,
 		maxTokens: 128000,
+		compat,
 	});
 }
 
@@ -510,6 +515,81 @@ describe("codex live steering", () => {
 });
 
 describe("codex native steering protocol", () => {
+	it("defers native-lane steering without interrupting the answer or duplicating queued input", async () => {
+		const model = createGpt6Model({});
+		const state = new Map<string, ProviderSessionState>();
+		const steering = oneShotSteering("correct course");
+		const user: UserMessage = { role: "user", content: "Start work", timestamp: 1000 };
+		let createCount = 0;
+		installSocket((frame, socket) => {
+			if (frame.type === "response.steer") {
+				socket.emit({
+					type: "error",
+					error: {
+						code: "unsupported_native_inflight_message",
+						message: "The experimental native turn lane cannot accept stateful WebSocket messages.",
+					},
+				});
+				queueMicrotask(() => {
+					socket.readyState = ScriptedWebSocket.CLOSED;
+					socket.onclose?.(new CloseEvent("close", { code: 1000 }));
+				});
+				return;
+			}
+			createCount++;
+			const responseId = `resp_${createCount}`;
+			socket.emit(
+				{ type: "response.created", response: { id: responseId } },
+				...messageFrames(`msg_${createCount}`, createCount === 1 ? "Original answer" : "Correction applied"),
+			);
+			if (createCount > 1) {
+				socket.emit({
+					type: "response.completed",
+					response: { id: responseId, status: "completed", usage: USAGE },
+				});
+			}
+		});
+
+		try {
+			const firstStream = streamOpenAICodexResponses(
+				model,
+				{ systemPrompt: SYSTEM, messages: [user] },
+				options(state, steering.source),
+			);
+			const deltas: string[] = [];
+			for await (const event of firstStream) {
+				if (event.type !== "text_delta") continue;
+				deltas.push(event.delta);
+				ScriptedWebSocket.instances[0]!.emit({
+					type: "response.completed",
+					response: { id: "resp_1", status: "completed", usage: USAGE },
+				});
+			}
+			const first = await firstStream.result();
+			expect(first.stopReason).toBe("stop");
+			expect(first.responseId).toBe("resp_1");
+			expect(deltas).toEqual(["Original answer"]);
+			expect(steering.settled()).toBeUndefined();
+			expect(steers()).toEqual([]);
+
+			const correction: UserMessage = { role: "user", content: "correct course", timestamp: 1001 };
+			const second = await streamOpenAICodexResponses(
+				model,
+				{ systemPrompt: SYSTEM, messages: [user, first, correction] },
+				options(state),
+			).result();
+			expect(second.stopReason).toBe("stop");
+			expect(second.content).toEqual([expect.objectContaining({ type: "text", text: "Correction applied" })]);
+			expect(creates()).toHaveLength(2);
+			expect(creates()[1]?.previous_response_id).toBe("resp_1");
+			expect(creates()[1]?.input).toEqual([
+				{ role: "user", content: [{ type: "input_text", text: "correct course" }] },
+			]);
+		} finally {
+			for (const provider of state.values()) provider.close();
+		}
+	});
+
 	it.each(["response scoped", "wrong target"] as const)(
 		"does not replay an admitted response after an uncorrelated %s native error",
 		async kind => {

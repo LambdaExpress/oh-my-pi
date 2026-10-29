@@ -1820,17 +1820,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			run.expanded = expanded;
 		}
 		this.rebuildChatFromMessages();
-		// `resetDisplay()` clears and replays the whole native scrollback tape.
-		// While the active run is still changing, a long expanded transcript can
-		// race the next ConPTY paint and leave Windows Terminal showing only a
-		// suffix until another destructive replay. Keep the live tail attached and
-		// repaint it non-destructively; an idle Alt+O or the next input checkpoint
-		// still performs the clean scrollback rebuild.
-		if (this.viewSession.isStreaming) {
-			this.ui.refreshDisplay();
-		} else {
-			this.ui.resetDisplay();
-		}
+		// This explicit gesture must replace retired native history even while
+		// a later run is active; a viewport refresh leaves old tool cards visible.
+		this.ui.resetDisplay();
 	}
 	invalidatePendingFocus(): void {
 		this.#focusController.invalidatePendingFocus();
@@ -2390,32 +2382,6 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.hookWidgetContainerBelow,
 			],
 			{
-				// Roots that collapse without new transcript output must not raise the
-				// post-run chrome floor: user-driven ones (editor drafts, dialogs and
-				// selectors, staged attachments, reports, queued messages, dismissible
-				// panels and the error banner). Any root listed in neither set counts
-				// as persistent: once it holds its height after a run the floor rises
-				// to it, and its later collapse floats the editor until output fills
-				// in. Classify every new root that can collapse on its own.
-				transientChrome: [
-					this.editorContainer,
-					this.attachmentChipsContainer,
-					this.reportContainer,
-					this.pendingMessagesContainer,
-					this.btwContainer,
-					this.omfgContainer,
-					this.cleanseContainer,
-					this.errorBannerContainer,
-				],
-				// HUDs that clear themselves on a timer or registry change (todos,
-				// background subagents, model cycle, progress). Their first paint can be
-				// their tallest (a restored todo list on resume), so it is never a baseline.
-				selfClearingChrome: [
-					this.todoContainer,
-					this.subagentContainer,
-					this.modelCycleContainer,
-					this.progressHudContainer,
-				],
 				// Natively the HUD pills lead the dock, queued messages sit between
 				// the working row and the composer, and the attachment chips live
 				// inside the composer.

@@ -2,7 +2,7 @@ import { inflateSync } from "node:zlib";
 
 import { untilAborted } from "@oh-my-pi/pi-utils";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-import type { ElementHandle, ElementScreenshotOptions, Page } from "puppeteer-core";
+import type { BoundingBox, ElementHandle, ElementScreenshotOptions, Frame, Page, Realm } from "puppeteer-core";
 import type { ScreenshotArea } from "../../utils/image-resize";
 import { encodeRawPng } from "../../utils/png-encode";
 
@@ -127,6 +127,88 @@ export function screenshotQuality(opts: ScreenshotOptions): number | undefined {
 	return opts.quality;
 }
 
+/** about:blank/srcdoc inherit their embedding document's origin. */
+function frameOrigin(frame: Frame): string | undefined {
+	const url = frame.url();
+	if (url === "about:blank" || url === "about:srcdoc" || url === "") {
+		const parent = frame.parentFrame();
+		return parent ? frameOrigin(parent) : undefined;
+	}
+	try {
+		return new URL(url).origin;
+	} catch {
+		return undefined;
+	}
+}
+
+function hasIsolatedRealm(frame: Frame): frame is Frame & { isolatedRealm(): Realm } {
+	return "isolatedRealm" in frame && typeof frame.isolatedRealm === "function";
+}
+
+/**
+ * Chromium can return a successful but unpainted OOPIF surface for a background tab. Do not silently turn
+ * that into an empty application, or activate a user's tab/window just to make the compositor paint it.
+ */
+async function assertScreenshotFramesAvailable(
+	page: Page,
+	opts: ScreenshotOptions,
+	signal: AbortSignal | undefined,
+	clip?: BoundingBox,
+): Promise<void> {
+	const crossOrigin = page.frames().filter(frame => {
+		const parent = frame.parentFrame();
+		const origin = frameOrigin(frame);
+		return parent !== null && origin !== undefined && origin !== frameOrigin(parent);
+	});
+	if (crossOrigin.length === 0) return;
+	// Stealth scripts intentionally spoof main-world visibility. The browser-owned isolated world keeps
+	// Chromium's real state, including when a user is looking at a different tab.
+	const mainFrame = page.mainFrame();
+	if (!hasIsolatedRealm(mainFrame)) {
+		throw new ToolError(
+			"Cannot determine real tab visibility before screenshot capture: isolated realm is unavailable",
+		);
+	}
+	const realm = mainFrame.isolatedRealm();
+	if (!realm || typeof realm.evaluate !== "function") {
+		throw new ToolError(
+			"Cannot determine real tab visibility before screenshot capture: isolated realm cannot evaluate",
+		);
+	}
+	const visible = await untilAborted(signal, () => realm.evaluate(() => document.visibilityState === "visible"));
+	if (visible) return;
+	const area =
+		clip ??
+		(opts.fullPage
+			? undefined
+			: await untilAborted(signal, () =>
+					page.evaluate(() => ({ x: 0, y: 0, width: innerWidth, height: innerHeight })),
+				));
+	for (const frame of crossOrigin) {
+		const element = await untilAborted(signal, () => frame.frameElement());
+		if (!element)
+			throw new ToolError("A cross-origin iframe disappeared before screenshot capture; retry the screenshot");
+		try {
+			const box = await untilAborted(signal, () => element.boundingBox());
+			if (!box || box.width <= 0 || box.height <= 0) continue;
+			if (
+				area &&
+				(box.x + box.width <= area.x ||
+					box.y + box.height <= area.y ||
+					box.x >= area.x + area.width ||
+					box.y >= area.y + area.height)
+			) {
+				continue;
+			}
+			throw new ToolError(
+				"Cannot reliably capture a background tab containing a cross-origin iframe. Switch to this tab in Chrome and retry the screenshot; no tab or window was activated.",
+			);
+		} finally {
+			await element.dispose().catch(() => undefined);
+		}
+	}
+}
+
 /**
  * Capture a page or element screenshot without crossing the worker boundary.
  * Puppeteer hands back a plain `Uint8Array`, not a Node `Buffer`: encode it with
@@ -160,11 +242,14 @@ export async function captureScreenshotBuffer(
 				// Avoid Puppeteer's IntersectionObserver wait while retaining its clip calculation.
 				scrollIntoView: false,
 			};
+			const clip = await untilAborted(signal, () => handle.boundingBox());
+			if (clip) await assertScreenshotFramesAvailable(page, opts, signal, clip);
 			return await untilAborted(signal, () => handle.screenshot(shotOptions));
 		} finally {
 			await handle.dispose().catch(() => undefined);
 		}
 	}
+	await assertScreenshotFramesAvailable(page, opts, signal);
 	return await untilAborted(signal, () =>
 		page.screenshot({ type: format, quality, fullPage: opts.fullPage ?? false }),
 	);

@@ -324,8 +324,8 @@ export interface ResolveContext {
 	/**
 	 * When set, handlers that would otherwise materialize an expensive directory
 	 * listing (e.g. the ssh:// handler draining a full remote `ls`) instead return
-	 * the directory shape (`isDirectory: true`) with empty content. `search`/`find`
-	 * reject directory resources, so they never need the listing.
+	 * the directory shape (`isDirectory: true`) with empty content. Filesystem
+	 * walkers obtain structured entries through `readDir` instead of listing text.
 	 */
 	skipDirectoryListing?: boolean;
 }
@@ -391,6 +391,12 @@ export interface ProtocolHandler {
 	 * this to fail before reading directories or special files through a handler.
 	 */
 	stat?(url: InternalUrl, context?: ResolveContext): Promise<"file" | "directory" | "other" | "missing">;
+	/**
+	 * Immediate children of a remote/virtual directory, without rendering a
+	 * listing or materializing descendants. Native walkers apply their own
+	 * ignore rules, glob filters, cancellation, and search limits.
+	 */
+	readDir?(url: InternalUrl, context?: ResolveContext): Promise<readonly { name: string; isDirectory: boolean }[]>;
 	/**
 	 * Optional stable identity for resources that do not have a local backing
 	 * filesystem path. Snapshot-aware tools use this key instead of

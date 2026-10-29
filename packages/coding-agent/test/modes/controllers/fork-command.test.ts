@@ -173,10 +173,6 @@ describe("/fork terminal placement", () => {
 		const request = launchTerminal.mock.calls[0]?.[0];
 		expect(request).toMatchObject({ multiplexer: "tmux", placement: "pane" });
 		const command = request?.command ?? [];
-		expect(command[0]).toBe("env");
-		expect(command).toContain("PI_CODING_AGENT_DIR=/user/agent");
-		expect(command).toContain("OMP_PROFILE=active-profile");
-		expect(command).toContain("PI_PROFILE=active-profile");
 		expect(command.slice(command.indexOf("omp-entry") + 1)).toEqual([
 			"--profile",
 			"active-profile",
@@ -215,27 +211,6 @@ describe("/fork terminal placement", () => {
 		expect(appArgs[appArgs.indexOf("--prompt-cache-key") + 1]).toBe("pinned-parent-key");
 	});
 
-	it("unsets scope variables the parent lacks instead of exporting them empty", async () => {
-		const sessionsDir = path.join(tempDirectory, "env sessions");
-		const { controller, launchTerminal } = createContext({
-			activeProfile: null,
-			environment: () =>
-				({ TMUX: "server,1,0", TMUX_PANE: "%1", PI_CODING_AGENT_SESSION_DIR: sessionsDir }) as NodeJS.ProcessEnv,
-		});
-		await controller.handleForkCommand("pane");
-		const command = launchTerminal.mock.calls[0]?.[0].command ?? [];
-		const envArgs = command.slice(0, command.indexOf("omp-entry"));
-		for (const name of ["XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "OMP_PROFILE", "PI_PROFILE"]) {
-			expect(envArgs[envArgs.indexOf(name) - 1]).toBe("-u");
-			expect(envArgs.some(arg => arg.startsWith(`${name}=`))).toBe(false);
-		}
-		expect(envArgs).toContain(`PI_CODING_AGENT_SESSION_DIR=${sessionsDir}`);
-		// `env` rejects `-u` after the first assignment.
-		const lastUnset = envArgs.lastIndexOf("-u");
-		const firstAssignment = envArgs.findIndex(arg => arg.includes("="));
-		expect(lastUnset).toBeLessThan(firstAssignment);
-	});
-
 	it("replaces stale profile and session-source arguments with current values", async () => {
 		const { ctx, launchTerminal } = createContext();
 		const controller = new CommandController(ctx, {
@@ -256,7 +231,7 @@ describe("/fork terminal placement", () => {
 		expect(command.slice(-2)).toEqual(["--fork", path.resolve(sourceSessionFile)]);
 	});
 
-	it("uses the active model and effective config environment instead of startup values", async () => {
+	it("uses the active model instead of stale startup provider and profile values", async () => {
 		const agentDir = path.join(tempDirectory, "custom agent");
 		const dataDir = path.join(tempDirectory, "xdg data");
 		const stateDir = path.join(tempDirectory, "xdg state");
@@ -295,11 +270,6 @@ describe("/fork terminal placement", () => {
 		await controller.handleForkCommand("pane");
 
 		const command = launchTerminal.mock.calls[0]?.[0].command ?? [];
-		expect(command).toContain(`PI_CODING_AGENT_DIR=${agentDir}`);
-		expect(command).toContain(`PI_CONFIG_FILES=${configFiles}`);
-		expect(command).toContain(`XDG_DATA_HOME=${dataDir}`);
-		expect(command).toContain(`XDG_STATE_HOME=${stateDir}`);
-		expect(command).toContain(`XDG_CACHE_HOME=${cacheDir}`);
 		expect(command).not.toContain("/stale/server/agent");
 		expect(command).not.toContain("stale-server-profile");
 		expect(command).not.toContain("old-profile");
@@ -312,7 +282,7 @@ describe("/fork terminal placement", () => {
 		expect(command.slice(-2)).toEqual(["--fork", path.resolve(sourceSessionFile)]);
 	});
 
-	it("launches after a cwd move with the original overlay and configured thinking selector", async () => {
+	it("uses the moved cwd and live thinking selector without replaying stale startup flags or credentials", async () => {
 		const oldCwd = path.join(tempDirectory, "old project");
 		const newCwd = path.join(tempDirectory, "new project");
 		const agentDir = path.join(tempDirectory, "agent");
@@ -350,10 +320,7 @@ describe("/fork terminal placement", () => {
 		const request = launchTerminal.mock.calls[0]?.[0];
 		expect(request?.cwd).toBe(newCwd);
 		const command = request?.command ?? [];
-		const configFilesEnv = command.find(arg => arg.startsWith("PI_CONFIG_FILES="));
-		expect(configFilesEnv?.slice("PI_CONFIG_FILES=".length).split(path.delimiter)).toContain(overlayPath);
-		expect(configFilesEnv).not.toContain(staleConfigPath);
-		expect(command.join("\0")).not.toContain(secret);
+		expect(JSON.stringify(request)).not.toContain(secret);
 
 		const appArgs = command.slice(command.indexOf("omp-entry") + 1);
 		expect(appArgs).not.toContain("--cwd");

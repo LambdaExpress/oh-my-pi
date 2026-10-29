@@ -784,7 +784,7 @@ fn norm_includes(line: &str, pattern: &str) -> bool {
 		&& pattern_len as f64 / line_len.max(1) as f64 >= PARTIAL_MATCH_MIN_RATIO
 }
 
-fn strip_comment_prefix(line: &str) -> &str {
+pub(crate) fn strip_comment_prefix(line: &str) -> &str {
 	let trimmed = js_trim_start(line);
 	let without = if let Some(rest) = trimmed.strip_prefix("/*") {
 		rest

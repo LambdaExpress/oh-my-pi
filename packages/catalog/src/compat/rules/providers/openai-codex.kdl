@@ -224,3 +224,15 @@ provider "openai-codex" {
 		context-window-floor 1000000
 	}
 }
+
+// Native Codex turns reject `response.steer` with
+// `unsupported_native_inflight_message` and can drop an already-streaming
+// answer. Keep queued input for the next request; the model's Responses API
+// steering capability does not describe this transport's native turn lane.
+on-api "openai-codex-responses" {
+	class "openai" {
+		revision ">=6" {
+			supports-steering #false
+		}
+	}
+}

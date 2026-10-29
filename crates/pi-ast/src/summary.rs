@@ -20,6 +20,7 @@ pub struct SummaryOptions {
 	/// File path used to infer language by extension when `lang` is omitted.
 	pub path:               Option<String>,
 	/// Minimum total node lines before eliding a body/literal node.
+	/// C# always projects executable bodies, regardless of this threshold.
 	pub min_body_lines:     Option<u32>,
 	/// Minimum total comment lines before eliding a multiline block comment.
 	pub min_comment_lines:  Option<u32>,
@@ -27,7 +28,7 @@ pub struct SummaryOptions {
 	/// span folded, this progressively reveals outer-then-inner spans until
 	/// the visible line count meets the target. `None` or `0` disables BFS
 	/// and keeps only the outermost elisions (every nested span stays hidden
-	/// behind its parent).
+	/// behind its parent). C# declaration projections are never unfolded.
 	pub unfold_until_lines: Option<u32>,
 	/// Hard ceiling for BFS unfold. If a candidate unfold would push the
 	/// visible count past this value, revert that step and stop. Defaults
@@ -38,13 +39,15 @@ pub struct SummaryOptions {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SummarySegment {
-	/// "kept" or "elided".
+	/// "kept", "elided", or "signature".
 	pub kind:       String,
 	/// 1-based inclusive start line.
 	pub start_line: u32,
 	/// 1-based inclusive end line.
 	pub end_line:   u32,
 	/// Verbatim text for kept segments; absent for elided segments.
+	/// A signature is a non-editable projection with inline `…` omissions,
+	/// recoverable by reading its entire start/end line range.
 	pub text:       Option<String>,
 }
 
@@ -54,7 +57,7 @@ pub struct SummaryResult {
 	pub language:    Option<String>,
 	/// True when tree-sitter parsed the source without syntax errors.
 	pub parsed:      bool,
-	/// True when at least one elision span was emitted.
+	/// True when at least one source region was omitted.
 	pub elided:      bool,
 	/// Total source lines.
 	pub total_lines: u32,
@@ -199,6 +202,21 @@ pub fn summarize_code(options: SummaryOptions) -> Result<SummaryResult> {
 		return Ok(unparsed_result(source, total_lines));
 	};
 	let root = tree.root_node();
+	// A declaration view must not hide a type's members behind its
+	// declaration_list, or unfold executable bodies to fill a line budget.
+	// C# also permits entire members on one source line, so line-only folds
+	// cannot preserve those signatures without exposing their bodies.
+	if language == SupportLang::CSharp {
+		let mut elisions = Vec::new();
+		collect_csharp_elisions(root, &mut elisions);
+		return Ok(SummaryResult {
+			language: Some(language.canonical_name().to_string()),
+			parsed: true,
+			elided: !elisions.is_empty(),
+			total_lines,
+			segments: build_signature_segments(&source, total_lines, &elisions),
+		});
+	}
 
 	let min_body_lines = options
 		.min_body_lines
@@ -225,6 +243,156 @@ pub fn summarize_code(options: SummaryOptions) -> Result<SummaryResult> {
 		total_lines,
 		segments,
 	})
+}
+
+/// Byte-accurate executable region. Unlike a line fold, this preserves
+/// declarations and sibling accessors sharing the region's boundary lines.
+struct SignatureElision {
+	start_byte:  usize,
+	end_byte:    usize,
+	start_line:  u32,
+	end_line:    u32,
+	replacement: &'static str,
+}
+
+impl SignatureElision {
+	fn new(node: Node<'_>, replacement: &'static str) -> Self {
+		Self {
+			start_byte: node.start_byte(),
+			end_byte: node.end_byte(),
+			start_line: node_start_line(node),
+			end_line: node_content_end_line(node),
+			replacement,
+		}
+	}
+}
+
+fn collect_csharp_elisions(node: Node<'_>, elisions: &mut Vec<SignatureElision>) {
+	match node.kind() {
+		"block" => {
+			if node.named_child_count() != 0 {
+				elisions.push(SignatureElision::new(node, "{ … }"));
+			}
+			return;
+		},
+		"arrow_expression_clause" => {
+			elisions.push(SignatureElision::new(node, "=> …"));
+			return;
+		},
+		"lambda_expression" => {
+			if let Some(body) = node.child_by_field_name("body")
+				&& body.kind() != "block"
+			{
+				elisions.push(SignatureElision::new(body, "…"));
+				return;
+			}
+		},
+		"global_statement" => {
+			// A top-level local function is still a useful declaration. Other
+			// top-level statements are executable, not namespace/type members.
+			if node
+				.named_child(0)
+				.is_none_or(|child| child.kind() != "local_function_statement")
+			{
+				elisions.push(SignatureElision::new(node, "…"));
+				return;
+			}
+		},
+		_ => {},
+	}
+	let mut cursor = node.walk();
+	for child in node.named_children(&mut cursor) {
+		collect_csharp_elisions(child, elisions);
+	}
+}
+
+fn build_signature_segments(
+	source: &str,
+	total_lines: u32,
+	elisions: &[SignatureElision],
+) -> Vec<SummarySegment> {
+	if elisions.is_empty() {
+		return build_segments(source, total_lines, &[]);
+	}
+	let source_lines: Vec<&str> = source.lines().collect();
+	let mut line_starts = Vec::with_capacity(total_lines as usize);
+	line_starts.push(0);
+	for (index, _) in source.match_indices('\n') {
+		if index + 1 < source.len() {
+			line_starts.push(index + 1);
+		}
+	}
+
+	let mut segments = Vec::new();
+	let mut next_line = 1;
+	let mut index = 0;
+	while index < elisions.len() {
+		let first = &elisions[index];
+		let start_line = first.start_line;
+		let mut end_line = first.end_line;
+		let group_start = index;
+		index += 1;
+		// Two bodies may share a line, including `get { ... } set { ... }`.
+		// Project them together so neither segment reintroduces its sibling's
+		// executable bytes or invents separately editable source lines.
+		while let Some(next) = elisions.get(index)
+			&& next.start_line <= end_line
+		{
+			end_line = end_line.max(next.end_line);
+			index += 1;
+		}
+		if next_line < start_line {
+			push_segment(
+				&mut segments,
+				"kept",
+				next_line,
+				start_line - 1,
+				&source_lines[(next_line - 1) as usize..(start_line - 1) as usize],
+			);
+		}
+
+		let line_start = line_starts[(start_line - 1) as usize];
+		let line_end = line_starts
+			.get(end_line as usize)
+			.copied()
+			.unwrap_or(source.len());
+		let line_end = line_start
+			+ source[line_start..line_end]
+				.trim_end_matches(['\r', '\n'])
+				.len();
+		let group = &elisions[group_start..index];
+		let omitted_bytes: usize = group
+			.iter()
+			.map(|item| item.end_byte - item.start_byte)
+			.sum();
+		let replacement_bytes: usize = group.iter().map(|item| item.replacement.len()).sum();
+		let mut text =
+			String::with_capacity((line_end - line_start) - omitted_bytes + replacement_bytes);
+		let mut cursor = line_start;
+		for elision in group {
+			text.push_str(&source[cursor..elision.start_byte]);
+			text.push_str(elision.replacement);
+			cursor = elision.end_byte;
+		}
+		text.push_str(&source[cursor..line_end]);
+		segments.push(SummarySegment {
+			kind: "signature".to_string(),
+			start_line,
+			end_line,
+			text: Some(text),
+		});
+		next_line = end_line + 1;
+	}
+	if next_line <= total_lines {
+		push_segment(
+			&mut segments,
+			"kept",
+			next_line,
+			total_lines,
+			&source_lines[(next_line - 1) as usize..],
+		);
+	}
+	segments
 }
 
 pub(crate) fn resolve_language(lang: Option<&str>, path: Option<&str>) -> Option<SupportLang> {
@@ -544,17 +712,8 @@ fn is_elidable_kind(language: SupportLang, kind: &str) -> bool {
 				| "array_literal"
 				| "dictionary_literal"
 		),
-		SupportLang::CSharp => matches!(
-			kind,
-			"block"
-				| "initializer_expression"
-				| "array_initializer_expression"
-				| "declaration_list"
-				| "enum_member_declaration_list"
-				| "switch_expression"
-				| "raw_string_literal"
-				| "interpolated_string_expression"
-		),
+		// C# uses byte-accurate declaration projections, never generic folds.
+		SupportLang::CSharp => false,
 		SupportLang::Ruby => matches!(
 			kind,
 			"body_statement"
@@ -1005,6 +1164,160 @@ mod tests {
 				.unwrap_or_default()
 				.contains("return")
 		);
+	}
+
+	#[test]
+	fn csharp_keeps_declarations_without_executable_bodies() {
+		let code = r#"namespace Example;
+public interface ICounter { int Next(int amount); }
+public record Snapshot(int Count);
+public struct Token { public int Value; }
+public enum Mode { Idle, Active }
+public delegate int Transform(int value);
+public class Counter : ICounter
+{
+    private int count = 1;
+    public Counter(int initial) { count = initial; }
+    ~Counter() { count = 0; }
+    public int Count
+    {
+        get { return count; }
+        private set => count = value;
+    }
+    public int this[int offset] => count + offset;
+    public event System.Action Changed
+    {
+        add { count++; }
+        remove { count--; }
+    }
+    [System.Obsolete("Use Next")]
+    public int Next(int amount)
+    {
+        var result = count + amount;
+        count = result;
+        return result;
+    }
+    public int Peek() => count;
+    public void Empty() {}
+    public class Nested { public int Read() { return 42; } }
+}
+"#;
+		// Large unfold budgets must never reveal a C# executable body.
+		let result = summarize_with_unfold(code, "Counter.cs", 10_000, 20_000);
+		assert!(result.parsed);
+		assert!(result.elided);
+		assert_eq!(result.language.as_deref(), Some("csharp"));
+		let rendered = result
+			.segments
+			.iter()
+			.filter_map(|segment| segment.text.as_deref())
+			.collect::<Vec<_>>()
+			.join("\n");
+		for declaration in [
+			"public interface ICounter { int Next(int amount); }",
+			"public record Snapshot(int Count);",
+			"public struct Token { public int Value; }",
+			"public enum Mode { Idle, Active }",
+			"public delegate int Transform(int value);",
+			"private int count = 1;",
+			"public Counter(int initial) { … }",
+			"~Counter() { … }",
+			"public int Count",
+			"get { … }",
+			"private set => …;",
+			"public int this[int offset] => …;",
+			"public event System.Action Changed",
+			"add { … }",
+			"remove { … }",
+			"[System.Obsolete(\"Use Next\")]",
+			"public int Next(int amount)",
+			"public int Peek() => …;",
+			"public void Empty() {}",
+			"public class Nested { public int Read() { … } }",
+		] {
+			assert!(rendered.contains(declaration), "missing declaration: {declaration}");
+		}
+		for executable in [
+			"count = initial",
+			"return count",
+			"count = value",
+			"count + offset",
+			"count++",
+			"count--",
+			"var result",
+			"return result",
+			"return 42",
+		] {
+			assert!(!rendered.contains(executable), "leaked executable body: {executable}");
+		}
+		assert!(result.segments.iter().any(|segment| {
+			segment.kind == "signature"
+				&& segment.start_line == 25
+				&& segment.end_line == 29
+				&& segment.text.as_deref() == Some("    { … }")
+		}));
+	}
+
+	#[test]
+	fn csharp_projects_same_line_bodies_without_losing_sibling_signatures() {
+		let result = summarize(
+			"class C { int value; public int P { get { return value; } set { value = value + 1; } } \
+			 public C() { value = 1; } public int F() => value; }\n",
+			"C.cs",
+		);
+		assert!(result.parsed);
+		assert!(result.elided);
+		assert_eq!(result.segments.len(), 1);
+		let segment = &result.segments[0];
+		assert_eq!(segment.kind, "signature");
+		assert_eq!((segment.start_line, segment.end_line), (1, 1));
+		assert_eq!(
+			segment.text.as_deref(),
+			Some(
+				"class C { int value; public int P { get { … } set { … } } public C() { … } public \
+				 int F() => …; }"
+			)
+		);
+	}
+
+	#[test]
+	fn csharp_omits_field_lambda_bodies_and_top_level_statements() {
+		let result = summarize(
+			"System.Console.WriteLine(\"hidden\");\nint Next(int n) => n + 1;\nclass C {\n    \
+			 System.Func<int, int> transform = x => x * 2;\nSystem.Action reset = delegate { \
+			 System.Console.WriteLine(\"body\"); };\n}\n",
+			"Script.cs",
+		);
+		assert!(result.parsed);
+		let rendered = result
+			.segments
+			.iter()
+			.filter_map(|segment| segment.text.as_deref())
+			.collect::<Vec<_>>()
+			.join("\n");
+		assert!(rendered.contains("int Next(int n) => …;"));
+		assert!(rendered.contains("System.Func<int, int> transform = x => …;"));
+		assert!(rendered.contains("System.Action reset = delegate { … };"));
+		assert!(!rendered.contains("Console.WriteLine"));
+		assert!(!rendered.contains("n + 1"));
+		assert!(!rendered.contains("x * 2"));
+	}
+
+	#[test]
+	fn csharp_preserves_crlf_and_unicode_signature_boundaries() {
+		let result = summarize(
+			"class 计数器\r\n{\r\n    public int 值() { return 123; }\r\n}\r\n",
+			"Counter.cs",
+		);
+		assert!(result.parsed);
+		assert_eq!(result.total_lines, 4);
+		let signature = result
+			.segments
+			.iter()
+			.find(|segment| segment.kind == "signature")
+			.expect("inline body is projected");
+		assert_eq!((signature.start_line, signature.end_line), (3, 3));
+		assert_eq!(signature.text.as_deref(), Some("    public int 值() { … }"));
 	}
 
 	#[test]

@@ -14,14 +14,15 @@ export const handlePyPI: SpecialHandler = async (
 		if (parsed.hostname !== "pypi.org" && parsed.hostname !== "www.pypi.org") return null;
 
 		// Extract package name from /project/{package} or /project/{package}/{version}
-		const match = parsed.pathname.match(/^\/project\/([^/]+)/);
+		const match = parsed.pathname.match(/^\/project\/([^/]+)(?:\/([^/]+))?\/?$/);
 		if (!match) return null;
 
-		const packageName = decodeURIComponent(match[1]);
+		const packageName = encodeURIComponent(decodeURIComponent(match[1]));
+		const version = match[2] === undefined ? undefined : encodeURIComponent(decodeURIComponent(match[2]));
 		const fetchedAt = new Date().toISOString();
 
 		// Fetch from PyPI JSON API
-		const apiUrl = `https://pypi.org/pypi/${packageName}/json`;
+		const apiUrl = `https://pypi.org/pypi/${packageName}/${version === undefined ? "" : `${version}/`}json`;
 		const downloadsUrl = `https://pypistats.org/api/packages/${packageName}/recent`;
 
 		// Fetch package info and download stats in parallel
@@ -61,10 +62,10 @@ export const handlePyPI: SpecialHandler = async (
 		if (!pkg) return null;
 
 		const info = pkg.info;
-		let md = `# ${info.name}\n\n`;
+		let md = `# ${info.name}${version === undefined ? "" : ` ${info.version}`}\n\n`;
 		if (info.summary) md += `${info.summary}\n\n`;
 
-		md += `**Latest:** ${info.version}`;
+		md += `**${version === undefined ? "Latest" : "Version"}:** ${info.version}`;
 		if (info.license) md += ` · **License:** ${info.license}`;
 		md += "\n";
 

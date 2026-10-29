@@ -1,5 +1,5 @@
 import { terminalLaunchProviders } from "./terminal-launch/providers";
-import { processCli } from "./terminal-launch/shared";
+import { commandWithEnvironment, processCli } from "./terminal-launch/shared";
 import type {
 	TerminalLaunchBackendContext,
 	TerminalLaunchDependencies,
@@ -43,6 +43,10 @@ export function createTerminalLauncher(dependencies: TerminalLaunchDependencies 
 	const platform = dependencies.platform ?? process.platform;
 	return async (request: TerminalLaunchRequest): Promise<TerminalLaunchResult> => {
 		validateRequest(request);
+		// Herdr applies overrides in its platform-native launch script; other providers use POSIX argv.
+		if (request.env && request.multiplexer !== "herdr") {
+			request = { ...request, command: commandWithEnvironment(request) };
+		}
 		return launchWith(request.multiplexer, request, { environment: environment(), platform, runCli });
 	};
 }

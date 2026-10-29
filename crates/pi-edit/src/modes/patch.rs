@@ -17,7 +17,7 @@ use crate::{
 	fuzzy::{
 		ContextLineResult, ContextMatchStrategy, FindMatchOptions, SequenceMatchStrategy,
 		SequenceSearchResult, find_closest_sequence_match, find_context_line, find_match,
-		seek_sequence,
+		seek_sequence, strip_comment_prefix,
 	},
 	notebook::is_notebook_path,
 	store::EditStore,
@@ -914,6 +914,15 @@ fn character_match(
 			"Failed to find expected lines in {path}:\n{old_text}"
 		)));
 	};
+	if found.confidence < 1.0 {
+		assert_safe_match(
+			path,
+			&hunk.old_lines,
+			found.actual_text.split('\n'),
+			&hunk.context_line_indices,
+			found.start_line.saturating_sub(1) as usize,
+		)?;
+	}
 	let adjusted = adjust_indentation(&old_text, &found.actual_text, &new_text);
 	let mut warnings = Vec::new();
 	if outcome.dominant_fuzzy == Some(true) {
@@ -930,19 +939,13 @@ fn character_match(
 	Ok(Some((result, warnings)))
 }
 
-fn assert_partial_match(
+fn assert_safe_match<'a>(
 	path: &str,
 	pattern: &[String],
-	matched: &[&str],
-	new_lines: &[String],
+	matched: impl Iterator<Item = &'a str>,
 	context_line_indices: &[(usize, usize)],
 	start: usize,
 ) -> Result<(), EditError> {
-	let new_normalized = new_lines
-		.iter()
-		.map(|line| normalize_for_fuzzy(line))
-		.collect::<Vec<_>>()
-		.join("\n");
 	let mut context = context_line_indices.iter().peekable();
 	for (offset, (expected, actual)) in pattern.iter().zip(matched).enumerate() {
 		if context
@@ -952,25 +955,46 @@ fn assert_partial_match(
 			context.next();
 			continue;
 		}
+		if js_trim(expected) == js_trim(actual)
+			|| strip_comment_prefix(expected) == strip_comment_prefix(actual)
+		{
+			continue;
+		}
 		let actual = normalize_for_fuzzy(actual);
 		let expected = normalize_for_fuzzy(expected);
 		if actual == expected {
 			continue;
 		}
-		let Some(at) = actual.find(&expected) else {
-			continue;
-		};
-		for discarded in [&actual[..at], &actual[at + expected.len()..]] {
-			let discarded = discarded.trim();
-			if !discarded.is_empty() && !new_normalized.contains(discarded) {
-				return Err(EditError::apply(format!(
-					"Refusing partial-line match in {path} at line {}: the file line also contains \
-					 {:?}, which the replacement would silently drop. Provide the complete line in the \
-					 hunk.",
-					start + offset + 1,
-					discarded
-				)));
+		if let Some(at) = actual.find(&expected) {
+			for discarded in [&actual[..at], &actual[at + expected.len()..]] {
+				let discarded = discarded.trim();
+				// A brace elsewhere in the replacement does not account for
+				// this unmatched brace (or any other non-whitespace affix).
+				if !discarded.is_empty() {
+					return Err(EditError::apply(format!(
+						"Refusing partial-line match in {path} at line {}: the file line also contains \
+						 {:?}, which the replacement would silently drop. Provide the complete line in \
+						 the hunk.",
+						start + offset + 1,
+						discarded
+					)));
+				}
 			}
+		}
+		// Typos may select an inexact line, but similarity must not authorize
+		// deleting unmatched syntax. Compare ordered punctuation, not counts
+		// or membership in the new hunk; authored context is preserved above.
+		let syntax = |ch: &char| !ch.is_alphanumeric() && !ch.is_whitespace();
+		if !actual
+			.chars()
+			.filter(syntax)
+			.eq(expected.chars().filter(syntax))
+		{
+			return Err(EditError::apply(format!(
+				"Refusing inexact-line match in {path} at line {}: structural characters differ from \
+				 the old line. Provide the complete file line in the hunk.",
+				start + offset + 1
+			)));
 		}
 	}
 	Ok(())
@@ -1324,9 +1348,15 @@ fn compute_replacements(
 		};
 		if matches!(
 			result.strategy,
-			Some(SequenceMatchStrategy::Prefix | SequenceMatchStrategy::Substring)
+			Some(
+				SequenceMatchStrategy::Prefix
+					| SequenceMatchStrategy::Substring
+					| SequenceMatchStrategy::Fuzzy
+					| SequenceMatchStrategy::FuzzyDominant
+					| SequenceMatchStrategy::Character
+			)
 		) {
-			assert_partial_match(path, &pattern, matched, &new_lines, &context_line_indices, found)?;
+			assert_safe_match(path, &pattern, matched.iter().copied(), &context_line_indices, found)?;
 		}
 		replacements.push(Replacement {
 			start_index: found,

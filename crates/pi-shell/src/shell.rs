@@ -48,22 +48,29 @@ struct ShellSessionCore {
 }
 
 #[derive(Clone, Default)]
-struct ShellAbortState(Arc<TokioMutex<Option<AbortToken>>>);
+struct ShellAbortState(Arc<parking_lot::Mutex<Option<AbortToken>>>);
 
 impl ShellAbortState {
-	async fn set(&self, abort_token: AbortToken) {
-		*self.0.lock().await = Some(abort_token);
+	fn activate(&self, abort_token: AbortToken) -> ShellAbortGuard {
+		*self.0.lock() = Some(abort_token);
+		ShellAbortGuard(self.clone())
 	}
 
-	async fn clear(&self) {
-		*self.0.lock().await = None;
-	}
-
-	async fn abort(&self) {
-		let abort_token = self.0.lock().await.clone();
+	fn abort(&self) {
+		let abort_token = self.0.lock().clone();
 		if let Some(abort_token) = abort_token {
 			abort_token.abort(AbortReason::Signal);
 		}
+	}
+}
+
+/// The session owner alone publishes and clears its abort token, including
+/// snapshot setup. A queued run timing out must never clear the owner's token.
+struct ShellAbortGuard(ShellAbortState);
+
+impl Drop for ShellAbortGuard {
+	fn drop(&mut self) {
+		*self.0.0.lock() = None;
 	}
 }
 
@@ -255,8 +262,8 @@ impl Shell {
 		.await
 	}
 
-	pub async fn abort(&self) {
-		self.abort_state.abort().await;
+	pub fn abort(&self) {
+		self.abort_state.abort();
 	}
 
 	/// Pids of the processes spawned by the in-flight [`Shell::run`] that are
@@ -422,9 +429,18 @@ async fn run_shell_session(
 		let abort_state = abort_state.clone();
 		let tokio_cancel = tokio_cancel.clone();
 		let at = ct.emplace_abort_token();
+		let launch_token = ct.clone();
 		let spawn_registry = spawn_registry.clone();
 		async move {
-			let mut session_guard = session.lock().await;
+			let mut session_guard = tokio::select! {
+				biased;
+				() = tokio_cancel.cancelled() => return Err(Error::msg("Shell launch cancelled")),
+				guard = session.lock() => guard,
+			};
+			// Cancellation may have expired while this task was queued. Do not
+			// initialize a session or launch a command after its deadline.
+			launch_token.heartbeat()?;
+			let _abort_guard = abort_state.activate(at);
 			// Published only once this run owns the session, so a run queued
 			// behind another never shadows the executing run's pids. Declared
 			// after `session_guard`, so it clears before the lock is released.
@@ -441,13 +457,13 @@ async fn run_shell_session(
 					.await?,
 				),
 			};
-			abort_state.set(at).await;
+			launch_token.heartbeat()?;
 			run_shell_command(session, &run_config, on_chunk, tokio_cancel, spawn_registry).await
 		}
 	});
 
 	let res = tokio::select! {
-		res = &mut run_task => res,
+		biased;
 		reason = ct.wait() => {
 			tokio_cancel.cancel();
 			let graceful = time::timeout(CANCEL_RUN_GRACE, &mut run_task).await;
@@ -455,7 +471,6 @@ async fn run_shell_session(
 				run_task.abort();
 				let _ = run_task.await;
 			}
-			abort_state.clear().await;
 			// Use try_lock to avoid deadlocking if another task holds the session.
 			// If we can't acquire the lock, the session will be cleaned up when the
 			// holding task finishes.
@@ -471,12 +486,12 @@ async fn run_shell_session(
 				working_dir: None,
 			});
 		}
+		res = &mut run_task => res,
 	};
 	let res =
 		res.unwrap_or_else(|err| Err(Error::msg(format!("Shell execution task failed: {err}"))));
 	process_cancel_bridge.abort();
 	let _ = process_cancel_bridge.await;
-	abort_state.clear().await;
 
 	let keepalive = res.as_ref().is_ok_and(|(exec, ..)| session_keepalive(exec));
 	if !keepalive {
@@ -2235,6 +2250,127 @@ mod tests {
 	use tokio::process::Command;
 
 	use super::*;
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn abort_covers_snapshot_startup_before_the_command_is_launched() {
+		let dir = tempfile::tempdir().expect("snapshot fixture");
+		let ready = dir.path().join("snapshot-ready");
+		let marker = dir.path().join("command-launched");
+		let snapshot = dir.path().join("snapshot.sh");
+		fs::write(
+			&snapshot,
+			format!("printf ready > {}; sleep 30\n", quote_arg(&ready.to_string_lossy())),
+		)
+		.expect("write snapshot");
+		let shell = Arc::new(Shell::new(Some(ShellOptions {
+			session_env:   None,
+			snapshot_path: Some(snapshot.to_string_lossy().into_owned()),
+			minimizer:     None,
+			filesystem:    Fs::native(),
+		})));
+		let mut token = CancelToken::default();
+		let emergency_abort = token.emplace_abort_token();
+		let mut run = tokio::spawn({
+			let shell = shell.clone();
+			let marker = marker.clone();
+			async move {
+				shell
+					.run(
+						ShellRunOptions {
+							command:    format!(
+								"printf launched > {}",
+								quote_arg(&marker.to_string_lossy())
+							),
+							cwd:        None,
+							env:        None,
+							timeout_ms: None,
+							filesystem: None,
+						},
+						None,
+						token,
+					)
+					.await
+			}
+		});
+		let started = time::timeout(Duration::from_secs(5), async {
+			while !ready.exists() {
+				time::sleep(Duration::from_millis(5)).await;
+			}
+		})
+		.await;
+		shell.abort();
+		let result = time::timeout(Duration::from_secs(7), &mut run).await;
+		if result.is_err() {
+			emergency_abort.abort(AbortReason::Signal);
+			let _ = time::timeout(Duration::from_secs(7), &mut run).await;
+			if !run.is_finished() {
+				run.abort();
+			}
+		}
+		assert!(started.is_ok(), "snapshot did not start");
+		let result = result
+			.expect("snapshot startup ignored Shell.abort")
+			.expect("run task")
+			.expect("run");
+		assert!(result.cancelled);
+		assert!(!marker.exists(), "the command launched after startup cancellation");
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn queued_timeout_keeps_the_executing_runs_abort_handle() {
+		let shell = Arc::new(Shell::new(None));
+		let (tx, rx) = flume::unbounded();
+		let mut token = CancelToken::default();
+		let emergency_abort = token.emplace_abort_token();
+		let mut first = tokio::spawn({
+			let shell = shell.clone();
+			async move {
+				shell
+					.run(
+						ShellRunOptions {
+							command:    "printf ready; sleep 30".to_string(),
+							cwd:        None,
+							env:        None,
+							timeout_ms: None,
+							filesystem: None,
+						},
+						Some(tx),
+						token,
+					)
+					.await
+			}
+		});
+		let started = time::timeout(Duration::from_secs(5), rx.recv_async()).await;
+		let queued = shell
+			.run(
+				ShellRunOptions {
+					command:    "printf should-not-run".to_string(),
+					cwd:        None,
+					env:        None,
+					timeout_ms: Some(25),
+					filesystem: None,
+				},
+				None,
+				CancelToken::new(Some(25)),
+			)
+			.await;
+		shell.abort();
+		let result = time::timeout(Duration::from_secs(7), &mut first).await;
+		if result.is_err() {
+			emergency_abort.abort(AbortReason::Signal);
+			let _ = time::timeout(Duration::from_secs(7), &mut first).await;
+			if !first.is_finished() {
+				first.abort();
+			}
+		}
+		assert!(started.is_ok_and(|chunk| chunk.is_ok()), "first command did not start");
+		assert!(queued.expect("queued command").timed_out);
+		let first = result
+			.expect("queued cancellation removed the owner's abort handle")
+			.expect("first task")
+			.expect("first run");
+		assert!(first.cancelled);
+	}
 
 	/// 8.3 short spelling of `path` (`GetShortPathNameW`).
 	#[cfg(windows)]
@@ -6484,7 +6620,7 @@ replace = [{ pattern = "hello", replacement = "HI" }]
 		assert_eq!(shell.live_background_job_count().await, 1);
 
 		// Dropping the shell at scope end reaps the child via kill-on-drop.
-		shell.abort().await;
+		shell.abort();
 	}
 
 	/// `Shell::pids` reports the in-flight run's live external children without
@@ -6530,7 +6666,7 @@ replace = [{ pattern = "hello", replacement = "HI" }]
 		let child = process::Process::from_pid(pids[0]).expect("reported pid is alive");
 		assert_eq!(child.status(), process::ProcessStatus::Running);
 
-		shell.abort().await;
+		shell.abort();
 		let result = time::timeout(Duration::from_secs(5), run)
 			.await
 			.expect("aborted run returns")
@@ -7468,8 +7604,8 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 		let mut cancel_token = CancelToken::default();
 		let abort_token = cancel_token.emplace_abort_token();
 
-		abort_state.set(abort_token).await;
-		abort_state.abort().await;
+		let _owner = abort_state.activate(abort_token);
+		abort_state.abort();
 
 		let reason = time::timeout(Duration::from_millis(100), cancel_token.wait())
 			.await

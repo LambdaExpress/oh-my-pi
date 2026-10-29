@@ -10,11 +10,12 @@ import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import type { ToolActivityContext, ToolActivitySummary } from "@oh-my-pi/pi-tui/tools/renderer";
 import { InternalUrlRouter, sessionResolveContext } from "../internal-urls";
 import sshTransferDescriptionBase from "../prompts/tools/ssh-transfer.md" with { type: "text" };
-import { ensureHostInfo, type SSHConnectionTarget } from "../ssh/connection-manager";
+import type { SSHConnectionTarget } from "../ssh/connection-manager";
 import {
 	executeSshFileTransfer,
 	prepareSshFileTransfer,
 	SshFileTransferCancelledError,
+	SshFileTransferPreparationError,
 	type SshFileTransferPlan,
 	type SshFileTransferProgress,
 } from "../ssh/file-transfer";
@@ -97,10 +98,6 @@ function emptyProgress(totalBytes = 0): SshFileTransferProgress {
 		averageBytesPerSecond: 0,
 		elapsedMs: 0,
 	};
-}
-
-function isWindowsRemoteAbsolute(remotePath: string): boolean {
-	return /^[A-Za-z]:[\\/]/.test(remotePath) || /^[/\\]{2}[^/\\]+[/\\][^/\\]+/.test(remotePath);
 }
 
 function approvalDetails(args: unknown): string[] {
@@ -262,16 +259,8 @@ export class SshTransferTool implements AgentTool<typeof sshTransferSchema, SshT
 		}
 		await enforcePlanModeWrite(this.session, params.op === "upload" ? remotePath : localPath, { op: "create" });
 
-		const hostInfo = await ensureHostInfo(hostConfig);
-		if (hostInfo.os === "windows" && hostInfo.powerShellCommand) {
-			if (!isWindowsRemoteAbsolute(remotePath)) {
-				throw new ToolError("SSH transfer remote_path must be an absolute drive or UNC path on Windows hosts.");
-			}
-		} else if (!path.posix.isAbsolute(remotePath)) {
-			throw new ToolError("SSH transfer remote_path must be an absolute POSIX path.");
-		}
-
 		let plan: SshFileTransferPlan;
+		const preparationStartedAt = Date.now();
 		try {
 			plan = await prepareSshFileTransfer({
 				operation: params.op,
@@ -290,7 +279,10 @@ export class SshTransferTool implements AgentTool<typeof sshTransferSchema, SshT
 				localPath,
 				remotePath,
 				status,
-				emptyProgress(),
+				{
+					...emptyProgress(error instanceof SshFileTransferPreparationError ? error.totalBytes : undefined),
+					elapsedMs: Math.max(0, Date.now() - preparationStartedAt),
+				},
 				message,
 			);
 			this.#lastSnapshots.set(toolCallId, details);
@@ -308,10 +300,12 @@ export class SshTransferTool implements AgentTool<typeof sshTransferSchema, SshT
 				`${params.op} ${localPath} ${remotePath}`,
 				async ({ jobId: runningJobId, signal: jobSignal, reportProgress }) => {
 					const asyncState = { state: "running" as const, jobId: runningJobId, type: "ssh_transfer" as const };
+					let lastProgress = emptyProgress(plan.totalBytes);
 					try {
 						const progress = await executeSshFileTransfer(plan, {
 							signal: jobSignal,
 							onProgress: update => {
+								lastProgress = update;
 								const details = {
 									...detailsFromProgress(params.op, params.host, localPath, remotePath, "running", update),
 									async: asyncState,
@@ -329,10 +323,6 @@ export class SshTransferTool implements AgentTool<typeof sshTransferSchema, SshT
 					} catch (error) {
 						const cancelled = jobSignal.aborted || error instanceof SshFileTransferCancelledError;
 						const message = error instanceof Error ? error.message : String(error);
-						const current = manager.getJob(runningJobId)?.progress?.details;
-						const transferredBytes =
-							current && typeof current.transferredBytes === "number" ? current.transferredBytes : 0;
-						const elapsedMs = current && typeof current.elapsedMs === "number" ? current.elapsedMs : 0;
 						const details: SshTransferToolDetails = {
 							...detailsFromProgress(
 								params.op,
@@ -340,13 +330,7 @@ export class SshTransferTool implements AgentTool<typeof sshTransferSchema, SshT
 								localPath,
 								remotePath,
 								cancelled ? "cancelled" : "failed",
-								{
-									transferredBytes,
-									totalBytes: plan.totalBytes,
-									bytesPerSecond: 0,
-									averageBytesPerSecond: elapsedMs === 0 ? 0 : (transferredBytes * 1000) / elapsedMs,
-									elapsedMs,
-								},
+								lastProgress,
 								message,
 							),
 							async: { state: "failed", jobId: runningJobId, type: "ssh_transfer" },

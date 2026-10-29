@@ -83,6 +83,8 @@ class CdpConnection {
 	readonly sessions = new Map<string, SessionRef>();
 	/** Tabs this connection claimed as drive targets (`OMP.claimTarget` / `Target.createTarget`). */
 	readonly claims = new Set<string>();
+	/** Browser-level download subscriptions, scoped to already-claimed tabs rather than arbitrary user history. */
+	readonly downloadTabs = new Set<string>();
 	/** Real child session id → the session it was announced on; its events and detach go there. */
 	readonly childParents = new Map<string, string>();
 
@@ -778,6 +780,14 @@ export class RelayBridge {
 			return true;
 		}
 		try {
+			// Puppeteer's bringToFront() sends Page.bringToFront, not Target.activateTarget.
+			// chrome.debugger can acknowledge that command without focusing the user's Chrome
+			// window. Use the extension's native window/tab activation, and propagate refusal.
+			if (msg.method === "Page.bringToFront" && realSessionId === undefined) {
+				await this.#rpc({ op: "activateTab", tabId: tab.tabId }, inst);
+				this.#reply(conn, msg, {});
+				return true;
+			}
 			const result = await this.#rpc(
 				{
 					op: "send",
@@ -789,10 +799,21 @@ export class RelayBridge {
 				inst,
 			);
 			beforeReply?.();
+			if (msg.method === "Browser.setDownloadBehavior" && !msg.sessionId) {
+				if (msg.params?.eventsEnabled === true) conn.downloadTabs.add(tabKey);
+				else conn.downloadTabs.delete(tabKey);
+			}
 			this.#reply(conn, msg, (result as Record<string, unknown> | undefined) ?? {});
 			return true;
 		} catch (err) {
-			this.#replyError(conn, msg, err instanceof Error ? err.message : String(err));
+			const message = err instanceof Error ? err.message : String(err);
+			this.#replyError(
+				conn,
+				msg,
+				msg.method === "Browser.setDownloadBehavior"
+					? `Download tracking is not supported by this relay browser's debugger connection: ${message}`
+					: message,
+			);
 			return false;
 		}
 	}
@@ -1019,9 +1040,20 @@ export class RelayBridge {
 				this.#log("refusing Browser.close from downstream client", { conn: conn.id });
 				this.#reply(conn, msg, {});
 				return;
-			case "Browser.setDownloadBehavior":
-				this.#reply(conn, msg, {});
+			case "Browser.setDownloadBehavior": {
+				const claimed = [...conn.claims].map(key => this.#tabs.get(key)).filter(tab => tab !== undefined);
+				const tab = near ?? (claimed.length === 1 ? claimed[0] : undefined);
+				if (!tab) {
+					this.#replyError(
+						conn,
+						msg,
+						"Download tracking requires one adopted relay tab; send Browser.setDownloadBehavior through that page's CDP session",
+					);
+					return;
+				}
+				await this.#forwardToTab(conn, msg, tab.tabKey, undefined);
 				return;
+			}
 			case "Target.createBrowserContext":
 				this.#replyError(conn, msg, "Browser contexts are not supported by the omp browser relay");
 				return;
@@ -1040,6 +1072,15 @@ export class RelayBridge {
 	): void {
 		const tab = this.#tabs.get(tabKey);
 		if (!tab) return;
+		if (method === "Browser.downloadWillBegin" || method === "Browser.downloadProgress") {
+			for (const conn of this.#conns.values()) {
+				if (conn.downloadTabs.has(tabKey)) this.#emit(conn, method, params ?? {});
+				for (const pageSession of conn.sessionsForTab(tabKey, "page")) {
+					this.#emit(conn, method, params ?? {}, pageSession);
+				}
+			}
+			return;
+		}
 		// Track real child sessions so downstream commands can route back.
 		if (method === "Target.attachedToTarget") {
 			const child = params?.sessionId;
@@ -1156,7 +1197,10 @@ export class RelayBridge {
 		if (!tab) return;
 		this.#retractTab(tab);
 		this.#tabs.delete(tabKey);
-		for (const conn of this.#conns.values()) conn.claims.delete(tabKey);
+		for (const conn of this.#conns.values()) {
+			conn.claims.delete(tabKey);
+			conn.downloadTabs.delete(tabKey);
+		}
 	}
 
 	#onTabUpsert(snap: TabSnapshot, instanceId: string, opts: { silent?: boolean } = {}): void {

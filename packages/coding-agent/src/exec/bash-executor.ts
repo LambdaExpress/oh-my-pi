@@ -15,6 +15,7 @@ import {
 import { $env } from "@oh-my-pi/pi-utils/env";
 import { isCmdShell, isExecutable, type ShellConfig } from "@oh-my-pi/pi-utils/procmgr";
 import { Settings } from "../config/settings";
+import { CommandDeadline, CommandStoppedError } from "../subprocess/command-deadline";
 import { type OutputArtifactError, OutputSink, type OutputSummary } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import {
 	resolveOutputMaxColumns,
@@ -41,6 +42,8 @@ export interface BashExecutorOptions {
 	cwd?: string;
 	/** Milliseconds before aborting the command; 0 disables the executor deadline. */
 	timeout?: number;
+	/** Existing launch deadline, measured with performance.now(), when preparation began in the caller. */
+	deadlineAt?: number;
 	onChunk?: (chunk: string) => void;
 	/**
 	 * Receives the sink's current inline view ({@link OutputSink.preview}: the
@@ -522,8 +525,100 @@ async function executeUserShellPty(run: {
 	};
 }
 
+interface BashExecutionState {
+	submitted: boolean;
+	preview?: () => string;
+	stopOutput?: () => void;
+}
+
 export async function executeBash(command: string, options?: BashExecutorOptions): Promise<BashResult> {
-	const settings = await Settings.init();
+	const timeoutMs = options?.timeout === 0 ? undefined : Math.max(1, options?.timeout ?? 300_000);
+	const deadline = new CommandDeadline(
+		timeoutMs,
+		options?.signal,
+		timeoutMs === undefined ? undefined : options?.deadlineAt,
+	);
+	const state: BashExecutionState = { submitted: false };
+	const runController = new AbortController();
+	const backstop = Promise.withResolvers<"timeout" | "abort">();
+	let abortTimer: NodeJS.Timeout | undefined;
+	const onAbort = () => {
+		runController.abort();
+		abortTimer ??= setTimeout(() => backstop.resolve("abort"), NATIVE_TIMEOUT_FALLBACK_GRACE_MS);
+	};
+	if (options?.signal?.aborted) onAbort();
+	else options?.signal?.addEventListener("abort", onAbort, { once: true });
+	const fallbackTimer =
+		deadline.remainingMs === undefined
+			? undefined
+			: setTimeout(() => backstop.resolve("timeout"), deadline.remainingMs + NATIVE_TIMEOUT_FALLBACK_GRACE_MS);
+	try {
+		const winner = await Promise.race([
+			executeBashWithinDeadline(command, options, deadline, state, runController.signal).then(result => ({
+				result,
+			})),
+			backstop.promise.then(reason => ({ reason })),
+		]);
+		if ("result" in winner) return winner.result;
+		// This bound also covers result finalization (artifact writes, native
+		// stream draining and background-job inspection), not just Shell.run.
+		// Cleanup continues, but a wedged backend cannot retain the tool call.
+		runController.abort();
+		state.stopOutput?.();
+		const output = state.preview?.() ?? "";
+		const outputBytes = Buffer.byteLength(output);
+		const outputLines = output ? output.split("\n").length : 0;
+		const notice = !state.submitted
+			? winner.reason === "timeout"
+				? `Command timed out after ${Math.round((timeoutMs ?? 0) / 1000)} seconds during shell startup; command was not launched`
+				: "Command cancelled before shell startup; command was not launched"
+			: winner.reason === "timeout"
+				? `Command timed out after ${Math.round((timeoutMs ?? 0) / 1000)} seconds; the shell backend did not respond, so any output above may be incomplete; cleanup requested, termination not yet confirmed`
+				: "Command cancelled; cleanup is still in progress, termination not yet confirmed";
+		return {
+			output: `[${notice}]\n${output}`,
+			exitCode: undefined,
+			cancelled: true,
+			...(winner.reason === "timeout" ? { timedOut: true } : {}),
+			truncated: true,
+			totalLines: outputLines,
+			totalBytes: outputBytes,
+			outputLines,
+			outputBytes,
+		};
+	} catch (error) {
+		if (!(error instanceof CommandStoppedError)) throw error;
+		const notice =
+			error.reason === "timeout"
+				? `Command timed out after ${Math.round((timeoutMs ?? 0) / 1000)} seconds during shell startup; command was not launched`
+				: "Command cancelled before shell startup; command was not launched";
+		return {
+			output: `[${notice}]\n`,
+			exitCode: undefined,
+			cancelled: true,
+			...(error.reason === "timeout" ? { timedOut: true } : {}),
+			truncated: false,
+			totalLines: 0,
+			totalBytes: 0,
+			outputLines: 0,
+			outputBytes: 0,
+		};
+	} finally {
+		clearTimeout(fallbackTimer);
+		clearTimeout(abortTimer);
+		options?.signal?.removeEventListener("abort", onAbort);
+		deadline.dispose();
+	}
+}
+
+async function executeBashWithinDeadline(
+	command: string,
+	options: BashExecutorOptions | undefined,
+	deadline: CommandDeadline,
+	state: BashExecutionState,
+	signal: AbortSignal,
+): Promise<BashResult> {
+	const settings = await deadline.wait(() => Settings.init());
 	const baseShellConfig = settings.getShellConfig();
 	const shellConfig =
 		options?.useUserShell === true ? resolveUserShellConfig(settings, baseShellConfig) : baseShellConfig;
@@ -555,17 +650,20 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	// the configured shell `prefix` after any `unset -v` it prepends. A URL cwd
 	// has no `.envrc` on the host. The rc snapshot is independent, so both load
 	// concurrently.
-	const [snapshotPath, preflight] = await Promise.all([
-		bashShell ? getOrCreateSnapshot(shell, shellEnv) : null,
-		applyDirenvPreflight(command, commandCwd ?? process.cwd(), {
-			callerEnv: options?.env,
-			signal: options?.signal,
-			timeoutMs: cfgBashDirenvLoadTimeoutMs.get(settings),
-			callerTimeoutMs: options?.timeout,
-			direnvSetting: virtualCwd ? "off" : cfgBashDirenv.get(settings),
-			commandPrefix: prefix,
-		}),
-	]);
+	const [snapshotPath, preflight] = await deadline.wait(() =>
+		Promise.all([
+			bashShell ? getOrCreateSnapshot(shell, shellEnv) : null,
+			applyDirenvPreflight(command, commandCwd ?? process.cwd(), {
+				callerEnv: options?.env,
+				signal: deadline.signal,
+				timeoutMs: cfgBashDirenvLoadTimeoutMs.get(settings),
+				callerTimeoutMs: options?.timeout,
+				direnvSetting: virtualCwd ? "off" : cfgBashDirenv.get(settings),
+				commandPrefix: prefix,
+			}),
+		]),
+	);
+	deadline.throwIfStopped();
 	const commandEnv = buildNonInteractiveEnv(preflight.env);
 	const runCdInPersistentShell = options?.useUserShell === true && !prefix && isPersistentShellCdCommand(command);
 	// Never wrap in cmd.exe: it is only the Windows no-bash fallback for spawn
@@ -601,6 +699,10 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	// all run inline. File writes (artifact path) are handled asynchronously
 	// inside the sink. No promise chain needed.
 	let acceptingChunks = true;
+	state.preview = () => sink.preview();
+	state.stopOutput = () => {
+		acceptingChunks = false;
+	};
 	let graphicsFinished = false;
 	let decodedImages: ImageContent[] = [];
 	const enqueueChunk = (chunk: string) => {
@@ -621,7 +723,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		};
 	};
 
-	if (options?.signal?.aborted) {
+	if (signal.aborted) {
 		return {
 			exitCode: undefined,
 			cancelled: true,
@@ -630,8 +732,9 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	}
 
 	if (usePty && ptyRequest) {
-		const requestedMs = options?.timeout;
 		try {
+			deadline.throwIfStopped();
+			state.submitted = true;
 			return await executeUserShellPty({
 				shell,
 				args,
@@ -639,8 +742,8 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 				cwd: commandCwd,
 				env: buildUserShellPtyEnv(shellEnv, commandEnv),
 				pty: ptyRequest,
-				timeoutMs: requestedMs === 0 ? undefined : Math.max(1_000, requestedMs ?? 300_000),
-				signal: options?.signal,
+				timeoutMs: deadline.remainingMs,
+				signal,
 				sink,
 				graphics,
 				dump,
@@ -680,7 +783,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	if (ownsPersistentSession) {
 		shellSessionsInUse.add(sessionKey);
 	}
-	const userSignal = options?.signal;
+	const userSignal = signal;
 	const runAbortController = new AbortController();
 	let abortCleanupPromise: Promise<void> | undefined;
 	const abortShell = (): Promise<void> => {
@@ -705,13 +808,16 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	let timeoutTimer: NodeJS.Timeout | undefined;
 	const timeoutDeferred = Promise.withResolvers<"timeout">();
 	const requestedTimeoutMs = options?.timeout;
-	const deadlineTimeoutMs = requestedTimeoutMs === 0 ? undefined : Math.max(1_000, requestedTimeoutMs ?? 300_000);
-	const nativeTimeoutMs = requestedTimeoutMs !== undefined && requestedTimeoutMs > 0 ? requestedTimeoutMs : undefined;
+	const deadlineTimeoutMs = requestedTimeoutMs === 0 ? undefined : Math.max(1, requestedTimeoutMs ?? 300_000);
+	const nativeTimeoutMs =
+		requestedTimeoutMs !== undefined && requestedTimeoutMs > 0
+			? Math.max(1, Math.ceil(deadline.remainingMs ?? requestedTimeoutMs))
+			: undefined;
 	const nativeOwnsTimeout = nativeTimeoutMs !== undefined;
 	if (deadlineTimeoutMs !== undefined) {
 		const fallbackTimeoutMs = nativeOwnsTimeout
-			? deadlineTimeoutMs + NATIVE_TIMEOUT_FALLBACK_GRACE_MS
-			: deadlineTimeoutMs;
+			? (deadline.remainingMs ?? deadlineTimeoutMs) + NATIVE_TIMEOUT_FALLBACK_GRACE_MS
+			: (deadline.remainingMs ?? deadlineTimeoutMs);
 		timeoutTimer = setTimeout(() => {
 			// Explicit timeouts are enforced inside pi-natives via `timeoutMs`.
 			// Give native cancellation time to flush pipeline output and drain the
@@ -726,6 +832,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	let resetSession = false;
 
 	try {
+		deadline.throwIfStopped();
 		const runPromise = executionShell.run(
 			{
 				command: finalCommand,
@@ -741,6 +848,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 				}
 			},
 		);
+		state.submitted = true;
 		options?.onStart?.(() => executionShell.pids());
 
 		const ey = new ExponentialYield();
@@ -769,7 +877,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 				// run never returned — any output is stuck in the undrained pipe,
 				// so this is not a confirmed empty run (#10308).
 				notice = nativeOwnsTimeout
-					? `Command timed out after ${seconds} seconds; the shell backend did not respond, so any output above may be incomplete`
+					? `Command timed out after ${seconds} seconds; the shell backend did not respond, so any output above may be incomplete; cleanup requested, termination not yet confirmed`
 					: `Command timed out after ${seconds} seconds`;
 			}
 			return {
@@ -853,7 +961,6 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		resetSession = true;
 		throw err;
 	} finally {
-		await sink.dispose();
 		if (timeoutTimer) {
 			clearTimeout(timeoutTimer);
 		}
@@ -872,10 +979,11 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 				// turns; it is reaped once its last job exits and still dies with the
 				// harness. Skip on resetSession (cancel/error) — those tear down.
 				if (!resetSession && shellSession) {
-					await retainShellWithLiveBackgroundJobs(shellSession);
+					void retainShellWithLiveBackgroundJobs(shellSession);
 				}
 			}
 		}
+		await sink.dispose();
 	}
 }
 

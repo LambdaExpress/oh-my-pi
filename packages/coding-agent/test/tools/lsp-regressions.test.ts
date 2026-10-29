@@ -6301,27 +6301,36 @@ describe("lsp regressions", () => {
 			}
 		});
 
-		it("workspace reload does not send rust-analyzer/reloadWorkspace to Roslyn (#8571)", async () => {
+		it("workspace reload restarts C# without sending rust-analyzer requests (#8571)", async () => {
 			const tempDir = TempDir.createSync("@omp-lsp-reload-non-rust-");
 			try {
-				let sawRustReload = false;
-				const server = installFakeLsp((message, srv) => {
-					if (message.method === "initialize") {
-						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
-					} else if (message.method === "rust-analyzer/reloadWorkspace") {
-						// Roslyn crashes the whole process instead of replying -32601
-						// (dotnet/roslyn#84890); the gate must never let us send this.
-						sawRustReload = true;
-						srv.exit(82);
-					} else if (message.method === "shutdown") {
-						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
-					} else if (message.method === "exit") {
-						srv.exit(0);
+				const framingUrl = new URL("../../src/jsonrpc/message-framing.ts", import.meta.url).href;
+				const script = `
+					import { MessageFramer } from ${JSON.stringify(framingUrl)};
+					let settings;
+					const framer = new MessageFramer(Buffer.alloc(0));
+					const respond = (id, result) => {
+						const json = JSON.stringify({ jsonrpc: "2.0", id, result });
+						process.stdout.write("Content-Length: " + Buffer.byteLength(json) + "\\r\\n\\r\\n" + json);
+					};
+					for await (const chunk of Bun.stdin.stream()) {
+						framer.push(Buffer.from(chunk));
+						for (const text of framer.drain(() => {})) {
+							const message = JSON.parse(text);
+							// Roslyn can crash rather than reject this unsupported request.
+							if (message.method === "rust-analyzer/reloadWorkspace") process.exit(82);
+							if (message.method === "initialize") respond(message.id, { capabilities: {} });
+							if (message.method === "workspace/didChangeConfiguration") settings = message.params.settings;
+							if (message.method === "test/settings") respond(message.id, settings);
+							if (message.method === "shutdown") respond(message.id, null);
+							if (message.method === "exit") process.exit(0);
+						}
 					}
-				});
+				`;
 				const settings = { csharp: { analysis: { backgroundScope: "fullSolution" } } };
 				const config: ServerConfig = {
-					command: "roslyn-language-server",
+					command: process.execPath,
+					args: ["-e", script],
 					fileTypes: [".cs"],
 					rootMarkers: [],
 					settings,
@@ -6332,15 +6341,14 @@ describe("lsp regressions", () => {
 				});
 
 				const tool = new LspTool(makeLspSession(tempDir.path()));
+				const previous = await lspClient.getOrCreateClient(config, tempDir.path());
 				const result = await tool.execute("reload-non-rust", { action: "reload", file: "*" });
-
-				expect(sawRustReload).toBe(false);
-				expect(textResult(result)).toContain("Reloaded csharp");
-				const configurationMessages = server.received.filter(
-					message => message.method === "workspace/didChangeConfiguration",
-				);
-				expect(configurationMessages.at(-1)?.params).toEqual({ settings });
-				expect(server.killed).toBe(false);
+				const replacement = await lspClient.getOrCreateClient(config, tempDir.path());
+				expect(result.details?.success).toBe(true);
+				expect(previous.proc.exitCode).toBe(0);
+				expect(replacement.proc.pid).not.toBe(previous.proc.pid);
+				expect(replacement.proc.exitCode).toBeNull();
+				expect(await lspClient.sendRequest(replacement, "test/settings", {})).toEqual(settings);
 			} finally {
 				vi.restoreAllMocks();
 				await lspClient.shutdownAll();

@@ -123,10 +123,48 @@ describe("MCP resource deadlines", () => {
 		expect((error as Error).message).toMatch(/server.*application.*logs/i);
 	});
 
-	it("bounds readiness waits without stopping the shared pending connection", async () => {
+	it("waits beyond the resource deadline for a five-minute server startup", async () => {
+		using temp = TempDir.createSync("@mcp-resource-cold-start-");
+		const releasePath = path.join(temp.path(), "ready");
+		const { manager, received, handler } = await setup("initialize", 300_000, {
+			SILENT_MCP_RELEASE_PATH: releasePath,
+		});
+		expect(await received).toEqual({ method: "initialize" });
+
+		const readiness = observeResourceReadiness(manager);
+		try {
+			vi.useFakeTimers();
+			let settled = false;
+			const result = handler.resolve(parseInternalUrl("mcp://test://connected")).then(
+				resource => {
+					settled = true;
+					return { resource };
+				},
+				error => {
+					settled = true;
+					return { error };
+				},
+			);
+			await readiness.connection;
+			vi.advanceTimersByTime(30_000);
+			const nextTurn = Promise.withResolvers<void>();
+			setImmediate(nextTurn.resolve);
+			await nextTurn.promise;
+			expect(settled).toBe(false);
+			expect(manager.getConnectionStatus("fixture")).toBe("connecting");
+
+			vi.useRealTimers();
+			await Bun.write(releasePath, "ready");
+			expect(await result).toMatchObject({ resource: { content: "The connected resource is available." } });
+		} finally {
+			readiness.restore();
+		}
+	});
+
+	it("bounds readiness by the configured startup budget without stopping shared startup", async () => {
 		using temp = TempDir.createSync("@mcp-resource-readiness-");
 		const releasePath = path.join(temp.path(), "ready");
-		const { manager, received, handler } = await setup("initialize", 360_000, {
+		const { manager, received, handler } = await setup("initialize", 300_000, {
 			SILENT_MCP_RELEASE_PATH: releasePath,
 		});
 		expect(await received).toEqual({ method: "initialize" });
@@ -136,10 +174,11 @@ describe("MCP resource deadlines", () => {
 			vi.useFakeTimers();
 			const result = rejection(handler.resolve(parseInternalUrl("mcp://test://connected")));
 			await readiness.connection;
-			vi.advanceTimersByTime(30_000);
+			vi.advanceTimersByTime(300_000);
 			const error = await result;
 			expect((error as Error).cause).toMatchObject({ failure: "timeout", stage: "connect", retryable: false });
 			expect((error as Error).message).toContain("fixture");
+			expect((error as Error).message).toContain("300000ms");
 			expect(manager.getConnectionStatus("fixture")).toBe("connecting");
 
 			vi.useRealTimers();
@@ -151,6 +190,20 @@ describe("MCP resource deadlines", () => {
 		} finally {
 			readiness.restore();
 		}
+	});
+
+	it("bounds catalog readiness independently of the five-minute startup budget", async () => {
+		const { manager, received } = await setup("catalog", 300_000);
+		expect(await received).toEqual({ method: "resources/list" });
+
+		vi.useFakeTimers();
+		const result = rejection(manager.ensureServerResources("fixture"));
+		vi.advanceTimersByTime(30_000);
+		const error = await result;
+		expect(error).toBeInstanceOf(MCPTransportError);
+		expect(error).toMatchObject({ failure: "timeout", stage: "receive", retryable: false });
+		expect((error as Error).message).toContain("30000ms");
+		expect(manager.getConnectionStatus("fixture")).toBe("connected");
 	});
 
 	it("reports catalog unavailability rather than inventing an empty resource list", async () => {

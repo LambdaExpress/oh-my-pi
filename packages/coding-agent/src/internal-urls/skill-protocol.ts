@@ -14,7 +14,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent, logger, withTimeout } from "@oh-my-pi/pi-utils";
 import { resolveContainedPath } from "../discovery/contained-path";
-import { getActiveSkills, type Skill } from "../extensibility/skills";
+import { getActiveSkills, isManagedSkillAvailable, type Skill } from "../extensibility/skills";
 import { MCPManager } from "../mcp/manager";
 import skillDoc from "../prompts/internal-urls/skill.md" with { type: "text" };
 import {
@@ -38,6 +38,14 @@ import type {
 
 /** No loaded skill owns the URL's name; the only miss an MCP server may fill. */
 class UnknownSkillError extends Error {}
+
+function unavailableSkillResource(url: InternalUrl, targetPath: string): Error {
+	return new Error(
+		`Skill resource unavailable: ${url.href}\nFile not found: ${targetPath}\n` +
+			"The skill or resource was deleted or moved after discovery. Refresh skills (or restart the session) " +
+			"to update the inventory; restore the instruction file only if the skill is still intended to exist.",
+	);
+}
 
 /**
  * Most an unknown `skill://` name waits for MCP (deferred startup included) to advertise it: long
@@ -77,7 +85,7 @@ async function skillTargetPath(
 	}
 	skill ??= skills.find(s => s.name === skillName);
 	if (!skill) {
-		const available = skills.map(s => s.name);
+		const available = skills.filter(isManagedSkillAvailable).map(s => s.name);
 		const availableStr = available.length > 0 ? available.join(", ") : "none";
 		throw new UnknownSkillError(`Unknown skill: ${skillName}\nAvailable: ${availableStr}`);
 	}
@@ -173,7 +181,7 @@ export class SkillProtocolHandler implements ProtocolHandler {
 			stats = await fs.stat(targetPath);
 		} catch (error) {
 			if (isEnoent(error)) {
-				throw new Error(`File not found: ${targetPath}`);
+				throw unavailableSkillResource(url, targetPath);
 			}
 			throw error;
 		}
@@ -185,7 +193,14 @@ export class SkillProtocolHandler implements ProtocolHandler {
 			throw new Error(`skill:// URL must resolve to a file or directory: ${url.href}`);
 		}
 
-		const content = await Bun.file(targetPath).text();
+		let content: string;
+		try {
+			content = await Bun.file(targetPath).text();
+		} catch (error) {
+			// A concurrent delete can happen after stat, not just before it.
+			if (isEnoent(error)) throw unavailableSkillResource(url, targetPath);
+			throw error;
+		}
 		return {
 			url: url.href,
 			content,
@@ -222,9 +237,11 @@ export class SkillProtocolHandler implements ProtocolHandler {
 	}
 
 	async complete(): Promise<UrlCompletion[]> {
-		return getActiveSkills().map(skill => ({
-			value: skill.name,
-			...(skill.description ? { description: skill.description } : {}),
-		}));
+		return getActiveSkills()
+			.filter(isManagedSkillAvailable)
+			.map(skill => ({
+				value: skill.name,
+				...(skill.description ? { description: skill.description } : {}),
+			}));
 	}
 }

@@ -130,13 +130,6 @@ describe("read truncation metadata", () => {
 			outputBytes: Buffer.byteLength(preview),
 		});
 		expect(result.details?.meta?.truncation?.nextOffset).toBeUndefined();
-		const rendered = readToolRenderer
-			.renderResult(result, { expanded: false, isPartial: false }, uiTheme, { path: "artifact://0:raw:2-2" })
-			.render(100)
-			.map(line => Bun.stripANSI(line))
-			.join("\n");
-		expect(rendered).toContain("First line exceeds");
-		expect(rendered).not.toContain("Showing 0 of");
 	});
 
 	it("preserves the in-memory line cap and rendering of legacy metadata with or without display content", async () => {

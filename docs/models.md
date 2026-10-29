@@ -725,7 +725,7 @@ Related settings:
 - `modelProviderOrder` (provider precedence when equivalent concrete choices share an id)
 - `providers.kimiApiFormat` (`auto|openai|anthropic`; `auto` follows server-declared model metadata)
 - `providers.openaiWebsockets` (`auto|off|on` websocket preference for OpenAI Codex transport)
-- `providers.openaiLiveSteering` (deliver mid-response user messages into GPT-6 responses over the Codex WebSocket)
+- `providers.openaiLiveSteering` (deliver mid-response user messages over the Codex WebSocket only when the endpoint also opts in through `compat.supportsSteering`; native Codex lanes queue them for the next request)
 
 `modelRoles` stores model selectors such as `provider/modelId`; `enabledModels` and CLI `--models`
 accept exact selectors, globs, and fuzzy matches. The resulting scope restricts chat models only
@@ -867,7 +867,7 @@ Request shaping:
   `auto` for snapcompact frames and computer screenshots unless they opt in with
   `compat.supportsImageDetailOriginal: true`. An explicit `false` also overrides the known-host default.
 - `supportsConfigurationUpdate` — let the Responses API change `reasoning.effort` mid-session through a `configuration_update` input item while the request-level effort stays pinned for prompt caching (GPT-6 Astra). Default: auto (`true` for `gpt-6-astra` on every host, `false` otherwise). Set `false` for custom `openai-responses` / `openai-codex-responses` endpoints that reject the item type with HTTP 400; effort changes are then sent as the top-level `reasoning.effort` and no update items are emitted.
-- `supportsSteering` — let the Codex WebSocket transport send `response.steer`, so a message typed while the model responds joins that response instead of waiting for the next request. Default: auto (`true` for the GPT-6 family). Set `false` for proxies that reject the event.
+- `supportsSteering` — let the Codex WebSocket transport send `response.steer`, so a message typed while the model responds joins that response instead of waiting for the next request. Default: auto (`true` for the GPT-6 family, overridden to `false` on `openai-codex-responses`). Native Codex lanes reject in-flight stateful messages with `unsupported_native_inflight_message`, which can interrupt an answer already being streamed. Their queued input is delivered at the next request boundary without disabling WebSocket streaming or tool-result chaining. Set `true` only for a custom endpoint known to support `response.steer`.
 - `extraBody` — extra top-level fields merged into every request body (gateway hints, controller selectors, etc.).
 
 Image handling:

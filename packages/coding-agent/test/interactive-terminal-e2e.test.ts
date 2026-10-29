@@ -1106,7 +1106,7 @@ describe("libkitty end-to-end", () => {
 		expect(plainRows(term.getScrollBuffer()).some(row => row.includes(firstOutputMarker))).toBe(false);
 	});
 
-	it("preserves the advisor handoff order when Alt+O rebuilds retired history", async () => {
+	it("collapses retired failed tools during a later run without losing the advisor handoff or editor", async () => {
 		term = new VirtualTerminal(120, 12);
 		const composer = new Composer({ terminal: term });
 		replaceMode(composer);
@@ -1125,6 +1125,8 @@ describe("libkitty end-to-end", () => {
 		const advisorNoteMarker = "ADVISOR_NOTE_MARKER";
 		const secondReplyMarker = "ADVISOR_SECOND_REPLY_MARKER";
 		const draftMarker = "ADVISOR_DRAFT_MARKER";
+		const failedToolMarker = "EARLIER_FAILED_TOOL_MARKER";
+		const laterReplyMarker = "LATER_RUN_REPLY_MARKER";
 		const initial = { role: "user", content: "Review the implementation.", timestamp: 1 } as const;
 		const preAdvisorWork: AssistantMessage = {
 			role: "assistant",
@@ -1153,8 +1155,8 @@ describe("libkitty end-to-end", () => {
 			role: "toolResult",
 			toolCallId: "advisor-pre-call",
 			toolName: "bash",
-			content: [{ type: "text", text: "Pre-advisor tool result." }],
-			isError: false,
+			content: [{ type: "text", text: `AssertionError: ${failedToolMarker}` }],
+			isError: true,
 			timestamp: 3,
 		};
 		const firstReply: AssistantMessage = {
@@ -1234,40 +1236,69 @@ describe("libkitty end-to-end", () => {
 		await term.waitForRender(() => plainRows(term.getScrollBuffer()).some(row => row.includes("※ collapsed:")));
 		expect(plainRows(term.getScrollBuffer()).some(row => row.includes(hiddenMarker))).toBe(false);
 
-		// Raw Alt+O expands the completed span through the mounted editor. Drive
-		// finalized transcript frames until its oldest hidden row reaches native
-		// scrollback rather than remaining repaintable in the viewport.
-		term.sendInput("\x1bo");
+		const providerEntered = Promise.withResolvers<void>();
+		const releaseProvider = Promise.withResolvers<MockResponse>();
+		const mock = createMockModel({
+			handler: () => {
+				providerEntered.resolve();
+				return releaseProvider.promise;
+			},
+		});
+		authStorage.keys.setRuntime("anthropic", "test-key");
+		session.agent.streamFn = mock.stream;
+		const running = session.prompt("Keep the later request running.", { expandPromptTemplates: false });
 		const committedRows = () => {
 			const { baseY } = term.getBufferPosition();
 			return plainRows(term.getScrollBuffer()).slice(0, baseY);
 		};
-		for (let frame = 0; frame < 40 && !committedRows().some(row => row.includes(hiddenMarker)); frame++) {
-			mode.ui.requestRender(true);
-			await term.waitForRender();
-		}
-		expect(committedRows().filter(row => row.includes(hiddenMarker))).toHaveLength(1);
+		try {
+			await withTimeout(providerEntered.promise, 2_000, "Later request did not reach the provider");
+			expect(session.isStreaming).toBe(true);
 
-		term.sendInput(draftMarker);
-		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes(draftMarker)));
+			// Expand through the real shortcut while another request is running,
+			// then retire the old tool card beyond the repaintable viewport.
+			term.sendInput("\x1bo");
+			for (let frame = 0; frame < 40 && !committedRows().some(row => row.includes(failedToolMarker)); frame++) {
+				mode.ui.requestRender(true);
+				await term.waitForRender();
+			}
+			expect(committedRows().filter(row => row.includes(hiddenMarker))).toHaveLength(1);
+			expect(committedRows().filter(row => row.includes(failedToolMarker))).toHaveLength(1);
 
-		// Collapsing uses resetDisplay(), which must replace the complete terminal
-		// tape while preserving the still-mounted editor and the advisor handoff.
-		term.sendInput("\x1bo");
-		await term.waitForRender(() => {
+			term.sendInput(draftMarker);
+			await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes(draftMarker)));
+
+			// Collapsing must replace retired history immediately, without waiting
+			// for the later request to finish or the next input submission.
+			term.sendInput("\x1bo");
+			await term.waitForRender(() => {
+				const rows = plainRows(term.getScrollBuffer());
+				return !rows.some(row => row.includes(failedToolMarker)) && rows.some(row => row.includes(draftMarker));
+			});
+
 			const rows = plainRows(term.getScrollBuffer());
-			return !rows.some(row => row.includes(hiddenMarker)) && rows.some(row => row.includes(draftMarker));
-		});
+			expect(rows.some(row => row.includes(hiddenMarker))).toBe(false);
+			expect(rows.some(row => row.includes(failedToolMarker))).toBe(false);
+			const firstReplyRow = rows.findIndex(row => row.includes(firstReplyMarker));
+			const advisorNoteRow = rows.findIndex(row => row.includes(advisorNoteMarker));
+			const secondReplyRow = rows.findIndex(row => row.includes(secondReplyMarker));
+			expect(firstReplyRow).toBeGreaterThanOrEqual(0);
+			expect(advisorNoteRow).toBeGreaterThan(firstReplyRow);
+			expect(secondReplyRow).toBeGreaterThan(advisorNoteRow);
+			expect(session.isStreaming).toBe(true);
 
-		const rows = plainRows(term.getScrollBuffer());
-		expect(rows.some(row => row.includes(hiddenMarker))).toBe(false);
-		const firstReplyRow = rows.findIndex(row => row.includes(firstReplyMarker));
-		const advisorNoteRow = rows.findIndex(row => row.includes(advisorNoteMarker));
-		const secondReplyRow = rows.findIndex(row => row.includes(secondReplyMarker));
-		expect(firstReplyRow).toBeGreaterThanOrEqual(0);
-		expect(advisorNoteRow).toBeGreaterThan(firstReplyRow);
-		expect(secondReplyRow).toBeGreaterThan(advisorNoteRow);
-		expect(rows.some(row => row.includes(draftMarker))).toBe(true);
+			term.sendInput("X");
+			await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes(`${draftMarker}X`)));
+			expect(mode.editor.getText()).toBe(`${draftMarker}X`);
+			expect(plainRows(term.getViewport()).filter(row => row.includes(`${draftMarker}X`))).toHaveLength(1);
+		} finally {
+			releaseProvider.resolve({ content: [laterReplyMarker] });
+			await running;
+			await session.waitForIdle();
+		}
+		await term.waitForRender(() => plainRows(term.getScrollBuffer()).some(row => row.includes(laterReplyMarker)));
+		expect(plainRows(term.getScrollBuffer()).filter(row => row.includes(laterReplyMarker))).toHaveLength(1);
+		expect(plainRows(term.getScrollBuffer()).some(row => row.includes(failedToolMarker))).toBe(false);
 	});
 
 	it("hides tool activity already retired to native scrollback when the real shortcut toggles", async () => {

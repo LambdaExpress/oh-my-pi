@@ -414,10 +414,10 @@ async function actionableClickPoint(
 
 /**
  * Click an element only after verifying the dispatched point is not occluded, then confirm the browser
- * delivered the click to it: the target got the `mousedown` or `click` (a label's forwarded `click` counts
- * for its control), or the page consumed its `pointerdown` with `preventDefault()`, which suppresses the
- * mouse events after it. A disabled control gets only an unconsumed `pointerdown` and an inert subtree
- * nothing, so a click the page never saw fails instead of reporting success.
+ * delivered its trusted click (a label's forwarded click counts for its control). A page may instead
+ * consume pointerdown with preventDefault(), intentionally suppressing subsequent mouse events. Merely
+ * receiving mousedown is not completion: a background renderer can acknowledge input without clicking.
+ * Dispatch once only; missing or unobservable delivery must never trigger a replay.
  */
 export async function clickElement(
 	handle: ElementHandle,
@@ -426,46 +426,93 @@ export async function clickElement(
 	options: ClickAtOptions = {},
 ): Promise<void> {
 	const point = await actionableClickPoint(handle, label, signal, options);
+	const button = options.button ?? "left";
+	const eventType = button === "right" ? "contextmenu" : button === "left" ? "click" : "auxclick";
+	const buttonNumber = { left: 0, middle: 1, right: 2, back: 3, forward: 4 }[button];
 	const watch = await untilAborted(signal, () =>
-		handle.evaluateHandle(el => {
-			interface InputEvent {
-				type: string;
-				defaultPrevented: boolean;
-				composedPath(): unknown[];
-			}
-			type Listen = (type: string, listener: (event: InputEvent) => void, capture: boolean) => void;
-			const target = el as unknown as { addEventListener: Listen; removeEventListener: Listen };
-			const page = globalThis as unknown as { addEventListener: Listen; removeEventListener: Listen };
-			const pointerDowns: InputEvent[] = [];
-			const state = {
-				reached: false,
-				// Read after the click: the page's handlers have run by then.
-				delivered: () => state.reached || pointerDowns.some(event => event.defaultPrevented),
-				stop: () => {},
-			};
-			const record = (event: InputEvent) => {
-				if (event.type === "pointerdown") pointerDowns.push(event);
-				else state.reached = true;
-			};
-			// The target's own listener sees events inside a closed shadow root, which the window's path hides;
-			// the window's sees an event a page handler stops before it reaches the target.
-			const onPage = (event: InputEvent) => {
-				if (event.composedPath().includes(el)) record(event);
-			};
-			const types = ["pointerdown", "mousedown", "click"];
-			for (const type of types) {
-				target.addEventListener(type, record, true);
-				page.addEventListener(type, onPage, true);
-			}
-			state.stop = () => {
-				for (const type of types) {
-					target.removeEventListener(type, record, true);
-					page.removeEventListener(type, onPage, true);
+		handle.evaluateHandle(
+			(el, expected) => {
+				interface InputEvent {
+					type: string;
+					button: number;
+					isTrusted: boolean;
+					defaultPrevented: boolean;
+					composedPath(): unknown[];
 				}
-			};
-			return state;
-		}),
+				type Listen = (type: string, listener: (event: InputEvent) => void, capture: boolean) => void;
+				const target = el as unknown as { addEventListener: Listen; removeEventListener: Listen };
+				const page = globalThis as unknown as {
+					addEventListener: Listen;
+					removeEventListener: Listen;
+					document: { visibilityState: string };
+					devicePixelRatio: number;
+				};
+				const pointerDowns = new Set<InputEvent>();
+				const clicks = new Set<InputEvent>();
+				type Receipt = true | { visibility: string; dpr: number };
+				let resolve!: (receipt: Receipt) => void;
+				const result = new Promise<Receipt>(done => {
+					resolve = done;
+				});
+				const state = {
+					result,
+					finish: () => {
+						state.stop();
+						let consumed = false;
+						for (const event of pointerDowns) {
+							if (event.defaultPrevented) {
+								consumed = true;
+								break;
+							}
+						}
+						const delivered = clicks.size >= expected.count || consumed;
+						resolve(delivered ? true : { visibility: page.document.visibilityState, dpr: page.devicePixelRatio });
+					},
+					stop: () => {},
+				};
+				const record = (event: InputEvent) => {
+					if (!event.isTrusted || event.button !== expected.button) return;
+					if (event.type === "pointerdown") {
+						pointerDowns.add(event);
+					} else {
+						clicks.add(event);
+						// Resolve while handling the click, before its default action can destroy this context.
+						if (clicks.size >= expected.count) state.finish();
+					}
+				};
+				// The target's own listener sees events inside a closed shadow root, which the window's path hides;
+				// the window's sees an event a page handler stops before it reaches the target.
+				const onPage = (event: InputEvent) => {
+					if (event.composedPath().includes(el)) record(event);
+				};
+				const types = ["pointerdown", expected.eventType];
+				for (const type of types) {
+					target.addEventListener(type, record, true);
+					page.addEventListener(type, onPage, true);
+				}
+				state.stop = () => {
+					for (const type of types) {
+						target.removeEventListener(type, record, true);
+						page.removeEventListener(type, onPage, true);
+					}
+				};
+				return state;
+			},
+			{ button: buttonNumber, eventType, count: options.clickCount ?? 1 },
+		),
 	);
+	// Wait before dispatch, rather than first reading a handle after a navigating click destroys it.
+	// Keep the rejection observed even if dispatch itself fails or is cancelled.
+	const delivery = untilAborted(signal, () => watch.evaluate(state => state.result)).then(
+		receipt => ({ receipt }),
+		(error: unknown) => ({ error }),
+	);
+	const finish = () => {
+		// A renderer may be stuck. Cleanup must not hold a completed/aborted input operation open.
+		void untilAborted(signal, () => watch.evaluate(state => state.finish()))
+			.catch(() => undefined)
+			.finally(() => watch.dispose().catch(() => undefined));
+	};
 	try {
 		await untilAborted(signal, () =>
 			handle.frame.page().mouse.click(point.x, point.y, {
@@ -474,27 +521,23 @@ export async function clickElement(
 			}),
 		);
 	} catch (error) {
-		// The page may be stuck; tidy up without waiting on it.
-		void watch
-			.evaluate(state => state.stop())
-			.catch(() => undefined)
-			.finally(() => watch.dispose().catch(() => undefined));
+		finish();
 		throw error;
 	}
-	// A click that navigated away took the page's record with it; it reached the page. A cancelled call
-	// still fails as cancelled.
-	const delivered = await untilAborted(signal, () =>
-		watch.evaluate(state => {
-			state.stop();
-			return state.delivered();
-		}),
-	).catch((error: unknown) => {
-		if (signal?.aborted) throw error;
-		return true;
-	});
-	await watch.dispose().catch(() => undefined);
-	if (!delivered) {
-		throw new ToolError(`${label}: the browser did not deliver the click to the element (disabled or inert)`);
+	finish();
+	const outcome = await delivery;
+	if ("error" in outcome) {
+		throwIfAborted(signal);
+		const reason = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
+		throw new ToolError(
+			`${label}: input was dispatched but click delivery could not be confirmed; not retried: ${reason}`,
+		);
+	}
+	if (outcome.receipt !== true) {
+		const { visibility, dpr } = outcome.receipt;
+		throw new ToolError(
+			`${label}: the browser did not deliver the click to the element (disabled, inert, or dropped input; visibility:${visibility}, devicePixelRatio:${dpr}); not retried`,
+		);
 	}
 }
 

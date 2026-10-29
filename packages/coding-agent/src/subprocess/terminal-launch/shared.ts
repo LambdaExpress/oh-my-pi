@@ -11,6 +11,18 @@ export const processCli: TerminalLaunchCliRunner = async (argv, cwd, env) => {
 	return { stdout: result.stdout, exitCode: result.exitCode };
 };
 
+/** Apply child overrides without inheriting stale multiplexer-server scope variables. */
+export function commandWithEnvironment(request: TerminalLaunchRequest): readonly string[] {
+	if (!request.env) return request.command;
+	const unset: string[] = [];
+	const assignments: string[] = [];
+	for (const [name, value] of Object.entries(request.env)) {
+		if (!value) unset.push("-u", name);
+		else assignments.push(`${name}=${value}`);
+	}
+	return ["env", ...unset, "--", ...assignments, ...request.command];
+}
+
 export function launchError(
 	request: Pick<TerminalLaunchRequest, "multiplexer" | "placement">,
 	operation: string,

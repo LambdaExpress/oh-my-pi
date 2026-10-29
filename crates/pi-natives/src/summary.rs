@@ -48,11 +48,13 @@ pub struct SummaryOptions {
 	/// File path used to infer language by extension when `lang` is omitted.
 	pub path:               Option<String>,
 	/// Minimum total node lines before eliding a body/literal node.
+	/// C# always projects executable bodies, regardless of this threshold.
 	pub min_body_lines:     Option<u32>,
 	/// Minimum total comment lines before eliding a multiline block comment.
 	pub min_comment_lines:  Option<u32>,
 	/// Target visible-line count for BFS unfold. `None` or `0` keeps only
 	/// the outermost elisions (no progressive unfolding).
+	/// C# declaration projections are never unfolded.
 	pub unfold_until_lines: Option<u32>,
 	/// Hard ceiling for BFS unfold. Defaults to `unfold_until_lines * 2`
 	/// when omitted.
@@ -61,13 +63,15 @@ pub struct SummaryOptions {
 
 #[napi(object)]
 pub struct SummarySegment {
-	/// "kept" or "elided".
+	/// "kept", "elided", or "signature".
 	pub kind:       String,
 	/// 1-based inclusive start line.
 	pub start_line: u32,
 	/// 1-based inclusive end line.
 	pub end_line:   u32,
 	/// Verbatim text for kept segments; absent for elided segments.
+	/// A signature is a non-editable projection with inline `…` omissions,
+	/// recoverable by reading its entire start/end line range.
 	pub text:       Option<String>,
 }
 
@@ -77,7 +81,7 @@ pub struct SummaryResult {
 	pub language:    Option<String>,
 	/// True when tree-sitter parsed the source without syntax errors.
 	pub parsed:      bool,
-	/// True when at least one elision span was emitted.
+	/// True when at least one source region was omitted.
 	pub elided:      bool,
 	/// Total source lines.
 	pub total_lines: u32,

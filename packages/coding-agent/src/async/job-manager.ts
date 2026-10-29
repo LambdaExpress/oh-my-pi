@@ -188,10 +188,22 @@ export interface AsyncJobProcess {
 	readonly cwd: string;
 	/** Live pids the command spawned, in spawn order; empty before it starts and after it ends. */
 	pids(): readonly number[];
+	/** Starting work still occupies capacity, but has not launched an observable process yet. */
+	phase?(): "starting" | "running";
 }
 
-/** Delivery callback for a settled job's result text. */
-export type AsyncJobDeliverySink = (jobId: string, text: string, job?: AsyncJob) => void | Promise<void>;
+/**
+ * Acknowledgement after a result reaches its consumer. A deferred attempt must
+ * remain queued; a discarded attempt stays recoverable without automatic retry.
+ */
+export type AsyncJobDeliveryOutcome = void | "deferred" | "discarded";
+
+/** Delivery callback; resolving without an outcome acknowledges actual delivery. */
+export type AsyncJobDeliverySink = (
+	jobId: string,
+	text: string,
+	job?: AsyncJob,
+) => AsyncJobDeliveryOutcome | Promise<AsyncJobDeliveryOutcome>;
 
 export interface AsyncJobManagerOptions {
 	/**
@@ -712,6 +724,14 @@ export class AsyncJobManager {
 		return this.getDeliveryState(filter).queued > 0;
 	}
 
+	/** An accepted completion still queued or awaiting a sink receipt, including a wait-paused entry. */
+	hasJobDelivery(jobId: string): boolean {
+		return (
+			this.#deliveries.some(delivery => delivery.jobId === jobId && !this.#isDeliveryDiscarded(delivery)) ||
+			this.#inFlightDeliveries.some(delivery => delivery.jobId === jobId && !this.#isDeliveryDiscarded(delivery))
+		);
+	}
+
 	watchJobs(jobIds: string[]): number {
 		const uniqueJobIds = Array.from(new Set(jobIds.map(id => id.trim()).filter(id => id.length > 0)));
 		for (const jobId of uniqueJobIds) {
@@ -722,8 +742,8 @@ export class AsyncJobManager {
 	}
 
 	/**
-	 * Stop watching jobs. Settled jobs whose delivery was skipped while watched
-	 * and not consumed are re-enqueued.
+	 * Stop watching jobs and wake their parked deliveries. A retained result
+	 * without a queued or in-flight attempt is accepted again for recovery.
 	 */
 	unwatchJobs(jobIds: string[]): number {
 		const uniqueJobIds = Array.from(new Set(jobIds.map(id => id.trim()).filter(id => id.length > 0)));
@@ -741,6 +761,8 @@ export class AsyncJobManager {
 				this.#enqueueDelivery(jobId, job.status === "completed" ? (job.resultText ?? "") : (job.errorText ?? ""));
 			}
 		}
+		this.#notifyDeliveryQueueChanged();
+		this.#ensureDeliveryLoop();
 		return removed;
 	}
 
@@ -790,7 +812,7 @@ export class AsyncJobManager {
 		this.#deliveries.splice(
 			0,
 			this.#deliveries.length,
-			...this.#deliveries.filter(delivery => !this.isDeliverySuppressed(delivery.jobId)),
+			...this.#deliveries.filter(delivery => !this.#isDeliveryDiscarded(delivery)),
 		);
 		this.#notifyDeliveryQueueChanged();
 		return before - this.#deliveries.length;
@@ -1395,7 +1417,16 @@ export class AsyncJobManager {
 		clearTimeout(this.#evictionTimers.get(jobId));
 		this.#evictionTimers.delete(jobId);
 		this.#suppressedDeliveries.delete(jobId);
-		this.#watchedJobs.delete(jobId);
+		if (this.#watchedJobs.delete(jobId)) {
+			// A wait-paused completion has the same retention bound as its
+			// recoverable job row; do not resurrect it after its watcher expires.
+			this.#deliveries.splice(
+				0,
+				this.#deliveries.length,
+				...this.#deliveries.filter(delivery => delivery.jobId !== jobId),
+			);
+			this.#notifyDeliveryQueueChanged();
+		}
 		if (job) this.#runRetainedArtifactsCleanup(job);
 		const deleted = this.#jobs.delete(jobId);
 		// A foreground-backed job never surfaced as a background job, so it must
@@ -1519,30 +1550,36 @@ export class AsyncJobManager {
 		}
 	}
 
-	isDeliverySuppressed(jobId: string): boolean {
+	/** Pauses new attempts while watched; committed-queue staleness checks exclude temporary watches. */
+	isDeliverySuppressed(jobId: string, options?: { includeWatched?: boolean }): boolean {
 		const job = this.#jobs.get(jobId);
 		return (
 			this.#suppressedDeliveries.has(jobId) ||
-			this.#watchedJobs.has(jobId) ||
+			(options?.includeWatched !== false && this.#watchedJobs.has(jobId)) ||
 			(job?.scopeId !== undefined && this.#retiredScopes.has(job.scopeId))
 		);
 	}
 
-	#isDeliverySuppressed(delivery: AsyncJobDelivery): boolean {
+	#isDeliveryDiscarded(delivery: AsyncJobDelivery): boolean {
 		return (
 			this.#suppressedDeliveries.has(delivery.jobId) ||
-			this.#watchedJobs.has(delivery.jobId) ||
 			(delivery.scopeId !== undefined && this.#retiredScopes.has(delivery.scopeId))
 		);
 	}
 
+	#isDeliverySuppressed(delivery: AsyncJobDelivery): boolean {
+		return this.#isDeliveryDiscarded(delivery) || this.#watchedJobs.has(delivery.jobId);
+	}
+
 	#enqueueDelivery(jobId: string, text: string): void {
-		// Skip delivery if already acknowledged.
-		if (this.isDeliverySuppressed(jobId)) {
+		// Watching pauses automatic dispatch, not acceptance of the completion.
+		// Keep its delivery queued so releasing a wait resumes the same result.
+		if (this.isDeliverySuppressed(jobId, { includeWatched: false }) || this.#consumedJobResults.has(jobId)) {
 			return;
 		}
 		const job = this.#jobs.get(jobId);
 		if (!job) return;
+		if (this.hasJobDelivery(jobId)) return;
 		this.#queueDelivery({
 			jobId,
 			text,
@@ -1566,7 +1603,7 @@ export class AsyncJobManager {
 	}
 
 	#ensureDeliveryLoop(): void {
-		if (this.#deliveryLoop) {
+		if (this.#deliveryLoop || !this.#deliveries.some(delivery => !this.#isDeliverySuppressed(delivery))) {
 			return;
 		}
 
@@ -1576,35 +1613,30 @@ export class AsyncJobManager {
 			})
 			.finally(() => {
 				this.#deliveryLoop = undefined;
-				if (this.#deliveries.length > 0) {
-					this.#ensureDeliveryLoop();
-				}
+				this.#ensureDeliveryLoop();
 			});
 	}
 
 	async #runDeliveryLoop(): Promise<void> {
 		while (this.#deliveries.length > 0) {
-			const delivery = this.#deliveries[0];
-			if (this.#isDeliverySuppressed(delivery)) {
-				this.#deliveries.shift();
-				this.#notifyDeliveryQueueChanged();
-				continue;
-			}
+			// A watched entry remains parked without blocking other owners or
+			// spinning a loop when every queued completion belongs to a wait.
+			const index = this.#deliveries.findIndex(delivery => !this.#isDeliverySuppressed(delivery));
+			if (index === -1) return;
+			const delivery = this.#deliveries[index]!;
 			const waitMs = delivery.nextAttemptAt - Date.now();
 			if (waitMs > 0) {
 				await this.#waitForDeliveryQueueChange(waitMs);
 				continue;
 			}
-			if (this.#deliveries[0] !== delivery) {
+			if (this.#deliveries[index] !== delivery) {
 				continue;
 			}
 			if (this.#isDeliverySuppressed(delivery)) {
-				this.#deliveries.shift();
-				this.#notifyDeliveryQueueChanged();
 				continue;
 			}
 
-			this.#deliveries.shift();
+			this.#deliveries.splice(index, 1);
 			this.#notifyDeliveryQueueChanged();
 			void this.#deliverDelivery(delivery);
 		}
@@ -1643,14 +1675,19 @@ export class AsyncJobManager {
 			// can always await every entry visible in #inFlightDeliveries.
 			await Promise.resolve();
 			let delivered = false;
+			let deferred = false;
 			try {
-				if (this.#isDeliverySuppressed(delivery)) return;
-				await sink(
+				if (this.#isDeliverySuppressed(delivery)) {
+					deferred = !this.#isDeliveryDiscarded(delivery);
+					return;
+				}
+				const outcome = await sink(
 					delivery.jobId,
 					delivery.text,
 					this.#jobs.get(delivery.jobId) ?? this.#reconstructEvictedJob(delivery),
 				);
-				delivered = true;
+				deferred = outcome === "deferred";
+				delivered = outcome !== "deferred" && outcome !== "discarded";
 				// A foreground snapshot may have consumed this result while the
 				// sink receipt was parked. The receipt has now settled, so the
 				// suppression tombstone no longer needs the full retention window.
@@ -1661,7 +1698,7 @@ export class AsyncJobManager {
 				delivery.attempt += 1;
 				delivery.lastError = error instanceof Error ? error.message : String(error);
 				delivery.nextAttemptAt = Date.now() + this.#getRetryDelay(delivery.attempt);
-				if (!this.#isDeliverySuppressed(delivery) && this.#jobs.has(delivery.jobId)) {
+				if (!this.#isDeliveryDiscarded(delivery) && this.#jobs.has(delivery.jobId)) {
 					this.#queueDelivery(delivery);
 				}
 				logger.warn("Async job completion delivery failed", {
@@ -1673,6 +1710,18 @@ export class AsyncJobManager {
 			} finally {
 				const index = this.#inFlightDeliveries.indexOf(delivery);
 				if (index !== -1) this.#inFlightDeliveries.splice(index, 1);
+				// unwatchJobs may already have seen this attempt in flight and
+				// left it alone. Re-park only after removing that in-flight entry,
+				// so either ordering reliably resumes without duplicate delivery.
+				if (
+					deferred &&
+					this.#jobs.has(delivery.jobId) &&
+					!this.#isDeliveryDiscarded(delivery) &&
+					!this.#consumedJobResults.has(delivery.jobId)
+				) {
+					delivery.nextAttemptAt = Date.now();
+					this.#queueDelivery(delivery);
+				}
 				if (this.#deliveries.length > 0) this.#ensureDeliveryLoop();
 			}
 			// A normally delivered result is consumed only after the attempt left

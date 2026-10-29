@@ -293,7 +293,7 @@ describe("SshProtocolHandler", () => {
 		expect(res.immutable).toBe(true);
 		expect(res.sourcePath).toBeUndefined();
 		expect(res.content).toBe("conf.d/\nhosts");
-		// read fail → stat → list must target the same remote path, not a peeled/normalized variant.
+		// Classification and listing must target the same remote path.
 		expect(listSpy.mock.calls[0]?.[1]).toBe("/etc");
 	});
 
@@ -307,13 +307,14 @@ describe("SshProtocolHandler", () => {
 		expect(res.isDirectory).toBe(true);
 	});
 
-	it("rethrows the original read error when the path is missing, not a directory", async () => {
+	it("reports a missing path before attempting a text read", async () => {
 		mockHosts();
-		vi.spyOn(fileTransfer, "readRemoteFile").mockRejectedValue(
-			new Error("head: cannot open '/nope': No such file or directory"),
-		);
+		const readSpy = vi
+			.spyOn(fileTransfer, "readRemoteFile")
+			.mockRejectedValue(new Error("head: cannot open '/nope': No such file or directory"));
 		vi.spyOn(fileTransfer, "statRemotePath").mockResolvedValue("missing");
-		await expect(handler.resolve(parseInternalUrl("ssh://icaro/nope"))).rejects.toThrow(/No such file or directory/);
+		await expect(handler.resolve(parseInternalUrl("ssh://icaro/nope"))).rejects.toThrow(/path not found/);
+		expect(readSpy).not.toHaveBeenCalled();
 	});
 
 	it("rejects a remote special file (FIFO/device) without reading it", async () => {

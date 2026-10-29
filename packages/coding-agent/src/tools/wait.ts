@@ -86,8 +86,8 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		}
 		const jobs = manager?.getRunningJobs({ ownerId: senderId }) ?? [];
 		// An accepted completion whose delivery has not reached the transcript
-		// yet (queued, parked on the yield queue, or skipped while an earlier
-		// wait watched it) is exactly what this wait is for: return it now.
+		// yet (queued, parked on the yield queue, or dead-lettered) is exactly
+		// what this wait is for: claim its pending delivery or recover it now.
 		const undelivered = manager ? undeliveredJobs(manager, senderId) : [];
 		if (manager && undelivered.length > 0) {
 			return buildJobResult(this.session, manager, "wait", [...undelivered, ...jobs], []);
@@ -168,9 +168,9 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 			serviceAbort.abort();
 			signal?.removeEventListener("abort", onAbort);
 		}
-		// Unwatch only after the result is built: a job recovered below is
+		// Unwatch only after the result is built: a job received below is
 		// consumed first, while one left unreported (message or interrupt won
-		// the race) is re-enqueued for its ordinary async delivery.
+		// the race) resumes its parked ordinary async delivery.
 		try {
 			// A dequeued message wins a photo-finish with a job: the job remains
 			// deliverable, whereas a lost message cannot be recovered from the bus.

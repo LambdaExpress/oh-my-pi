@@ -36,6 +36,7 @@ import {
 	isIdaDatabasePath,
 } from "../ida";
 import { normalizeToLF } from "../edit/normalize";
+import { parseArchivePathCandidates } from "@oh-my-pi/pi-utils/ar";
 import { getEditStore, recordFullySeenRows } from "../edit/store";
 import {
 	extractUriScheme,
@@ -818,6 +819,19 @@ interface SessionWithRepeatReadTracker extends ToolSession {
 	[kRepeatReadTracker]?: Map<string, { hash: bigint; count: number }>;
 }
 
+function prependReadLimitation(
+	result: AgentToolResult<ReadToolDetails>,
+	limitation: string | undefined,
+): AgentToolResult<ReadToolDetails> {
+	if (!limitation) return result;
+	const firstText = result.content.find((block): block is TextContent => block.type === "text");
+	if (firstText) firstText.text = `[${limitation}]\n\n${firstText.text}`;
+	else result.content.unshift({ type: "text", text: `[${limitation}]` });
+	result.details ??= {};
+	result.details.notes = [...(result.details.notes ?? []), limitation];
+	return result;
+}
+
 /**
  * Append a loop-breaking hint when the same read selector returns
  * byte-identical output repeatedly. Weak models re-issue an unchanged read
@@ -826,6 +840,9 @@ interface SessionWithRepeatReadTracker extends ToolSession {
  * does. Tracking is per session and resets whenever the output changes.
  */
 function appendRepeatReadHint(session: ToolSession, path: string, result: AgentToolResult<ReadToolDetails>): void {
+	// A raw read is an extraction surface, including on repeated calls: no
+	// harness guidance may become part of bytes copied back into a file.
+	if (isRawSelector(parseSel(splitPathAndSel(path).sel))) return;
 	const block = result.content?.find(entry => entry.type === "text");
 	if (!block || typeof block.text !== "string" || block.text.length === 0 || result.isError) return;
 
@@ -1646,6 +1663,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				const entry = await fetchReadUrl(this.session, { path: parsedUrlTarget.path, raw: urlRaw }, signal, {
 					ensureArtifact: true,
 				});
+				if (entry.details.method === "failed") {
+					throw new ToolError(
+						`Failed to read URL ${entry.details.finalUrl}: ${entry.details.notes?.join("; ") || "fetch failed"}`,
+					);
+				}
 				return buildInMemorySelectorResult(this.session, entry.output, urlSel, {
 					details: { ...entry.details },
 					sourceUrl: entry.details.finalUrl,
@@ -1683,9 +1705,30 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			if (target) {
 				const url = target.url.rawHref ?? target.url.href;
 				if (target.kind === "resource") {
-					return this.#handleInternalUrl(url, target.spec, parsed, question, signal, sshHosts);
+					// A URI identifies the container, not a physical filename made
+					// from "archive.ext:member". Locate that entity first, then let
+					// the existing archive pipeline interpret the member and range.
+					if (target.spec.backing === "file") {
+						for (const candidate of parseArchivePathCandidates(peeled.path)) {
+							if (!candidate.subPath) continue;
+							const archiveTarget = await internalRouter.target(
+								candidate.archivePath,
+								sessionResolveContext(this.session, { signal, sshHosts }),
+							);
+							if (archiveTarget?.kind !== "file") continue;
+							located = {
+								url,
+								path: `${archiveTarget.path}:${candidate.subPath}`,
+								sel: peeled.sel,
+								spec: archiveTarget.spec,
+							};
+							break;
+						}
+					}
+					if (!located) return this.#handleInternalUrl(url, target.spec, parsed, question, signal, sshHosts);
+				} else {
+					located = { url, path: target.path, sel: target.sel, spec: target.spec };
 				}
-				located = { url, path: target.path, sel: target.sel, spec: target.spec };
 			}
 		}
 		if (!located) {
@@ -2016,6 +2059,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		let sourcePath: string | undefined;
 		let pagedSource = false;
 		let columnCut: ColumnCut | undefined;
+		let summaryUnavailable: string | undefined;
 		let truncationInfo:
 			| {
 					result: TruncationResult;
@@ -2157,7 +2201,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				cfgReadSummarizeEnabled.get(this.session.settings) &&
 				(cfgReadSummarizeProse.get(this.session.settings) || !isProseSummaryPath(renderAbsolutePath))
 			) {
-				const summary = await trySummarize(
+				const attempt = await trySummarize(
 					this.session,
 					absolutePath,
 					fileSize,
@@ -2165,7 +2209,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					buffered?.strippedText,
 					renderAbsolutePath,
 				);
-				if (summary?.parsed && summary.elided) {
+				const summary = attempt.summary;
+				summaryUnavailable = attempt.unavailable;
+				if (summary?.parsed) {
 					const renderedSummary = renderSummary(this.session, summary);
 					const footer = formatSummaryElisionFooter(
 						resolvedDisplayPath,
@@ -2187,11 +2233,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					const bodyText = footer ? `${renderedSummary.text}\n\n${footer}` : renderedSummary.text;
 					const modelText = prependHashlineHeader(bodyText, summaryHashContext);
 					if (summaryHashContext?.tag) {
-						getEditStore(this.session).recordSeenLinesFromBody(
-							absolutePath,
-							summaryHashContext.tag,
-							renderedSummary.text,
-						);
+						const store = getEditStore(this.session);
+						// A declaration-only projection may contain no literal rows.
+						// Seed the established no-full-line sentinel so an empty seen
+						// set cannot be mistaken for unrestricted edit provenance.
+						store.recordSeenLines(absolutePath, summaryHashContext.tag, [0]);
+						store.recordSeenLinesFromBody(absolutePath, summaryHashContext.tag, renderedSummary.text);
 					}
 					details = {
 						displayContent: { text: renderedSummary.displayText, startLine: 1 },
@@ -2228,7 +2275,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 							const firstText = bridgeResult.content.find((c): c is TextContent => c.type === "text");
 							if (firstText) firstText.text = `${notice}\n${firstText.text}`;
 						}
-						return bridgeResult;
+						return prependReadLimitation(bridgeResult, summaryUnavailable);
 					} catch (error) {
 						logger.warn("ACP fs readTextFile failed; falling back to disk", { path: absolutePath, error });
 					}
@@ -2360,7 +2407,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					}
 					const userLimitedLines = collectedLines.length;
 
-					const totalSelectedLines = totalFileLines - startLine;
+					// A closed range is the requested output, not a truncated view
+					// of every line after its start. Only caps that omit part of that
+					// requested window should produce truncation metadata/notices.
+					const remainingLines = totalFileLines - startLine;
+					const totalSelectedLines = limit === undefined ? remainingLines : Math.min(limit, remainingLines);
 					const wasTruncated = reachedEof && (collectedLines.length < totalSelectedLines || stoppedByByteLimit);
 					const firstLineExceedsLimit = firstLineByteLength !== undefined && firstLineByteLength > maxBytesForRead;
 					if (
@@ -2590,11 +2641,13 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 							} catch {
 								// Best-effort enrichment; fall back to window-only count.
 							}
-							outputText += formatConflictWarning(entries, {
-								totalInFile,
-								displayPath: displayPathForWarning,
-								scanTruncated,
-							});
+							if (!rawSelector) {
+								outputText += formatConflictWarning(entries, {
+									totalInFile,
+									displayPath: displayPathForWarning,
+									scanTruncated,
+								});
+							}
 							details.conflictCount = entries.length;
 						}
 					}
@@ -2644,7 +2697,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				columnSelectorBase: selectorBase,
 			});
 		}
-		return resultBuilder.done();
+		return prependReadLimitation(resultBuilder.done(), summaryUnavailable);
 	}
 
 	/**
@@ -2690,9 +2743,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	 * text with no local file behind it, so the whole remote file would land in
 	 * context. Summarizing it keeps the shape and elides bodies the model can
 	 * recover with a follow-up `:start-end` read — the footer names those ranges.
-	 * Returns null for anything that must stay verbatim: an explicit selector,
+	 * Returns no summary for anything that must stay verbatim: an explicit selector,
 	 * a directory listing, JSON, a scheme whose elisions are not re-readable,
 	 * prose unless `read.summarize.prose` opts in, or an unusable summary.
+	 * Failed C# declaration views carry a limitation to display with the excerpt.
 	 */
 	async #summarizeInternalResource(
 		url: string,
@@ -2701,13 +2755,13 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		parsedSel: ParsedSelector,
 		snapshot: HashlineSnapshotTarget | undefined,
 		signal?: AbortSignal,
-	): Promise<AgentToolResult<ReadToolDetails> | null> {
-		if (parsedSel.kind !== "none" || INTERNAL_SUMMARY_SELECTOR_SCHEMES[scheme] !== true) return null;
-		if (resource.isDirectory === true || resource.contentType === "application/json") return null;
+	): Promise<{ result: AgentToolResult<ReadToolDetails> | null; unavailable?: string }> {
+		if (parsedSel.kind !== "none" || INTERNAL_SUMMARY_SELECTOR_SCHEMES[scheme] !== true) return { result: null };
+		if (resource.isDirectory === true || resource.contentType === "application/json") return { result: null };
 		const parserPath = resource.sourcePath ?? url;
-		if (!cfgReadSummarizeEnabled.get(this.session.settings)) return null;
-		if (!cfgReadSummarizeProse.get(this.session.settings) && isProseSummaryPath(parserPath)) return null;
-		const summary = await trySummarize(
+		if (!cfgReadSummarizeEnabled.get(this.session.settings)) return { result: null };
+		if (!cfgReadSummarizeProse.get(this.session.settings) && isProseSummaryPath(parserPath)) return { result: null };
+		const attempt = await trySummarize(
 			this.session,
 			// Identity for the parse memo and the ACP bridge lookup: the real file
 			// when the resource has one, else the ssh snapshot key, else the URL.
@@ -2717,7 +2771,8 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			resource.content,
 			parserPath,
 		);
-		if (!summary) return null;
+		const summary = attempt.summary;
+		if (!summary) return { result: null, unavailable: attempt.unavailable };
 		const displayMode = resolveFileDisplayMode(this.session, { immutable: resource.immutable });
 		const renderedSummary = renderSummary(this.session, summary, displayMode);
 		const footer = formatSummaryElisionFooter(url, renderedSummary.elidedRanges, renderedSummary.elidedLines);
@@ -2734,11 +2789,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const bodyText = footer ? `${renderedSummary.text}\n\n${footer}` : renderedSummary.text;
 		const modelText = prependHashlineHeader(bodyText, hashContext);
 		if (hashContext?.tag && hashContext.snapshotKey) {
-			getEditStore(this.session).recordSeenLinesFromBodyForKey(
-				hashContext.snapshotKey,
-				hashContext.tag,
-				renderedSummary.text,
-			);
+			const store = getEditStore(this.session);
+			store.recordSeenLinesForKey(hashContext.snapshotKey, hashContext.tag, [0]);
+			store.recordSeenLinesFromBodyForKey(hashContext.snapshotKey, hashContext.tag, renderedSummary.text);
 		}
 
 		const resultBuilder = toolResult<ReadToolDetails>({
@@ -2752,7 +2805,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			},
 		}).text(modelText);
 		if (resource.sourcePath) resultBuilder.sourcePath(resource.sourcePath);
-		return resultBuilder.sourceInternal(url).done();
+		return { result: resultBuilder.sourceInternal(url).done() };
 	}
 
 	/**
@@ -2808,6 +2861,24 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				: undefined;
 		const snapshot = snapshotKey ? { key: snapshotKey, displayPath: urlMeta.href } : undefined;
 
+		// Conflict handlers preserve their already-formatted bare-read output,
+		// but selectors address the underlying region, not its snapshot header
+		// or anchored display prefixes. Its anchors still name full-file rows.
+		if (
+			scheme === "conflict" &&
+			display &&
+			(parsedSel.kind === "raw" || parsedSel.kind === "lines" || parsedSel.kind === "tail")
+		) {
+			delete details.displayContent;
+			return buildInMemorySelectorResult(this.session, display.text, parsedSel, {
+				details,
+				sourcePath: resource.sourcePath,
+				sourceInternal: url,
+				entityLabel: "conflict region",
+				sourceStartLine: display.startLine,
+			});
+		}
+
 		if (resource.shape === "value") {
 			if (parsedSel.kind === "none" || parsedSel.kind === "raw") {
 				return toolResult(details).text(resource.content).sourceInternal(url).done();
@@ -2821,9 +2892,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 
 		const internalSummary = await this.#summarizeInternalResource(url, resource, scheme, parsedSel, snapshot, signal);
-		if (internalSummary) return internalSummary;
+		if (internalSummary.result) return internalSummary.result;
 
-		return buildInMemorySelectorResult(this.session, resource.content, parsedSel, {
+		const result = await buildInMemorySelectorResult(this.session, resource.content, parsedSel, {
 			details,
 			sourcePath: resource.sourcePath,
 			sourceInternal: url,
@@ -2832,6 +2903,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			immutable: resource.immutable,
 			snapshot,
 		});
+		return prependReadLimitation(result, internalSummary.unavailable);
 	}
 
 	/**

@@ -206,13 +206,17 @@ function recordInMemorySeenLines(
 	fullText: string,
 	seenLines: readonly number[] | undefined,
 	snapshot?: { key: string; displayPath: string },
+	sourceStartLine?: number,
 ): void {
 	if (!seenLines || seenLines.length === 0) return;
-	const normalized = normalizeToLF(fullText);
 	if (snapshot) {
-		getEditStore(session).recordSnapshotForKey(snapshot.key, normalized, [...seenLines]);
+		getEditStore(session).recordSnapshotForKey(snapshot.key, normalizeToLF(fullText), [...seenLines]);
 	} else if (absolutePath && path.isAbsolute(absolutePath)) {
-		getEditStore(session).recordSnapshot(absolutePath, normalized, [...seenLines]);
+		if (sourceStartLine !== undefined) {
+			getEditStore(session).recordSnapshotFile(absolutePath, [...seenLines]);
+		} else {
+			getEditStore(session).recordSnapshot(absolutePath, normalizeToLF(fullText), [...seenLines]);
+		}
 	}
 }
 
@@ -263,6 +267,32 @@ export interface InMemoryTextOptions {
 	raw?: boolean;
 	immutable?: boolean;
 	snapshot?: { key: string; displayPath: string };
+	/** File line of this source slice's first line; selectors still address the slice from line 1. */
+	sourceStartLine?: number;
+}
+
+function inMemoryHashlineContext(
+	session: ToolSession,
+	text: string,
+	options: InMemoryTextOptions,
+	shouldAddHashLines: boolean,
+): HashlineHeaderContext | undefined {
+	if (!shouldAddHashLines || (!options.snapshot && !options.sourcePath)) return undefined;
+	const displayPath = options.sourcePath ? formatPathRelativeToCwd(options.sourcePath, session.cwd) : "";
+	if (options.sourceStartLine !== undefined && options.sourcePath) {
+		// A conflict region is only a slice: its tag must still hash the entire
+		// source file, never replace that file's snapshot with the region text.
+		const tag = getEditStore(session).recordSnapshotFile(options.sourcePath);
+		return tag ? hashlineHeaderContext(displayPath, tag) : undefined;
+	}
+	return recordFullHashlineContext(session, options.sourcePath, displayPath, text, options.snapshot);
+}
+
+function offsetLineEntries(entries: LineEntry[], lineOffset: number): LineEntry[] {
+	if (lineOffset === 0) return entries;
+	return entries.map(entry =>
+		entry.kind === "line" ? { ...entry, lineNumber: entry.lineNumber + lineOffset } : entry,
+	);
 }
 
 /**
@@ -297,6 +327,7 @@ export async function buildInMemoryTextResult(
 	const displayMode = resolveFileDisplayMode(session, { raw: options.raw, immutable: options.immutable });
 	const details = options.details ?? {};
 	const rawDisplay = options.raw === true;
+	const lineOffset = (options.sourceStartLine ?? 1) - 1;
 	// Raw mode preserves line bytes and shows no block context, so it slices
 	// the window straight out of `text`; only numbered reads need every line.
 	const allLines = rawDisplay ? undefined : splitAddressableFileLines(text);
@@ -373,37 +404,30 @@ export async function buildInMemoryTextResult(
 
 	const shouldAddHashLines = displayMode.hashLines;
 	const shouldAddLineNumbers = shouldAddHashLines ? false : displayMode.lineNumbers;
-	const hashContext =
-		shouldAddHashLines && (options.snapshot || options.sourcePath)
-			? recordFullHashlineContext(
-					session,
-					options.sourcePath,
-					options.sourcePath ? formatPathRelativeToCwd(options.sourcePath, session.cwd) : "",
-					text,
-					options.snapshot,
-				)
-			: undefined;
+	const hashContext = inMemoryHashlineContext(session, text, options, shouldAddHashLines);
 	let emittedHashlineHeader = false;
 	let seenLines: number[] | undefined;
 	let rawSeenLines: number[] | undefined;
 	const formatText = (content: string, startNum: number): string => {
 		const lineCount = rawSeenLines?.length ?? countTextLines(content);
+		const sourceLine = startNum + lineOffset;
 		details.displayContent = {
 			text: content,
-			startLine: startNum,
-			lineNumbers: Array.from({ length: lineCount }, (_, i) => startNum + i),
+			startLine: sourceLine,
+			lineNumbers: Array.from({ length: lineCount }, (_, i) => sourceLine + i),
 		};
-		if (shouldAddHashLines) seenLines = contiguousLineNumbers(startNum, lineCount);
-		const formatted = formatTextWithMode(content, startNum, shouldAddHashLines, shouldAddLineNumbers);
+		if (shouldAddHashLines) seenLines = contiguousLineNumbers(sourceLine, lineCount);
+		const formatted = formatTextWithMode(content, sourceLine, shouldAddHashLines, shouldAddLineNumbers);
 		if (!hashContext || emittedHashlineHeader) return formatted;
 		emittedHashlineHeader = true;
 		return prependHashlineHeader(formatted, hashContext);
 	};
-	const formatLineEntries = (entries: readonly LineEntry[], startNum: number): string => {
+	const formatLineEntries = (relativeEntries: LineEntry[], startNum: number): string => {
+		const entries = offsetLineEntries(relativeEntries, lineOffset);
 		const firstLine = entries.find(entry => entry.kind === "line");
 		details.displayContent = {
 			text: lineEntriesToPlainText(entries, BRACKET_CONTEXT_ELLIPSIS),
-			startLine: firstLine?.kind === "line" ? firstLine.lineNumber : startNum,
+			startLine: firstLine?.kind === "line" ? firstLine.lineNumber : startNum + lineOffset,
 			lineNumbers: entries.map(entry => (entry.kind === "line" ? entry.lineNumber : null)),
 		};
 		if (shouldAddHashLines) seenLines = lineNumbersFromEntries(entries);
@@ -456,7 +480,10 @@ export async function buildInMemoryTextResult(
 		const outputLines = truncation.outputLines ?? countTextLines(truncation.content);
 		const endLineDisplay = startLineDisplay + Math.max(0, outputLines - 1);
 		if (!allLines) {
-			rawSeenLines = contiguousLineNumbers(startLineDisplay, Math.min(outputLines, endLine - startLine));
+			rawSeenLines = contiguousLineNumbers(
+				startLineDisplay + lineOffset,
+				Math.min(outputLines, endLine - startLine),
+			);
 			outputText = formatText(truncation.content, startLineDisplay);
 		} else {
 			outputText = formatLineEntries(buildLineEntries(allLines, endLineDisplay), startLineDisplay);
@@ -471,7 +498,7 @@ export async function buildInMemoryTextResult(
 		const nextOffset = startLine + userLimitedLines + 1;
 
 		if (!allLines) {
-			rawSeenLines = contiguousLineNumbers(startLineDisplay, userLimitedLines);
+			rawSeenLines = contiguousLineNumbers(startLineDisplay + lineOffset, userLimitedLines);
 			outputText = formatText(joinSelectedLines(), startLineDisplay);
 		} else {
 			outputText = formatLineEntries(buildLineEntries(allLines, endLine), startLineDisplay);
@@ -479,7 +506,7 @@ export async function buildInMemoryTextResult(
 		outputText += `\n\n[${remaining} more lines in ${options.entityLabel}. Use :${nextOffset} to continue]`;
 	} else {
 		if (!allLines) {
-			rawSeenLines = contiguousLineNumbers(startLineDisplay, endLine - startLine);
+			rawSeenLines = contiguousLineNumbers(startLineDisplay + lineOffset, endLine - startLine);
 			outputText = formatText(joinSelectedLines(), startLineDisplay);
 		} else {
 			outputText = formatLineEntries(buildLineEntries(allLines, endLine), startLineDisplay);
@@ -494,7 +521,14 @@ export async function buildInMemoryTextResult(
 		}
 	}
 	if (options.raw === true && options.immutable !== true && rawSeenLines) {
-		recordInMemorySeenLines(session, options.sourcePath, text, rawSeenLines, options.snapshot);
+		recordInMemorySeenLines(
+			session,
+			options.sourcePath,
+			text,
+			rawSeenLines,
+			options.snapshot,
+			options.sourceStartLine,
+		);
 	}
 	resultBuilder.text(outputText);
 	if (truncationInfo) {
@@ -519,22 +553,14 @@ export async function buildInMemoryMultiRangeResult(
 ): Promise<AgentToolResult<ReadToolDetails>> {
 	const displayMode = resolveFileDisplayMode(session, { raw: options.raw, immutable: options.immutable });
 	const details = options.details ?? {};
+	const lineOffset = (options.sourceStartLine ?? 1) - 1;
 	// Raw mode only emits the requested windows, so it never splits the whole text.
 	const allLines = options.raw === true ? undefined : splitAddressableFileLines(text);
 	const totalLines = allLines ? allLines.length : countRawLines(text);
 	details.totalLines = totalLines;
 	const shouldAddHashLines = displayMode.hashLines;
 	const shouldAddLineNumbers = shouldAddHashLines ? false : displayMode.lineNumbers;
-	const hashContext =
-		shouldAddHashLines && (options.snapshot || options.sourcePath)
-			? recordFullHashlineContext(
-					session,
-					options.sourcePath,
-					options.sourcePath ? formatPathRelativeToCwd(options.sourcePath, session.cwd) : "",
-					text,
-					options.snapshot,
-				)
-			: undefined;
+	const hashContext = inMemoryHashlineContext(session, text, options, shouldAddHashLines);
 	let emittedHashlineHeader = false;
 
 	let seenLines: number[] | undefined;
@@ -572,14 +598,17 @@ export async function buildInMemoryMultiRangeResult(
 	if (!allLines) {
 		outputText = rawParts.length > 0 ? rawParts.join("\n\n…\n\n") : "";
 	} else if (visibleSpans.length > 0) {
-		const entries = buildLineEntriesWithBlockContext(
-			allLines,
-			visibleSpans,
-			{
-				path: options.sourcePath ?? options.snapshot?.displayPath,
-				text,
-			},
-			{ blockContext: false },
+		const entries = offsetLineEntries(
+			buildLineEntriesWithBlockContext(
+				allLines,
+				visibleSpans,
+				{
+					path: options.sourcePath ?? options.snapshot?.displayPath,
+					text,
+				},
+				{ blockContext: false },
+			),
+			lineOffset,
 		);
 		if (shouldAddHashLines) seenLines = lineNumbersFromEntries(entries);
 		const firstLine = entries.find(entry => entry.kind === "line");
@@ -609,7 +638,8 @@ export async function buildInMemoryMultiRangeResult(
 		}
 	}
 	if (options.raw === true && options.immutable !== true && visibleSpans.length > 0) {
-		recordInMemorySeenLines(session, options.sourcePath, text, lineNumbersFromSpans(visibleSpans), options.snapshot);
+		const seenLines = lineNumbersFromSpans(visibleSpans).map(line => line + lineOffset);
+		recordInMemorySeenLines(session, options.sourcePath, text, seenLines, options.snapshot, options.sourceStartLine);
 	}
 	resultBuilder.text(finalText);
 	return resultBuilder.done();

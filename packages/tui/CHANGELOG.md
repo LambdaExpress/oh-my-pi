@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Removed
+
+- Removed `Composer.setRunActive()` and the `transientChrome`/`selfClearingChrome` runtime options; transcript layout now reserves the current height of every visible chrome component without host lifecycle hints.
+
 ### Added
 
 - Added `TUI.refreshDisplay()` to invalidate cached components without clearing native scrollback.
@@ -20,6 +24,9 @@
 ### Fixed
 
 - Fixed overflowing running tool cards repeatedly appending their headers and preview fragments to terminal history as loading animations or partial results update.
+- Fixed C# declaration projections being displayed as editable source lines; projected signatures now use distinct range labels and precise recovery ranges.
+- Fixed streamed answers temporarily losing their opening sections until completion when a stable publication spans the viewport or sits behind an active completed-run gate; offscreen stable rows now retire with preceding tool results in the same frame.
+- Fixed missing tool-card borders, headers, and output at the history/live seam when loaders or panels grow during a run; history retirement and viewport layout now reserve the same current chrome height.
 - Fixed active tool previews appearing truncated until resize when their contents changed after overflowing the viewport.
 - Fixed large blank gaps above the input when tool previews, panels, or completed runs collapse; ordinary paints and short history replays now keep the editor directly below the remaining content.
 - Localized usage limit titles and absolute remaining/spent amounts across overview cards, detail reports, and native terminal descriptions.

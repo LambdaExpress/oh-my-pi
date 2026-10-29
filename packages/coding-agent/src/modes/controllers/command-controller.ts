@@ -162,23 +162,6 @@ const FORK_LAUNCH_OVERRIDES: Readonly<Record<string, true>> = {
 	"--thinking": true,
 };
 
-/**
- * `env` prefix pinning each scope variable for the fork child. Multiplexer
- * servers keep stale environment snapshots, so every variable is pinned:
- * defined values are assigned, absent (or empty) ones are unset with `-u`
- * (which must precede the assignments) rather than exported as empty strings
- * that `??`-style consumers would treat as a set, relative path.
- */
-function forkScopeEnvCommand(scope: Readonly<Record<string, string | undefined>>): string[] {
-	const unset: string[] = [];
-	const assignments: string[] = [];
-	for (const [name, value] of Object.entries(scope)) {
-		if (value) assignments.push(`${name}=${value}`);
-		else unset.push("-u", name);
-	}
-	return ["env", ...unset, ...assignments];
-}
-
 function hasForkApiKeyOverride(argv: string[]): boolean {
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i]!;
@@ -1638,22 +1621,19 @@ export class CommandController {
 				childArgs.push("--prompt-cache-key", this.ctx.session.agent.promptCacheKey ?? this.ctx.session.sessionId);
 			}
 			childArgs.push("--fork", sourceSessionFile);
-			// Pin only non-secret scope variables.
-			const command = [
-				...forkScopeEnvCommand({
-					PI_CODING_AGENT_DIR: this.ctx.settings.getAgentDir(),
-					PI_CONFIG_DIR: getConfigDirName(),
-					OMP_PROFILE: activeProfile,
-					PI_PROFILE: activeProfile,
-					PI_CONFIG_FILES: this.ctx.settings.getConfigFiles().join(path.delimiter),
-					PI_CODING_AGENT_SESSION_DIR: environment.PI_CODING_AGENT_SESSION_DIR,
-					XDG_DATA_HOME: environment.XDG_DATA_HOME,
-					XDG_STATE_HOME: environment.XDG_STATE_HOME,
-					XDG_CACHE_HOME: environment.XDG_CACHE_HOME,
-				}),
-				...dependencies.resolveCliEntryCmd(),
-				...childArgs,
-			];
+			// Pin only non-secret scope variables, clearing stale server values when absent or empty.
+			const env = {
+				PI_CODING_AGENT_DIR: this.ctx.settings.getAgentDir(),
+				PI_CONFIG_DIR: getConfigDirName(),
+				OMP_PROFILE: activeProfile,
+				PI_PROFILE: activeProfile,
+				PI_CONFIG_FILES: this.ctx.settings.getConfigFiles().join(path.delimiter),
+				PI_CODING_AGENT_SESSION_DIR: environment.PI_CODING_AGENT_SESSION_DIR,
+				XDG_DATA_HOME: environment.XDG_DATA_HOME,
+				XDG_STATE_HOME: environment.XDG_STATE_HOME,
+				XDG_CACHE_HOME: environment.XDG_CACHE_HOME,
+			};
+			const command = [...dependencies.resolveCliEntryCmd(), ...childArgs];
 			const launchPlan = createDefaultTerminalLaunchRequest(
 				multiplexer,
 				placement,
@@ -1666,7 +1646,7 @@ export class CommandController {
 				return;
 			}
 
-			const result = await dependencies.launchTerminal(launchPlan.request);
+			const result = await dependencies.launchTerminal({ ...launchPlan.request, env });
 			if (result.warning) {
 				this.ctx.showWarning(
 					`Opened a fork in ${placementInfo.displayName}, but ${result.warning} This session continues here.`,

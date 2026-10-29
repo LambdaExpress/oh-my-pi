@@ -840,7 +840,14 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 		if (!READ_OPERATIONS[params.op]) this.#ui.invalidate(selected.serial);
 		const args = buildArgs(selected);
 		const startedAt = Date.now();
-		let result = await this.#runText(args, details, timeoutMs, signal, onUpdate);
+		let result = await this.#runText(
+			args,
+			details,
+			timeoutMs,
+			signal,
+			onUpdate,
+			params.op === "logcat" && !params.follow ? (params.lines ?? DEFAULT_LOGCAT_LINES) : undefined,
+		);
 		if (
 			params.op === "shell" &&
 			UIAUTOMATOR_DUMP_COMMAND.test(params.command) &&
@@ -930,22 +937,68 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 		timeoutMs: number,
 		signal: AbortSignal | undefined,
 		onUpdate?: AgentToolUpdateCallback<AdbToolDetails>,
+		maxLines?: number,
 	): Promise<AdbCommandResult> {
 		const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
 		const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("adb")) ?? {};
+		const outputOptions = {
+			spillThreshold: resolveOutputSinkSpillThreshold(this.session.settings),
+			tailBytes: resolveOutputSinkTailBytes(this.session.settings),
+			headBytes: resolveOutputSinkHeadBytes(this.session.settings),
+			maxColumns: resolveOutputMaxColumns(this.session.settings),
+		};
+		const update = streamTailUpdates(tailBuffer, onUpdate, details);
+		let recentOutput = "";
+		let completeLines = 0;
+		let receivedChunks = false;
+		const captureRecent = (chunk: string) => {
+			if (maxLines === undefined || !chunk) return;
+			receivedChunks = true;
+			recentOutput += chunk;
+			for (let index = chunk.indexOf("\n"); index !== -1; index = chunk.indexOf("\n", index + 1)) {
+				completeLines++;
+			}
+			// -t counts native log records, not formatted lines: multiline messages and
+			// buffer headers can exceed it. Count physical lines, excluding the phantom
+			// empty split element after a terminal newline, before writing any artifact.
+			const completeLimit = maxLines - (recentOutput.endsWith("\n") ? 0 : 1);
+			let start = 0;
+			while (completeLines > completeLimit) {
+				start = recentOutput.indexOf("\n", start) + 1;
+				completeLines--;
+			}
+			if (start > 0) recentOutput = recentOutput.slice(start);
+		};
 		let result: AdbCommandResult;
 		try {
 			result = await this.#dependencies.executeAdb(args, {
 				timeoutMs,
 				signal,
-				artifactPath,
-				artifactId,
-				spillThreshold: resolveOutputSinkSpillThreshold(this.session.settings),
-				tailBytes: resolveOutputSinkTailBytes(this.session.settings),
-				headBytes: resolveOutputSinkHeadBytes(this.session.settings),
-				maxColumns: resolveOutputMaxColumns(this.session.settings),
-				onChunk: streamTailUpdates(tailBuffer, onUpdate, details),
+				...outputOptions,
+				artifactPath: maxLines === undefined ? artifactPath : undefined,
+				artifactId: maxLines === undefined ? artifactId : undefined,
+				onChunk: maxLines === undefined ? update : captureRecent,
 			});
+			if (maxLines !== undefined) {
+				if (!receivedChunks) captureRecent(result.output);
+				const sink = new OutputSink({
+					...outputOptions,
+					artifactPath,
+					artifactId,
+					onChunk: update,
+				});
+				try {
+					sink.push(recentOutput);
+					result = {
+						exitCode: result.exitCode,
+						cancelled: result.cancelled,
+						timedOut: result.timedOut,
+						...(await sink.dump()),
+					};
+				} finally {
+					await sink.dispose();
+				}
+			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (signal?.aborted || error instanceof ToolAbortError) {

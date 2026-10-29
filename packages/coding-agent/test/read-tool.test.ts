@@ -107,7 +107,7 @@ describe("read repetition tracking", () => {
 		expect(changed.content.filter(block => block.type === "text")).toEqual(baselineText);
 	});
 
-	it("hints on unchanged text and resets after a text overwrite", async () => {
+	it("keeps raw text verbatim across repeated reads and overwrites", async () => {
 		using tmp = TempDir.createSync("@read-text-repetition-");
 		const filePath = path.join(tmp.path(), "notes.txt");
 		fs.writeFileSync(filePath, "original text\n");
@@ -117,15 +117,25 @@ describe("read repetition tracking", () => {
 		expect(first.content).toEqual([{ type: "text", text: "original text\n" }]);
 		expect((await read("read-text-second")).content).toEqual(first.content);
 		const third = await read("read-text-third");
-		expect(third.content).not.toEqual(first.content);
-		expect(third.content[0]).toEqual({
-			type: "text",
-			text: expect.stringMatching(/^original text\n/),
-		});
+		expect(third.content).toEqual(first.content);
 
 		fs.writeFileSync(filePath, "replacement text\n");
 		expect((await read("read-text-changed")).content).toEqual([{ type: "text", text: "replacement text\n" }]);
 		expect((await read("read-text-changed-second")).content).toEqual([{ type: "text", text: "replacement text\n" }]);
+	});
+
+	it("still hints on repeated non-raw reads and resets after an overwrite", async () => {
+		using tmp = TempDir.createSync("@read-text-repetition-");
+		const filePath = path.join(tmp.path(), "notes.txt");
+		fs.writeFileSync(filePath, "original text\n");
+		const tool = new ReadTool(createSession(tmp.path(), ""));
+		const first = await tool.execute("read-numbered-first", { path: filePath });
+		expect((await tool.execute("read-numbered-second", { path: filePath })).content).toEqual(first.content);
+		expect((await tool.execute("read-numbered-third", { path: filePath })).content).not.toEqual(first.content);
+
+		fs.writeFileSync(filePath, "replacement text\n");
+		const changed = await tool.execute("read-numbered-changed", { path: filePath });
+		expect((await tool.execute("read-numbered-changed-second", { path: filePath })).content).toEqual(changed.content);
 	});
 });
 

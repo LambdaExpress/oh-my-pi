@@ -37,7 +37,6 @@ import stealthLocaleScript from "../puppeteer/09_stealth_locale.txt" with { type
 import stealthPluginsScript from "../puppeteer/10_stealth_plugins.txt" with { type: "text" };
 import stealthHardwareScript from "../puppeteer/11_stealth_hardware.txt" with { type: "text" };
 import stealthCodecsScript from "../puppeteer/12_stealth_codecs.txt" with { type: "text" };
-import stealthWorkerScript from "../puppeteer/13_stealth_worker.txt" with { type: "text" };
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { withDownload } from "../../downloads/activity";
 
@@ -957,6 +956,7 @@ async function withSoftTimeout<T>(promise: Promise<T>, timeoutMs: number, label:
 	}
 }
 
+// Worker constructors stay native: blob preludes change CSP and script URL semantics.
 const STEALTH_PATCH_SCRIPTS = [
 	stealthTamperingScript,
 	stealthActivityScript,
@@ -971,7 +971,6 @@ const STEALTH_PATCH_SCRIPTS = [
 	stealthPluginsScript,
 	stealthHardwareScript,
 	stealthCodecsScript,
-	stealthWorkerScript,
 ];
 
 function buildStealthInjectionScript(scripts: readonly string[] = STEALTH_PATCH_SCRIPTS): string {
@@ -1023,7 +1022,6 @@ function buildStealthInjectionScript(scripts: readonly string[] = STEALTH_PATCH_
 					const Object_entries = nativeWindow.Object.entries;
 					const Object_setPrototypeOf = nativeWindow.Object.setPrototypeOf;
 					const Object_assign = nativeWindow.Object.assign;
-					const Window_setTimeout = nativeWindow.setTimeout;
 					const Math_random = nativeWindow.Math.random;
 					const Math_floor = nativeWindow.Math.floor;
 					const Math_max = nativeWindow.Math.max;
@@ -1035,7 +1033,6 @@ function buildStealthInjectionScript(scripts: readonly string[] = STEALTH_PATCH_
 					const Reflect_get = nativeWindow.Reflect.get;
 					const Reflect_set = nativeWindow.Reflect.set;
 					const Reflect_apply = nativeWindow.Reflect.apply;
-					const Reflect_construct = nativeWindow.Reflect.construct;
 					const Reflect_defineProperty = nativeWindow.Reflect.defineProperty;
 					const Reflect_deleteProperty = nativeWindow.Reflect.deleteProperty;
 					const Reflect_getOwnPropertyDescriptor = nativeWindow.Reflect.getOwnPropertyDescriptor;

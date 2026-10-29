@@ -84,6 +84,8 @@ export interface LoadPageOptions {
 	 * payload as binary; this avoids streaming + decoding huge binaries twice.
 	 */
 	skipBodyForContentType?: (contentType: string) => boolean;
+	/** Keep the successful response bytes instead of decoding or re-fetching them. */
+	binaryBodyForContentType?: (contentType: string, finalUrl: string) => boolean;
 }
 
 export interface LoadPageResult {
@@ -98,6 +100,8 @@ export interface LoadPageResult {
 	error?: string;
 	/** True when the body read was skipped via skipBodyForContentType. */
 	bodySkipped?: boolean;
+	/** Undecoded bytes retained by binaryBodyForContentType. */
+	binary?: { buffer: Uint8Array; contentDisposition?: string };
 }
 
 const RETRY_AFTER_MAX_MS = 10_000;
@@ -168,7 +172,8 @@ export async function loadPage(url: string, options: LoadPageOptions = {}): Prom
 				continue;
 			}
 
-			if (response.ok && options.skipBodyForContentType?.(contentType)) {
+			const readAsBinary = response.ok && options.binaryBodyForContentType?.(contentType, finalUrl) === true;
+			if (response.ok && !readAsBinary && options.skipBodyForContentType?.(contentType)) {
 				void response.body?.cancel().catch(() => {});
 				return { content: "", contentType, finalUrl, ok: true, status: response.status, bodySkipped: true };
 			}
@@ -180,6 +185,31 @@ export async function loadPage(url: string, options: LoadPageOptions = {}): Prom
 				// rewriting it, so the caller's status handling (a 204 is a valid
 				// empty read, not a failed fetch) runs on the real outcome.
 				return { content: "", contentType, finalUrl, ok: response.ok, status: response.status };
+			}
+
+			if (readAsBinary) {
+				if (responseBody.truncated) {
+					return {
+						content: "",
+						contentType,
+						finalUrl,
+						ok: false,
+						status: response.status,
+						error: `Response body exceeds ${maxBytes} bytes`,
+						truncated: true,
+					};
+				}
+				return {
+					content: "",
+					contentType,
+					finalUrl,
+					ok: true,
+					status: response.status,
+					binary: {
+						buffer: responseBody.bytes,
+						contentDisposition: response.headers.get("content-disposition") || undefined,
+					},
+				};
 			}
 
 			const content = decodeBody(responseBody.bytes, rawContentType);

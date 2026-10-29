@@ -129,8 +129,6 @@ export interface RunResultOk {
 	displays: Array<TextContent | ImageContent>;
 	returnValue: unknown;
 	screenshots: ScreenshotResult[];
-	/** The run finished but tab-scoped browser state was not restored; the tab must be recycled. */
-	recoverTab?: boolean;
 }
 
 export interface RunErrorPayload {
@@ -139,8 +137,6 @@ export interface RunErrorPayload {
 	stack?: string;
 	isToolError: boolean;
 	isAbort: boolean;
-	/** The worker could not restore tab-scoped browser state and must be recycled. */
-	recoverTab?: boolean;
 	/** `tab.goto` outlasted its budget; the page stays on what loaded. */
 	navigationTimeout?: boolean;
 	/** The page's renderer crashed; the worker runs nothing more and must be recycled. */

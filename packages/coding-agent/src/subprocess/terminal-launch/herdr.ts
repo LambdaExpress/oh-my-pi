@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { hasTerminalMultiplexerSession } from "@oh-my-pi/pi-tui/terminal-multiplexer";
 import { quotePosixArgument, quotePosixArgv } from "../../utils/shell-quote";
-import { launchError, nestedString, parseJson, runStep } from "./shared";
+import { commandWithEnvironment, launchError, nestedString, parseJson, runStep } from "./shared";
 import type {
 	SupportedMultiplexerCapabilities,
 	TerminalLaunchBackend,
@@ -33,15 +33,71 @@ const capabilities = {
 
 const shellNeutralWord = /^[A-Za-z0-9_./-]+$/;
 
+/** Quote native Windows argv without PowerShell's legacy native-argument conversion. */
+function quoteWindowsArgument(value: string): string {
+	const escaped = value
+		.replace(/(\\*)"/g, (_match, slashes: string) => `${slashes}${slashes}\\"`)
+		.replace(/\\+$/u, slashes => `${slashes}${slashes}`);
+	return `"${escaped}"`;
+}
+
+async function prepareWindowsLaunchScript(request: TerminalLaunchRequest, directory: string): Promise<string> {
+	const script = path.join(directory, "launch.ps1");
+	const payload = Buffer.from(
+		JSON.stringify({
+			executable: request.command[0],
+			arguments: request.command.slice(1).map(quoteWindowsArgument).join(" "),
+			cwd: request.cwd,
+			env: Object.entries(request.env ?? {}).map(([name, value]) => ({ name, value: value || null })),
+		}),
+		"utf8",
+	).toString("base64");
+	// ASCII source also works with Windows PowerShell 5.1's legacy script-file encoding.
+	await Bun.write(
+		script,
+		`$ErrorActionPreference = 'Stop'
+$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json
+Remove-Item -LiteralPath $PSScriptRoot -Recurse -Force
+foreach ($entry in $payload.env) {
+	[Environment]::SetEnvironmentVariable($entry.name, $entry.value, 'Process')
+}
+$startOptions = @{
+	FilePath = $payload.executable
+	WorkingDirectory = [Management.Automation.WildcardPattern]::Escape($payload.cwd)
+	NoNewWindow = $true
+	Wait = $true
+	PassThru = $true
+}
+if ($payload.arguments.Length -gt 0) {
+	$startOptions.ArgumentList = $payload.arguments
+}
+$child = Start-Process @startOptions
+exit $child.ExitCode
+`,
+	);
+	// Keep the interactive shell's input ASCII-only and independent of its quoting grammar.
+	const encoded = Buffer.from(
+		`$ErrorActionPreference = 'Stop'; & '${script.replaceAll("'", "''")}'; exit $LASTEXITCODE`,
+		"utf16le",
+	).toString("base64");
+	return `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}`;
+}
+
 /**
  * `herdr pane run` types text into the pane's interactive shell, whose grammar is unknown.
- * Typing only `/bin/sh` and the absolute path of a self-deleting script keeps argv exact in any
- * shell; invoking it through `/bin/sh` works even when the temp mount is `noexec`. The script is
- * written before the Herdr surface exists so a local failure leaves no orphaned pane or tab.
+ * Use an encoded PowerShell bootstrap on Windows, or `/bin/sh` and a shell-neutral script path
+ * on POSIX. Prepare the self-deleting script before creating the surface so a local failure
+ * leaves no orphaned pane or tab.
  */
-async function prepareLaunchScript(request: TerminalLaunchRequest): Promise<{ directory: string; typed: string }> {
+async function prepareLaunchScript(
+	request: TerminalLaunchRequest,
+	platform: NodeJS.Platform,
+): Promise<{ directory: string; typed: string }> {
 	const directory = await fs.mkdtemp(path.join(path.resolve(os.tmpdir()), "omp-herdr-"));
 	try {
+		if (platform === "win32") {
+			return { directory, typed: await prepareWindowsLaunchScript(request, directory) };
+		}
 		const script = path.join(directory, "launch");
 		if (!shellNeutralWord.test(script)) {
 			throw launchError(
@@ -51,7 +107,10 @@ async function prepareLaunchScript(request: TerminalLaunchRequest): Promise<{ di
 			);
 		}
 		// No `exec`: it would parse a command name starting with `-` as an option.
-		await Bun.write(script, `rm -rf -- ${quotePosixArgument(directory)}\n${quotePosixArgv(request.command)}\n`);
+		await Bun.write(
+			script,
+			`rm -rf -- ${quotePosixArgument(directory)}\n${quotePosixArgv(commandWithEnvironment(request))}\n`,
+		);
 		return { directory, typed: `/bin/sh ${script}` };
 	} catch (error) {
 		await fs.rm(directory, { recursive: true, force: true });
@@ -63,9 +122,10 @@ async function prepareLaunchScript(request: TerminalLaunchRequest): Promise<{ di
 async function launchInNewSurface(
 	request: TerminalLaunchRequest,
 	runCli: TerminalLaunchCliRunner,
+	platform: NodeJS.Platform,
 	createSurface: () => Promise<{ id: string; paneId: string }>,
 ): Promise<string> {
-	const { directory, typed } = await prepareLaunchScript(request);
+	const { directory, typed } = await prepareLaunchScript(request, platform);
 	try {
 		const { id, paneId } = await createSurface();
 		await runStep(request, "pane run", ["herdr", "pane", "run", paneId, typed], request.cwd, runCli);
@@ -80,9 +140,6 @@ const launchHerdr: TerminalLaunchBackend<"herdr", typeof capabilities> = async (
 	request,
 	{ environment: env, platform, runCli },
 ) => {
-	if (platform === "win32") {
-		throw launchError(request, "capability", "Herdr launches are not supported on Windows.");
-	}
 	if (!hasTerminalMultiplexerSession("herdr", env)) {
 		throw launchError(request, "capability", "Herdr launch requires an active Herdr pane or workspace.");
 	}
@@ -101,7 +158,7 @@ const launchHerdr: TerminalLaunchBackend<"herdr", typeof capabilities> = async (
 			request.cwd,
 			...focusArgs,
 		];
-		const id = await launchInNewSurface(request, runCli, async () => {
+		const id = await launchInNewSurface(request, runCli, platform, async () => {
 			const created = parseJson(
 				request,
 				"pane split",
@@ -119,7 +176,7 @@ const launchHerdr: TerminalLaunchBackend<"herdr", typeof capabilities> = async (
 	const createArgv = ["herdr", "tab", "create", "--workspace", workspace, "--cwd", request.cwd];
 	if (request.label) createArgv.push("--label", request.label);
 	createArgv.push(...focusArgs);
-	const id = await launchInNewSurface(request, runCli, async () => {
+	const id = await launchInNewSurface(request, runCli, platform, async () => {
 		const created = parseJson(
 			request,
 			"tab create",

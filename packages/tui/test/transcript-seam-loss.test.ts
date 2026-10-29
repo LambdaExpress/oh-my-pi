@@ -23,6 +23,22 @@ class TurnChrome implements Component {
 	}
 }
 
+class RunGate extends Container {
+	#finalized = false;
+
+	isTranscriptBlockFinalized(): boolean {
+		return this.#finalized;
+	}
+
+	allowsTranscriptSuccessorRetirement(): boolean {
+		return true;
+	}
+
+	finalize(): void {
+		this.#finalized = true;
+	}
+}
+
 function reply(text: string): AssistantMessage {
 	return {
 		role: "assistant",
@@ -126,6 +142,95 @@ describe("transcript rows under chrome that outlives the turn", () => {
 			);
 		} finally {
 			tool.stopAnimation();
+			composer.stop();
+		}
+	});
+
+	for (const gated of [false, true]) {
+		it(`keeps a large stable code block reachable during streaming${gated ? " behind an open run gate" : ""}`, async () => {
+			const terminal = new VirtualTerminal(COLUMNS, 24);
+			const scheduler = new VirtualRenderScheduler();
+			const composer = new Composer({
+				terminal,
+				tuiOptions: { renderScheduler: scheduler },
+				preferences: { ...COMPOSER_DEFAULTS, quiet: true },
+			});
+			const transcript = new TranscriptContainer();
+			const gate = new RunGate();
+			if (gated) transcript.addChild(gate);
+			transcript.setToolRowsFolded(gated);
+			const completedTool = { joinsFoldedToolRows: true as const, render: () => ["Tool completed"] };
+			transcript.addChild(completedTool);
+			const message = new AssistantMessageComponent();
+			transcript.addChild(message);
+			const editor = new Container();
+			editor.addChild(new Text("EDITOR", 0, 0));
+			composer.setRuntimeChildren([transcript, editor]);
+			composer.start({ playWelcomeIntro: false });
+			const markers = Array.from({ length: 40 }, (_, i) => `QZP${String(i).padStart(3, "0")}`);
+			let text = `## Answer\n\n\`\`\`text\n${markers.join("\n")}\n\`\`\`\n\nStill streaming`;
+			const visibleMarkers = (): string[] =>
+				terminal.getScrollBuffer().flatMap(row => Bun.stripANSI(row).match(/QZP\d{3}/g) ?? []);
+			try {
+				for (const suffix of ["", " the next paragraph", "\n\nMore output"]) {
+					text += suffix;
+					message.updateContent(reply(text), { transient: true });
+					composer.ui.requestRender();
+					await scheduler.settle(terminal);
+					expect(visibleMarkers()).toEqual(markers);
+				}
+
+				// A replay during the live turn must retain the already-emitted code.
+				composer.ui.resetDisplay();
+				await scheduler.settle(terminal);
+				expect(visibleMarkers()).toEqual(markers);
+
+				message.updateContent(reply(text));
+				message.markTranscriptBlockFinalized();
+				gate.finalize();
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+				expect(visibleMarkers()).toEqual(markers);
+			} finally {
+				composer.stop();
+			}
+		});
+	}
+
+	it("keeps tool rows contiguous across native history while turn chrome grows", async () => {
+		const terminal = new VirtualTerminal(COLUMNS, 30);
+		const scheduler = new VirtualRenderScheduler();
+		const composer = new Composer({
+			terminal,
+			tuiOptions: { renderScheduler: scheduler },
+			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
+		});
+		const transcript = new TranscriptContainer();
+		const settled = Array.from({ length: 35 }, (_, i) => `Settled tool row ${i}`);
+		const pending = Array.from({ length: 12 }, (_, i) => `Pending tool row ${i}`);
+		const settledBlock = { render: () => settled, isTranscriptBlockFinalized: () => true };
+		const pendingBlock = { render: () => pending, isTranscriptBlockFinalized: () => false };
+		transcript.addChild(settledBlock);
+		const chrome = new TurnChrome();
+		const editor = new Container();
+		editor.addChild(new Text("EDITOR", 0, 0));
+		composer.setRuntimeChildren([transcript, chrome, editor]);
+		composer.start({ playWelcomeIntro: false });
+		try {
+			await scheduler.settle(terminal);
+			chrome.rows = 8;
+			transcript.addChild(pendingBlock);
+			for (const chromeRows of [8, 0]) {
+				chrome.rows = chromeRows;
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+				const toolRows = terminal
+					.getScrollBuffer()
+					.map(row => Bun.stripANSI(row).trim())
+					.filter(row => /^(Settled|Pending) tool row \d+$/.test(row));
+				expect(toolRows).toEqual([...settled, ...pending]);
+			}
+		} finally {
 			composer.stop();
 		}
 	});
@@ -247,11 +352,10 @@ describe("transcript rows under chrome that outlives the turn", () => {
 		const chrome = new TurnChrome();
 		const editorRoot = new Container();
 		editorRoot.addChild(composer.editor);
-		composer.setRuntimeChildren([transcript, chrome, editorRoot], { transientChrome: [editorRoot] });
+		composer.setRuntimeChildren([transcript, chrome, editorRoot]);
 		await scheduler.settle(terminal);
 		return async (beforeStream?: () => Promise<void>): Promise<string[]> => {
 			await beforeStream?.();
-			composer.setRunActive(true);
 			const message = new AssistantMessageComponent();
 			transcript.addChild(message);
 			chrome.rows = 7;
@@ -263,7 +367,6 @@ describe("transcript rows under chrome that outlives the turn", () => {
 			}
 			message.updateContent(reply(lines.join("\n\n")));
 			message.markTranscriptBlockFinalized();
-			composer.setRunActive(false);
 			composer.ui.requestRender();
 			await scheduler.advance(terminal, 300);
 			const seen = new Set<string>();
