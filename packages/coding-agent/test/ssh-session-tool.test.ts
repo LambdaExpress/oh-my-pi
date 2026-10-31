@@ -91,6 +91,62 @@ afterEach(() => {
 });
 
 describe("ssh_session tool", () => {
+	it("treats nullable create fields as omitted through the write device path", async () => {
+		const tempDir = TempDir.createSync("@pi-ssh-session-device-null-create-");
+		try {
+			const harness = createHarness(tempDir.path());
+			const writer = createDeviceWriter(harness);
+			const empty = await executeDevice(writer, {
+				op: "create",
+				name: "empty",
+				host: "203.0.113.10",
+				username: null,
+				key_path: null,
+				password: null,
+				description: null,
+				port: null,
+				compat: null,
+				proxy_jump: null,
+			});
+			expect(harness.configs.get("empty")?.config).toEqual({ host: "203.0.113.10" });
+			expect(empty.details?.host).toEqual({ name: "empty", host: "203.0.113.10", hasPassword: false });
+			expect(empty.details?.changedFields).toEqual(["host"]);
+
+			const created = await executeDevice(writer, {
+				op: "create",
+				name: "direct",
+				host: "203.0.113.11",
+				username: "deploy",
+				key_path: "C:/keys/direct",
+				port: 22,
+				compat: false,
+				proxy_jump: null,
+				description: "direct connection",
+			});
+			expect(harness.configs.get("direct")?.config).toEqual({
+				host: "203.0.113.11",
+				username: "deploy",
+				keyPath: "C:/keys/direct",
+				port: 22,
+				compat: false,
+				description: "direct connection",
+			});
+			expect(created.details?.changedFields).not.toContain("proxy_jump");
+
+			await executeDevice(writer, { op: "update", name: "direct", proxy_jump: "relay.example" });
+			await executeDevice(writer, { op: "update", name: "direct", port: null, proxy_jump: null });
+			expect(harness.configs.get("direct")?.config).toEqual({
+				host: "203.0.113.11",
+				username: "deploy",
+				keyPath: "C:/keys/direct",
+				compat: false,
+				description: "direct connection",
+			});
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
 	it("clears a device-stored password while setting a key and preserves omitted fields", async () => {
 		const tempDir = TempDir.createSync("@pi-ssh-session-device-password-");
 		try {
@@ -420,7 +476,6 @@ describe("ssh_session tool", () => {
 				{ op: "create", name: "empty-password", host: "example.com", password: " " },
 				{ op: "create", name: "empty-key", host: "example.com", key_path: " " },
 				{ op: "create", name: "empty-proxy-jump", host: "example.com", proxy_jump: " " },
-				{ op: "create", name: "null-proxy-jump", host: "example.com", proxy_jump: null },
 				{
 					op: "create",
 					name: "dangerous-proxy-jump",

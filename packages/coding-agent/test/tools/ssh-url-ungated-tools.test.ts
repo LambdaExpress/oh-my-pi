@@ -22,6 +22,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.restoreAllMocks();
+	InternalUrlRouter.resetForTests();
 	restoreSettingsTestState(settingsState);
 });
 
@@ -70,27 +72,28 @@ function mockPersistentHosts(hosts: SSHHost[]): void {
 	vi.spyOn(capability, "loadCapability").mockResolvedValue(result as CapabilityResult<unknown>);
 }
 
-// `glob`, `ast_grep`, and `ast_edit` resolve internal URLs through a filesystem
-// bounded by their read/write tier and do NOT share the exec-tier approval
-// `read`/`grep`/`write` got for ssh://, so they must reject it BEFORE
-// `InternalUrlRouter.resolve` — which is the point that opens the outbound SSH
-// connection. The security contract these tests defend: those lower-tier tools
-// never call `resolve` (never connect) for an ssh:// path.
-describe("ssh:// is rejected before any connection in read/write-tier tools", () => {
-	it("resolveToolSearchScope (ast_grep + ast_edit) throws on ssh:// without resolving", async () => {
-		// Reject if resolve is ever reached, so a guard regression fails loudly
-		// instead of attempting a real connection.
+describe("URL filesystem preserves capability boundaries", () => {
+	it("rejects exec-only schemes before resolution and SSH rewrites before transfer", async () => {
+		const router = InternalUrlRouter.instance();
+		const resolve = vi.fn(async () => {
+			throw new Error("exec-only resolve must not run at read tier");
+		});
+		router.register({
+			scheme: "exec-only",
+			spec: { backing: "remote", selectors: "none", immutable: true, readTier: "exec" },
+			resolve,
+		});
 		const spy = vi
-			.spyOn(InternalUrlRouter.instance(), "resolve")
-			.mockRejectedValue(new Error("resolve must not run for ssh://"));
+			.spyOn(router, "resolve")
+			.mockRejectedValue(new Error("resolve must not run before capability validation"));
 		await expect(
 			resolveToolSearchScope({
-				rawPaths: ["ssh://h/x"],
+				rawPaths: ["exec-only://h/x"],
 				cwd: os.tmpdir(),
 				internalUrlAction: "search",
 				filesystem: new InternalUrlFilesystem({ context: {}, tier: "read" }),
 			}),
-		).rejects.toThrow("Cannot search ssh://h/x: ssh:// access needs exec approval");
+		).rejects.toThrow(/exec-only:\/\/ access needs exec approval/);
 		await expect(
 			resolveToolSearchScope({
 				rawPaths: ["ssh://h/x"],
@@ -101,15 +104,20 @@ describe("ssh:// is rejected before any connection in read/write-tier tools", ()
 			}),
 		).rejects.toThrow("Cannot rewrite ssh://h/x: ssh:// URLs are not editable files");
 		expect(spy).not.toHaveBeenCalled();
+		expect(resolve).not.toHaveBeenCalled();
 	});
 
-	it("glob throws on ssh:// without resolving", async () => {
-		const spy = vi
-			.spyOn(InternalUrlRouter.instance(), "resolve")
-			.mockRejectedValue(new Error("resolve must not run for ssh://"));
+	it("globs SSH paths through fixed read-only operations at read tier", async () => {
+		mockPersistentHosts([]);
+		const statSpy = vi.spyOn(fileTransfer, "statRemotePath").mockResolvedValue("file");
+		vi.spyOn(fileTransfer, "readRemoteFile").mockResolvedValue({
+			bytes: new TextEncoder().encode("remote file\n"),
+			truncated: false,
+		});
 		const tool = new GlobTool(createTestToolSession(os.tmpdir()));
-		await expect(tool.execute("f", { path: "ssh://h/x" })).rejects.toThrow(/ssh:\/\//);
-		expect(spy).not.toHaveBeenCalled();
+		const result = await tool.execute("f", { path: "ssh://h/x" });
+		expect(result.details?.files).toEqual(["ssh://h/x"]);
+		expect(statSpy.mock.calls[0]?.[1]).toBe("/x");
 	});
 });
 

@@ -2,9 +2,10 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { Process } from "@oh-my-pi/pi-natives";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../src/config/settings";
-import { disposeAllVmContexts } from "../../src/eval/js/context-manager";
+import { disposeVmContextsByOwner } from "../../src/eval/js/context-manager";
 import { executeJs } from "../../src/eval/js/executor";
 import type { JsExecutorOptions } from "../../src/eval/js/executor";
 import { resolveJsPackageEnvironment } from "../../src/eval/js/package-installer";
@@ -32,8 +33,11 @@ function makeSession(cwd: string, evalSessionId: string, options?: { autoProvisi
 	};
 }
 
+const kernelOwners = new Set<string>();
+
 function executorOptions(session: ToolSession, sessionId: string): JsExecutorOptions {
-	return { cwd: session.cwd, sessionId, session };
+	kernelOwners.add(sessionId);
+	return { cwd: session.cwd, sessionId, kernelOwnerId: sessionId, session };
 }
 
 function canResolve(specifier: string, fromDir: string): boolean {
@@ -64,9 +68,15 @@ function ompOnlyPackage(workspaceDir: string): string {
 
 describe("persistent JavaScript package environments", () => {
 	const managedRoots: string[] = [];
+	const kernelProcesses: Process[] = [];
 
 	afterEach(async () => {
-		await disposeAllVmContexts();
+		await Promise.all([...kernelOwners].map(owner => disposeVmContextsByOwner(owner)));
+		kernelOwners.clear();
+		for (const kernel of kernelProcesses.splice(0)) {
+			// Owner disposal acknowledges closure before the subprocess has necessarily exited.
+			expect(await kernel.waitForExit({ timeoutMs: 10_000 })).toBe(true);
+		}
 		await Promise.all(
 			managedRoots
 				.splice(0)
@@ -75,7 +85,61 @@ describe("persistent JavaScript package environments", () => {
 					fs.rm(`${root}.install.lock`, { force: true }),
 				]),
 		);
-	});
+	}, 15_000);
+
+	it("requires absolute package directories through main and index in the isolated kernel", async () => {
+		const workspace = TempDir.createSync("@omp-js-directory-require-");
+		// Dispose the kernel before removing its cwd on Windows.
+		managedRoots.push(workspace.path());
+		const mainDir = path.join(workspace.path(), "node_modules/fixture-main");
+		const indexDir = path.join(workspace.path(), "node_modules/fixture-index");
+		await fs.mkdir(path.join(mainDir, "lib"), { recursive: true });
+		await fs.mkdir(indexDir, { recursive: true });
+		await Bun.write(
+			path.join(mainDir, "package.json"),
+			JSON.stringify({ name: "fixture-main", main: "lib/entry.js" }),
+		);
+		await Bun.write(path.join(mainDir, "lib/entry.js"), "module.exports = 'main-entry';\n");
+		await Bun.write(path.join(indexDir, "index.js"), "module.exports = 'index-entry';\n");
+		const sessionId = `js-directory-require:${crypto.randomUUID()}`;
+		const session = makeSession(workspace.path(), sessionId);
+		const options = { ...executorOptions(session, sessionId), environment: "project" as const };
+		const started = await executeJs("print(process.pid);", options);
+		expect(started.exitCode, started.output).toBe(0);
+		const kernelPid = Number(started.output.trim());
+		expect(Number.isSafeInteger(kernelPid)).toBe(true);
+		if (kernelPid !== process.pid) {
+			// Open while alive: the stable reference cannot target a later process that reuses this PID.
+			const kernel = Process.fromPid(kernelPid);
+			expect(kernel).not.toBeNull();
+			if (kernel) {
+				kernelProcesses.push(kernel);
+				expect(kernel.ppid).toBe(process.pid);
+			}
+		}
+		const result = await executeJs(
+			[
+				`var directoryRequire = require("node:module").createRequire(${JSON.stringify(path.join(workspace.path(), "cell.js"))});`,
+				"print(JSON.stringify([",
+				`require(${JSON.stringify(mainDir.replaceAll("\\", "/"))}),`,
+				`require(${JSON.stringify(indexDir)}),`,
+				`directoryRequire(${JSON.stringify(mainDir)}),`,
+				`require.resolve(${JSON.stringify(mainDir.replaceAll("\\", "/"))}),`,
+				`process.pid !== ${process.pid}`,
+				"]));",
+			].join("\n"),
+			options,
+		);
+
+		expect(result.exitCode, result.output).toBe(0);
+		expect(JSON.parse(result.output.trim())).toEqual([
+			"main-entry",
+			"index-entry",
+			"main-entry",
+			path.join(mainDir, "lib/entry.js"),
+			true,
+		]);
+	}, 20_000);
 
 	it("refuses an implicit managed environment bootstrap when auto-provisioning is disabled", async () => {
 		using workspace = TempDir.createSync("@omp-js-package-policy-");

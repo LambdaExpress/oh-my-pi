@@ -58,6 +58,7 @@ export interface AdbUiClickResult {
 	element: AdbUiElement;
 	x: number;
 	y: number;
+	inputDispatch: "unconfirmed";
 }
 
 export interface AdbUiWaitResult {

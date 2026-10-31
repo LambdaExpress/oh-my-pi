@@ -360,6 +360,8 @@ export interface ResolvedJsonReadPath {
 	absolutePath: string;
 	selector: JsonSelector;
 	suffixResolution?: { from: string; to: string };
+	/** Public identity of a remote source temporarily materialized for jq. */
+	sourceInternal?: string;
 }
 
 /**
@@ -409,9 +411,10 @@ export async function readJson(
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<ReadToolDetails>> {
 	throwIfAborted(signal);
+	const sourcePath = resolvedJsonPath.sourceInternal ? undefined : resolvedJsonPath.absolutePath;
 
 	const details: ReadToolDetails = {
-		resolvedPath: resolvedJsonPath.absolutePath,
+		resolvedPath: sourcePath,
 		suffixResolution: resolvedJsonPath.suffixResolution,
 	};
 
@@ -425,7 +428,8 @@ export async function readJson(
 		if (parsedSel.kind !== "none") {
 			result = await buildInMemorySelectorResult(session, output, parsedSel, {
 				details,
-				sourcePath: resolvedJsonPath.absolutePath,
+				sourcePath,
+				sourceInternal: resolvedJsonPath.sourceInternal,
 				entityLabel: "JSON query output",
 				immutable: true,
 			});
@@ -445,9 +449,9 @@ export async function readJson(
 			details.displayContent = { text: snippet.text, startLine: 1, lineNumbers: snippet.bytes > 0 ? [1] : [] };
 		}
 		details.truncation = truncation.truncated ? toReadTruncationStats(truncation) : undefined;
-		const resultBuilder = toolResult<ReadToolDetails>(details)
-			.text(truncation.content)
-			.sourcePath(resolvedJsonPath.absolutePath);
+		const resultBuilder = toolResult<ReadToolDetails>(details).text(truncation.content);
+		if (resolvedJsonPath.sourceInternal) resultBuilder.sourceInternal(resolvedJsonPath.sourceInternal);
+		else if (sourcePath) resultBuilder.sourcePath(sourcePath);
 		if (truncation.truncated) {
 			resultBuilder.truncation(truncation, { direction: "head" });
 		}

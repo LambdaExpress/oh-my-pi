@@ -130,6 +130,12 @@ MV lib/welcome.py
 
 `apply_patch` requires a unique complete match within the selected context. Multiple complete exact or normalized matches reject the batch rather than selecting the first occurrence; weaker fuzzy candidates do not invalidate a unique complete match. Ambiguity and other preparation failures leave every original file and move destination untouched.
 
+Complete source text takes precedence over recovery of copied display line numbers,
+so literal numeric prefixes remain content. Fuzzy context may locate a hunk, but
+non-context removal rows must match the source modulo the existing whitespace,
+Unicode, and comment-prefix normalization. Different removed content rejects
+preparation before any file or move destination is written.
+
 `sloppy` uses existing-text anchors, not snapshot tags. Find must identify one match unless the file header ends in ` all`; bare `*** Edit File:` continues the current target. Bodies are raw text, without diff prefixes or closing markers. `…` in Find captures omitted text; Replace re-emits those captures in order. Insert keeps the anchor and treats `…` literally. Every pair addresses the original file; matching/validation failures occur before writes.
 
 The mode prompts in `crates/pi-edit/prompts/` define the full syntax.

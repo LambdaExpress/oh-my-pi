@@ -55,6 +55,8 @@ interface InternalUrlResolver {
 export interface InternalUrlExpansionOptions {
 	skills: readonly Skill[];
 	attachments?: readonly ImageAttachmentEntry[];
+	/** Script syntax; environment values and cwd strings are not PowerShell source. */
+	syntax?: "powershell";
 	noEscape?: boolean;
 	escapePath?: (path: string) => string;
 	internalRouter?: InternalUrlResolver;
@@ -210,6 +212,100 @@ function unquoteToken(token: string): string {
 		return token.slice(1, -1);
 	}
 	return token;
+}
+
+interface InternalUrlToken {
+	index: number;
+	raw: string;
+	url: string;
+}
+
+const POWERSHELL_ESCAPES: Readonly<Record<string, string>> = {
+	"0": "\0",
+	a: "\x07",
+	b: "\b",
+	e: "\x1b",
+	f: "\f",
+	n: "\n",
+	r: "\r",
+	t: "\t",
+	v: "\v",
+};
+
+/** PowerShell commas delimit array elements unless quoted or backtick-escaped. */
+function powerShellInternalUrlTokens(command: string): InternalUrlToken[] {
+	const tokens: InternalUrlToken[] = [];
+	let start = -1;
+	let value = "";
+	let literal = true;
+	let quote: "'" | '"' | undefined;
+	const finish = (end: number) => {
+		if (
+			start >= 0 &&
+			literal &&
+			(SUPPORTED_INTERNAL_SCHEMES.some(scheme => value.startsWith(`${scheme}://`)) || value.startsWith("local:/"))
+		) {
+			tokens.push({ index: start, raw: command.slice(start, end), url: value });
+		}
+		start = -1;
+		value = "";
+		literal = true;
+	};
+	for (let i = 0; i < command.length; i++) {
+		const char = command[i];
+		if (!quote) {
+			if (char === "<" && command[i + 1] === "#") {
+				finish(i);
+				const end = command.indexOf("#>", i + 2);
+				i = end < 0 ? command.length : end + 1;
+				continue;
+			}
+			if (start < 0 && char === "#") {
+				const end = command.indexOf("\n", i + 1);
+				i = end < 0 ? command.length : end;
+				continue;
+			}
+			// Here-strings contain literal source/text, not standalone path
+			// arguments. Do not rewrite URI mentions inside their bodies.
+			if (start < 0 && char === "@" && /['"]/.test(command[i + 1] ?? "") && /[\r\n]/.test(command[i + 2] ?? "")) {
+				const delimiter = `${command[i + 1]}@`;
+				let end = command.indexOf(`\n${delimiter}`, i + 2);
+				if (end < 0) end = command.length;
+				i = Math.min(command.length, end + delimiter.length);
+				continue;
+			}
+			if (/\s/.test(char) || ",;|&()<>{}".includes(char) || (char === "=" && value.startsWith("$"))) {
+				finish(i);
+				continue;
+			}
+		}
+		if (start < 0) start = i;
+		if (char === "`" && quote !== "'" && i + 1 < command.length) {
+			const escaped = command[++i];
+			if (escaped === "\r" || escaped === "\n") {
+				if (escaped === "\r" && command[i + 1] === "\n") i++;
+			} else {
+				value += POWERSHELL_ESCAPES[escaped] ?? escaped;
+			}
+			continue;
+		}
+		if (char === quote) {
+			if (command[i + 1] === quote) {
+				value += char;
+				i++;
+			} else {
+				quote = undefined;
+			}
+		} else if (!quote && (char === "'" || char === '"')) {
+			quote = char;
+		} else {
+			if (char === "$" && quote !== "'") literal = false;
+			value += char;
+		}
+	}
+	// An unterminated string is a parser error, not a path to quote for it.
+	if (!quote) finish(command.length);
+	return tokens;
 }
 
 function isInsideShellQuote(command: string, index: number): boolean {
@@ -368,19 +464,18 @@ async function resolveInternalUrlToPath(
 export async function expandInternalUrls(command: string, options: InternalUrlExpansionOptions): Promise<string> {
 	if (!command.includes("://") && !command.includes("local:/")) return command;
 
-	const matches = Array.from(command.matchAll(INTERNAL_URL_PATTERN_INCLUDING_NORMALIZED_LOCAL));
+	const matches: InternalUrlToken[] =
+		options.syntax === "powershell"
+			? powerShellInternalUrlTokens(command)
+			: Array.from(command.matchAll(INTERNAL_URL_PATTERN_INCLUDING_NORMALIZED_LOCAL))
+					.filter(match => !isEmbeddedInQuotedText(command, match[0], match.index))
+					.map(match => ({ index: match.index, raw: match[0], url: unquoteToken(match[0]) }));
 	if (matches.length === 0) return command;
 
 	let expanded = command;
 	for (let i = matches.length - 1; i >= 0; i--) {
 		const match = matches[i];
-		const token = match[0];
-		const index = match.index;
-		if (index === undefined) continue;
-
-		if (isEmbeddedInQuotedText(command, token, index)) continue;
-
-		const rawUrl = unquoteToken(token);
+		const { index, raw, url: rawUrl } = match;
 		const url = InternalUrlRouter.instance().normalize(rawUrl);
 		let resolvedPath: string;
 		try {
@@ -408,7 +503,7 @@ export async function expandInternalUrls(command: string, options: InternalUrlEx
 		const replacement = options.noEscape
 			? resolvedPath
 			: (options.escapePath?.(resolvedPath) ?? shellEscape(resolvedPath));
-		expanded = `${expanded.slice(0, index)}${replacement}${expanded.slice(index + token.length)}`;
+		expanded = `${expanded.slice(0, index)}${replacement}${expanded.slice(index + raw.length)}`;
 	}
 
 	return expanded;

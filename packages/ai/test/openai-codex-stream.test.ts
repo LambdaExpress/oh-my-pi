@@ -3654,39 +3654,52 @@ describe("openai-codex streaming", () => {
 		expect(fallbackDetails.fallbackCount).toBe(1);
 	});
 
-	it.each(["during handshake", "before request", "during request"] as const)(
-		"preserves timeout classification when compaction is aborted %s",
-		async phase => {
-			const tempDir = TempDir.createSync("@pi-codex-stream-");
-			setAgentDir(tempDir.path());
-			const controller = new AbortController();
-			const timeout = new DOMException("The operation timed out.", "TimeoutError");
-			const providerSessionState = new Map<string, ProviderSessionState>();
-			const fetchMock = vi.fn<FetchImpl>(() => {
-				throw new Error("Aborted compaction must not fall back to SSE");
-			});
-			class TimeoutWebSocket extends MockWebSocket {
-				constructor(url: string, options?: WsOptions) {
-					super(url, options);
-					if (phase === "during handshake") {
-						queueMicrotask(() => controller.abort(timeout));
-					} else {
-						this.scheduleOpen();
-					}
-				}
-
-				override send(): void {
-					controller.abort(timeout);
-				}
-
-				override close(): void {
-					super.close();
-					this.emit("close", { code: 1000 } as CloseEvent);
+	it.each([
+		["deadline timeout", "during handshake"],
+		["deadline timeout", "before request"],
+		["deadline timeout", "during request"],
+		["caller cancellation", "during handshake"],
+		["caller cancellation", "before request"],
+		["caller cancellation", "during request"],
+	] as const)("preserves %s when compaction is aborted %s", async (kind, phase) => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		const controller = new AbortController();
+		const timeout = new DOMException("The operation timed out.", "TimeoutError");
+		const isTimeout = kind === "deadline timeout";
+		const abort = () => controller.abort(isTimeout ? timeout : undefined);
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const fetchMock = vi.fn<FetchImpl>(() => {
+			throw new Error("Aborted compaction must not fall back to SSE");
+		});
+		const sessionId = `compaction-abort-${phase}`;
+		let constructorCount = 0;
+		let sendCount = 0;
+		class AbortedWebSocket extends MockWebSocket {
+			constructor(url: string, options?: WsOptions) {
+				super(url, options);
+				constructorCount++;
+				if (phase === "during handshake") {
+					queueMicrotask(abort);
+				} else {
+					this.scheduleOpen();
 				}
 			}
-			global.WebSocket = TimeoutWebSocket as unknown as typeof WebSocket;
-			const model = createCodexTestModel();
-			try {
+
+			override send(): void {
+				sendCount++;
+				abort();
+			}
+
+			override close(): void {
+				super.close();
+				this.emit("close", { code: 1000 } as CloseEvent);
+			}
+		}
+		global.WebSocket = AbortedWebSocket as unknown as typeof WebSocket;
+		const model = createCodexTestModel();
+		try {
+			await withEnv({ NODE_EXTRA_CA_CERTS: undefined }, async () => {
 				const error = await (async () => {
 					const events = await openCodexCompactionEventStream(
 						model,
@@ -3695,71 +3708,117 @@ describe("openai-codex streaming", () => {
 							apiKey: createCodexTestToken(),
 							signal: controller.signal,
 							fetch: fetchMock,
-							sessionId: `compaction-timeout-${phase}`,
+							sessionId,
 							providerSessionState,
 						},
 					);
-					if (phase === "before request") controller.abort(timeout);
+					if (phase === "before request") abort();
 					return events.next();
 				})().then(
 					() => {
-						throw new Error("Compaction must reject when its deadline expires");
+						throw new Error("Compaction must reject when aborted");
 					},
 					(error: unknown) => error,
 				);
-				expect(AIError.is(AIError.classify(error), AIError.Flag.Timeout)).toBe(true);
+				expect(error).toBeInstanceOf(Error);
+				expect((error as Error).cause).toBe(controller.signal.reason);
+				expect(AIError.is(AIError.classify(error), AIError.Flag.Timeout)).toBe(isTimeout);
+				expect(constructorCount).toBe(1);
+				expect(sendCount).toBe(phase === "during request" ? 1 : 0);
 				expect(fetchMock).not.toHaveBeenCalled();
+				expect(getOpenAICodexTransportDetails(model, { sessionId, providerSessionState })).toMatchObject({
+					websocketDisabled: false,
+					fallbackCount: 0,
+				});
+			});
+		} finally {
+			for (const state of providerSessionState.values()) state.close();
+			await tempDir.remove();
+		}
+	});
+
+	it.each(["CA configuration", "WebSocket construction"] as const)(
+		"preserves a %s failure without leaving a pending handshake",
+		async failure => {
+			const tempDir = TempDir.createSync("@pi-codex-stream-");
+			setAgentDir(tempDir.path());
+			const providerSessionState = new Map<string, ProviderSessionState>();
+			const constructorError = new TypeError("WebSocket options are invalid");
+			const fetchMock = vi.fn<FetchImpl>(() => {
+				throw new Error("Configuration failures must not fall back to SSE");
+			});
+			const model = createCodexTestModel();
+			const options = {
+				apiKey: createCodexTestToken(),
+				fetch: fetchMock,
+				sessionId: "compaction-connect-setup",
+				providerSessionState,
+			};
+			const body = { model: model.id, input: [{ type: "compaction_trigger" }] };
+			let failConstructor = failure === "WebSocket construction";
+			let constructorCount = 0;
+			let sendCount = 0;
+			class ConfiguredWebSocket extends MockWebSocket {
+				constructor(url: string, options?: WsOptions) {
+					super(url, options);
+					constructorCount++;
+					if (failConstructor) throw constructorError;
+					this.scheduleOpen();
+				}
+
+				override send(): void {
+					sendCount++;
+					this.emitCodexResponse({ messageId: "msg_compact", responseId: "resp_compact", text: "Compacted" });
+				}
+			}
+			global.WebSocket = ConfiguredWebSocket as unknown as typeof WebSocket;
+			try {
+				await withEnv(
+					{
+						NODE_EXTRA_CA_CERTS: failure === "CA configuration" ? `${tempDir.path()}/missing-ca.pem` : undefined,
+					},
+					async () => {
+						const error = await openCodexCompactionEventStream(model, body, options).then(
+							() => {
+								throw new Error("Compaction must reject its invalid connection setup");
+							},
+							(error: unknown) => error,
+						);
+						if (failure === "CA configuration") {
+							expect(error).toHaveProperty("name", "ExtraCaError");
+							expect(constructorCount).toBe(0);
+						} else {
+							expect(error).toBe(constructorError);
+							expect(constructorCount).toBe(1);
+						}
+						expect(AIError.is(AIError.classify(error), AIError.Flag.Timeout)).toBe(false);
+						expect(sendCount).toBe(0);
+						expect(fetchMock).not.toHaveBeenCalled();
+
+						// Correcting the setup must allow the same session to connect,
+						// rather than join an orphaned, permanently pending promise.
+						failConstructor = false;
+						await withEnv({ NODE_EXTRA_CA_CERTS: undefined }, async () => {
+							const events = await openCodexCompactionEventStream(model, body, options);
+							const received: Array<Record<string, unknown>> = [];
+							for await (const event of events) received.push(event);
+							expect(received.some(event => event.type === "response.done")).toBe(true);
+						});
+						expect(constructorCount).toBe(failure === "CA configuration" ? 1 : 2);
+						expect(sendCount).toBe(1);
+						expect(fetchMock).not.toHaveBeenCalled();
+						expect(getOpenAICodexTransportDetails(model, options)).toMatchObject({
+							websocketDisabled: false,
+							fallbackCount: 0,
+						});
+					},
+				);
 			} finally {
 				for (const state of providerSessionState.values()) state.close();
+				await tempDir.remove();
 			}
 		},
 	);
-
-	it("keeps caller cancellation distinct from a compaction timeout", async () => {
-		const tempDir = TempDir.createSync("@pi-codex-stream-");
-		setAgentDir(tempDir.path());
-		const controller = new AbortController();
-		const providerSessionState = new Map<string, ProviderSessionState>();
-		const fetchMock = vi.fn<FetchImpl>(() => {
-			throw new Error("Cancelled compaction must not fall back to SSE");
-		});
-		class CancelledWebSocket extends MockWebSocket {
-			constructor(url: string, options?: WsOptions) {
-				super(url, options);
-				this.scheduleOpen();
-			}
-
-			override send(): void {
-				controller.abort();
-			}
-		}
-		global.WebSocket = CancelledWebSocket as unknown as typeof WebSocket;
-		const model = createCodexTestModel();
-		try {
-			const events = await openCodexCompactionEventStream(
-				model,
-				{ model: model.id, input: [{ type: "compaction_trigger" }] },
-				{
-					apiKey: createCodexTestToken(),
-					signal: controller.signal,
-					fetch: fetchMock,
-					sessionId: "compaction-caller-cancel",
-					providerSessionState,
-				},
-			);
-			const error = await events.next().then(
-				() => {
-					throw new Error("Compaction must reject when cancelled");
-				},
-				(error: unknown) => error,
-			);
-			expect(error).toBeInstanceOf(Error);
-			expect(AIError.is(AIError.classify(error), AIError.Flag.Timeout)).toBe(false);
-			expect(fetchMock).not.toHaveBeenCalled();
-		} finally {
-			for (const state of providerSessionState.values()) state.close();
-		}
-	});
 
 	it("carries fatal websocket fallback into isolated compaction transport", async () => {
 		const tempDir = TempDir.createSync("@pi-codex-stream-");

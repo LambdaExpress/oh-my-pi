@@ -17,6 +17,8 @@
  * - agent://<id>/<path> - JSON extraction: each segment is an object key, or
  *   an array index when the current value is an array
  *   (`agent://Parent.Child/reports/0/data`)
+ * - agent://<id>/report - A structured report field, or the full report when
+ *   the published output is plain Markdown.
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -158,6 +160,7 @@ export class AgentProtocolHandler implements ProtocolHandler {
 	 * rather than the file, so they locate to null, as do missing ids. So does an
 	 * output superseded by a running turn: a located file is read directly by
 	 * `read`, which would skip the previous-run banner {@link resolve} adds.
+	 * Empty files also resolve through the handler for status/unavailability.
 	 */
 	async locate(url: InternalUrl, context?: ResolveContext): Promise<string | null> {
 		const outputId = url.rawHost || url.hostname;
@@ -166,7 +169,8 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		if (isSuperseded(context?.agentRegistry ?? AgentRegistry.global(), outputId)) return null;
 		const dirs = await this.#outputDirs(context);
 		if (dirs.length === 0) return null;
-		return (await this.#findOutput(dirs, outputId)).foundPath ?? null;
+		const outputPath = (await this.#findOutput(dirs, outputId)).foundPath;
+		return outputPath && (await fs.stat(outputPath)).size > 0 ? outputPath : null;
 	}
 
 	async write(url: InternalUrl, content: string, context?: WriteContext): Promise<InternalWriteResult> {
@@ -241,6 +245,11 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		});
 
 		const rawContent = await Bun.file(scan.foundPath).text();
+		if (!extraction && rawContent.length === 0) {
+			const ref = registry.get(outputId);
+			if (ref && ref.kind !== "advisor") return this.#resolveProgress(url, ref, false);
+			throw new Error(`Output ${outputId} is unavailable: published output is empty.`);
+		}
 		const notes: string[] = [];
 		let content = rawContent;
 		// A published file belongs to a finished run. If the agent is streaming
@@ -265,16 +274,25 @@ export class AgentProtocolHandler implements ProtocolHandler {
 					jsonValue = JSON.parse(await Bun.file(scan.jsonPath).text());
 					extractedFrom = scan.jsonPath;
 					parsed = true;
-				} catch {
-					// Corrupt or partially written sidecar: fall back to <id>.md.
+				} catch (error) {
+					if (!(error instanceof SyntaxError) && !isEnoent(error)) throw error;
+					// A missing or partially written sidecar can use <id>.md.
 				}
 			}
 			if (!parsed) {
+				if (rawContent.length === 0) {
+					throw new Error(`Output ${outputId} is unavailable: published output is empty.`);
+				}
 				try {
 					jsonValue = JSON.parse(rawContent);
 				} catch (err) {
-					const message = err instanceof Error ? err.message : String(err);
-					throw new Error(`Output ${outputId} is not valid JSON: ${message}`);
+					if (!(err instanceof SyntaxError)) throw err;
+					if (decodedSegments.length !== 1 || decodedSegments[0] !== "report") {
+						throw new Error(`Output ${outputId} is not valid JSON: ${err.message}`, { cause: err });
+					}
+					// Message-result scouts publish the report itself rather than
+					// a JSON wrapper. Only /report aliases that complete text.
+					jsonValue = { report: rawContent };
 				}
 			}
 
@@ -329,6 +347,11 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		}
 		const sections = yieldSections(messages);
 		const lastText = lastAssistantText(messages);
+		if (!ref.session && sections.length === 0 && !lastText) {
+			throw new Error(
+				`Output ${ref.id} is unavailable: no live session or retained report (last recorded status: ${ref.status}).`,
+			);
+		}
 		const content = `${prompt.render(agentProgressTemplate, {
 			id: ref.id,
 			status: ref.status,

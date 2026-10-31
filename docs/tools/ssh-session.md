@@ -24,7 +24,7 @@
 | `compat` | `boolean \| null` | No | Windows compatibility-shell preference. `null` clears it during update. |
 | `proxy_jump` | `string \| null` | No | Comma-separated OpenSSH `[user@]host[:port]` hops; IPv6 literals must use bracket notation. `null` clears it during update. |
 
-`create` rejects `null` configurable fields. `update` preserves omitted fields and requires at least one configurable field. `list` and `delete` reject configurable fields.
+`create` treats optional fields supplied as `null` as omitted. `update` preserves omitted fields, clears optional fields supplied as `null`, and requires at least one configurable field. `list` and `delete` reject configurable fields.
 
 ## Outputs
 - `create` and `update` return the alias target, changed field names, and `hasPassword`; they never return the password value.
@@ -39,7 +39,7 @@
 4. The session reducer reconstructs aliases by following the selected branch from root to leaf.
 5. The effective host registry merges aliases with whole-entry precedence: current session, managed project config, managed user config, repository `ssh.json`, then repository `.ssh.json`.
 6. A session alias therefore overrides a persistent alias with the same name. Deleting the session alias reveals the persistent alias again when one exists.
-7. Every mutation refreshes `ssh`, `ssh_transfer`, and all `ssh://` consumers. With `xd://` enabled, remote command execution mounts at `xd://ssh`; explicit tool selection or disabled `xd://` keeps `ssh` top-level. The alias is immediately available to Read, Write, Grep, Edit, hashline snapshots, host indexes, and path autocomplete.
+7. Every mutation refreshes `ssh`, `ssh_transfer`, and all `ssh://` consumers. With `xd://` enabled, remote command execution mounts at `xd://ssh`; explicit tool selection or disabled `xd://` keeps `ssh` top-level. The alias is immediately available to Read, Write, Grep, Glob, Edit, hashline snapshots, host indexes, and path autocomplete.
 8. Switching branches, forking, rewinding, navigating the session tree, creating a new session, or switching session files reconstructs the aliases for the selected leaf and closes obsolete SSH connection targets.
 
 ## Persistence and credential handling
@@ -80,4 +80,4 @@
 - `list` reports the session layer, while `ssh`, `xd://ssh`, `ssh_transfer`, and `ssh://` use the merged effective registry.
 - Session aliases are unavailable in a different session unless they are inherited through a forked session history.
 - URL-embedded passwords remain unsupported, and configured aliases cannot be overridden with a different URL username or port.
-- Glob continues to reject `ssh://` targets; this tool does not add remote recursive globbing.
+- Glob uses the existing restricted remote filesystem transport and session aliases; remote mutations and arbitrary SSH commands retain their exec approval requirements.

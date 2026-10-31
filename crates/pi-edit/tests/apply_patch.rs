@@ -243,7 +243,7 @@ async fn fuzzy_deletion_does_not_rewrite_context_punctuation() {
 }
 
 #[tokio::test]
-async fn explicit_replacements_are_not_inferred_as_context_when_moving() {
+async fn moves_with_exact_replacement_rows_preserve_unchanged_content() {
 	let workspace = common::Workspace::new(EditMode::ApplyPatch);
 	workspace.write("source.js", "// settings\nconst label = \"colour\";\nconst active = false;\n");
 	let patch = [
@@ -252,8 +252,8 @@ async fn explicit_replacements_are_not_inferred_as_context_when_moving() {
 		"*** Move to: moved.js",
 		"@@",
 		" // settings",
-		"-const label = \"color\";",
-		"+const label = \"color\";",
+		"-const label = \"colour\";",
+		"+const label = \"colour\";",
 		"-const active = false;",
 		"+const active = true;",
 		"*** End Patch",
@@ -262,10 +262,10 @@ async fn explicit_replacements_are_not_inferred_as_context_when_moving() {
 	workspace
 		.apply_raw(&patch, &common::DiskWriter::default())
 		.await
-		.expect("explicit +/- lines remain replacements even when their authored text is equal");
+		.expect("move and edit a file with exact unchanged replacement rows");
 	assert_eq!(
 		workspace.read("moved.js").as_deref(),
-		Some("// settings\nconst label = \"color\";\nconst active = true;\n")
+		Some("// settings\nconst label = \"colour\";\nconst active = true;\n")
 	);
 	assert!(!workspace.cwd().join("source.js").exists());
 }

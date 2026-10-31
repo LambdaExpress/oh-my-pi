@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { wrapToolWithMetaNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import { PwshTool, resolvePwshExecutable } from "@oh-my-pi/pi-coding-agent/tools/pwsh";
@@ -24,7 +25,7 @@ function textOutput(result: { content: Array<{ type: string; text?: string }> })
 
 function makeSession(
 	cwd: string,
-	options: Partial<Pick<ToolSession, "allocateOutputArtifact" | "settings">> = {},
+	options: Partial<Pick<ToolSession, "allocateOutputArtifact" | "settings" | "getArtifactsDir" | "getSessionId">> = {},
 ): ToolSession {
 	return {
 		cwd,
@@ -82,6 +83,52 @@ describeIfPwsh("PwshTool", () => {
 		const text = textOutput(result);
 		expect(text).toContain("before failure");
 		expect(text).toContain("Command exited with code 7");
+	});
+
+	it("resolves URI arrays without consuming separators or literal filename commas", async () => {
+		const session = makeSession(tempDir, {
+			getArtifactsDir: () => path.join(tempDir, "uri-artifacts"),
+			getSessionId: () => "pwsh-uri-array",
+		});
+		const names = [
+			"first.py",
+			"second.py",
+			"one,part.py",
+			"two words,part.py",
+			"three,part.py",
+			"one's.py",
+			"query=part.py",
+			"four,part.py",
+		];
+		for (const name of names) {
+			const target = resolveLocalUrlToPath(`local://${name}`, session);
+			await fs.mkdir(path.dirname(target), { recursive: true });
+			await Bun.write(target, name);
+		}
+		const tool = new PwshTool(session, pwshPath ?? "pwsh");
+		const argumentsText = [
+			"local://first.py",
+			"local://second.py",
+			"'local://one,part.py'",
+			'"local://two words,part.py"',
+			"local://three`,part.py",
+			"'local://one''s.py'",
+			"local://query=part.py",
+			"local://four%2Cpart.py",
+		].join(",");
+		const result = await tool.execute("call-pwsh-uri-array", {
+			script: [
+				`$items=Get-Item -LiteralPath ${argumentsText}`,
+				"ConvertTo-Json -Compress -InputObject @($items | Select-Object -ExpandProperty Name)",
+				'Write-Output "literal local://first.py,local://second.py"',
+			].join("\n"),
+		});
+
+		expect(result.isError).toBeUndefined();
+		const text = textOutput(result);
+		const [json, literal] = text.split(/\r?\n/);
+		expect(JSON.parse(json)).toEqual(names);
+		expect(literal).toBe("literal local://first.py,local://second.py");
 	});
 
 	it("captures readable parser diagnostics before executing any user statements", async () => {

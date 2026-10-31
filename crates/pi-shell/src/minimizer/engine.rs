@@ -641,19 +641,21 @@ on_empty = "OVERLAY"
 only_on_exit = [0]
 "#,
 		);
-		let diff_input = minimizable_input("diff --git a/file.rs b/file.rs\n@@\n-old\n+new\n");
+		let diff_input = minimizable_input(
+			"diff --git a/file.rs b/file.rs\n--- a/file.rs\n+++ b/file.rs\n@@ -1 +1 @@\n-old\n+new\n",
+		);
 		let diff = apply("git diff", &diff_input, 0, &cfg);
-		assert_eq!(diff.filter, "pipeline+builtin");
 		assert_eq!(diff.text, "OVERLAY");
 
 		let status_input = minimizable_input("## main\n M file.rs\n");
 		let status = apply("git status", &status_input, 0, &cfg);
-		assert_ne!(status.filter, "pipeline+builtin");
+		assert!(!status.text.contains("OVERLAY"));
 		assert!(status.text.contains("unstaged 1"));
 
 		let failed = apply("git diff", &diff_input, 1, &cfg);
-		assert_ne!(failed.filter, "pipeline+builtin");
-		assert!(failed.text.contains("file changed"));
+		assert!(!failed.text.contains("OVERLAY"));
+		assert!(failed.text.contains("-old"));
+		assert!(failed.text.contains("+new"));
 	}
 
 	#[test]
@@ -740,13 +742,16 @@ only_on_exit = [0]
 	}
 
 	#[test]
-	fn enabled_known_filter_minimizes() {
+	fn enabled_git_diff_preserves_changed_lines_and_original_output() {
 		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
 		assert!(should_minimize("git diff", &cfg));
-		let input = minimizable_input("diff --git a/file.rs b/file.rs\n@@\n-old\n+new\n");
+		let input = minimizable_input(
+			"diff --git a/file.rs b/file.rs\n--- a/file.rs\n+++ b/file.rs\n@@ -1 +1 @@\n-old\n+new\n",
+		);
 		let out = apply("git diff", &input, 0, &cfg);
-		assert!(out.changed);
-		assert!(out.text.contains("file changed"));
+		assert!(out.text.contains("-old"));
+		assert!(out.text.contains("+new"));
+		assert_eq!(out.original_text.as_deref(), Some(input.as_str()));
 	}
 
 	#[test]

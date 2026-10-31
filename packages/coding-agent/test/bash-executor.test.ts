@@ -147,6 +147,50 @@ describe("executeBash", () => {
 		expect(result.cancelled).toBe(false);
 	});
 
+	it("closes stdin and completes after a silent external command exits", async () => {
+		const marker = path.join(tempDir, "stdin-eof.json");
+		const source = [
+			'const fs = require("node:fs");',
+			'const input = fs.readFileSync(0, "utf8");',
+			`fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ input }));`,
+		].join("\n");
+		const result = await executeBash(`${shellQuote(process.execPath)} -e ${shellQuote(source)}`, {
+			cwd: tempDir,
+			timeout: 5000,
+		});
+
+		expect(JSON.parse(await Bun.file(marker).text())).toEqual({ input: "" });
+		expect(result).toMatchObject({ exitCode: 0, cancelled: false, output: "" });
+	});
+
+	it.skipIf(!Bun.which("git"))(
+		"retains SQL comment deletions in real no-index diff summaries and raw output",
+		async () => {
+			const lines = Array.from({ length: 80 }, (_, index) => `-- context ${index}: ${"unchanged ".repeat(12)}`);
+			lines[39] = "--    AND ISJSON([GeofenceSnapshotsJson]) = 1";
+			const before = `${lines.join("\n")}\n`;
+			lines[39] = "      AND ISJSON([GeofenceSnapshotsJson]) = 1";
+			await Bun.write(path.join(tempDir, "before.sql"), before);
+			await Bun.write(path.join(tempDir, "after.sql"), `${lines.join("\n")}\n`);
+			const rawPath = path.join(tempDir, "diff-original.log");
+			const result = await executeBash("git diff --no-index --unified=30 -- before.sql after.sql", {
+				cwd: tempDir,
+				timeout: 5000,
+				onMinimizedSave: async original => {
+					await Bun.write(rawPath, original);
+					return "sql-diff-original";
+				},
+			});
+
+			expect(result).toMatchObject({ exitCode: 1, cancelled: false });
+			expect(result.output).toContain("1 file changed, 1 insertions(+), 1 deletions(-)");
+			expect(result.output).toContain("---    AND ISJSON([GeofenceSnapshotsJson]) = 1");
+			expect(result.output).toContain("+      AND ISJSON([GeofenceSnapshotsJson]) = 1");
+			expect(result.output).toContain("artifact://sql-diff-original");
+			expect(await Bun.file(rawPath).text()).toContain("---    AND ISJSON([GeofenceSnapshotsJson]) = 1");
+		},
+	);
+
 	it("honors cwd", async () => {
 		const result = await executeBash("pwd", { cwd: tempDir, timeout: 5000 });
 		expect(result.output.trim()).toBe(tempDir);

@@ -12,6 +12,7 @@ import {
 	assertArchiveMemberSize,
 	assertEntryCount,
 	assertIndexSize,
+	assertInMemorySize,
 	DEFAULT_ARCHIVE_LIMITS,
 } from "./limits";
 import {
@@ -504,11 +505,10 @@ function parseCentralDirectory(
 		}
 		const normalizedPath = normalizeArchiveEntryPath(rawPath);
 		if (normalizedPath) {
-			assertArchiveMemberSize(
-				Math.max(values.uncompressedSize, values.compressedSize),
-				normalizedPath,
-				options.limits,
-			);
+			// Sizes here describe lazy members, not allocations. ZIP32 fields
+			// are unsigned and ZIP64 fields were checked for safe integers above;
+			// extraction enforces both packed and unpacked member ceilings before
+			// reading payloads. An oversized neighbor must not prevent browsing.
 			const host = versionMadeBy >>> 8;
 			const mode = host === UNIX_HOST || host === OSX_HOST ? externalAttributes >>> 16 : undefined;
 			const fileType = mode === undefined ? 0 : mode & FILE_TYPE_MASK;
@@ -596,8 +596,11 @@ export async function readZipEager(
 	try {
 		const entries = await readZip(memoryByteSource(bytes), { limits });
 		const files = new Map<string, Uint8Array>();
+		let total = 0;
 		for (const entry of entries) {
 			if (entry.isDirectory || entry.storage?.type !== "member") continue;
+			total += entry.size;
+			assertInMemorySize(total, limits);
 			files.set(entry.path, await entry.storage.source.read(entry.size, entry.path));
 		}
 		return files;

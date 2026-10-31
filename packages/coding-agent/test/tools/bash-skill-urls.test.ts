@@ -268,6 +268,18 @@ describe("expandInternalUrls", () => {
 		);
 	});
 
+	it("keeps an unquoted comma in a Bash URI filename", async () => {
+		const localOptions = {
+			getArtifactsDir: () => "/tmp/session-artifacts",
+			getSessionId: () => "session-1",
+		};
+		const target = resolveLocalUrlToPath("local://one,part.py", localOptions);
+
+		await expect(expandInternalUrls("cat local://one,part.py", { skills: [], localOptions })).resolves.toBe(
+			`cat ${shellEscape(target)}`,
+		);
+	});
+
 	it("expands local:/ (single-slash) URL in double quotes", async () => {
 		const localOptions = {
 			getArtifactsDir: () => "/tmp/session-artifacts",

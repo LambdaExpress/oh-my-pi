@@ -23,7 +23,7 @@
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `pattern` | `string` | Yes | Regex pattern. `grep.ts` rejects whitespace-only input but preserves it verbatim. The native matcher tries Rust regex first, then PCRE2 for features such as lookaround/backreferences, then targeted literal recovery for malformed braces/parentheses. Multiline is enabled only when the pattern contains a literal newline or the two-character sequence `\\n`. |
-| `path` | `string` | No | One file path, directory path, glob-like path, archive member, readable external URL, internal URL, or one-file line selector such as `src/foo.ts:50-100` — or several of those as a semicolon-delimited list (`"src; tests"`). Omitted or empty defaults to `.`. Empty entries are rejected. Semicolon-delimited lists split unconditionally; entries accidentally joined with comma or whitespace are expanded only after existence validation; existing paths containing delimiters stay intact. Internal URLs may glob below their root (`local://*.md`, `omp://**/*.md`). |
+| `path` | `string` | No | One file path, directory path, glob-like path, archive member, readable external URL, internal URL, or one-file line selector such as `src/foo.ts:50-100` — or several of those as a semicolon-delimited list (`"src; tests"`). Omitted or empty defaults to `.`. Empty entries are rejected. Lists can mix internal URLs and cwd-relative host paths. Existing delimiter-containing resources, including ranged files, stay literal; URL queries and fragments remain opaque. Accidental comma/whitespace joins expand only after existence validation. Internal URLs may glob below their root (`local://*.md`, `omp://**/*.md`). |
 | `case` | `boolean` | No | Case-sensitive search. Defaults to `true`. Passed to native `ignoreCase`. |
 | `gitignore` | `boolean` | No | Respect `.gitignore` during directory scans. Defaults to `true`. |
 | `skip` | `number \| null` | No | File-page offset for multi-file results. Omitted or `null` means `0`; `grep.ts` floors finite numbers and rejects negative or non-finite values. Single-file searches ignore it because they do not paginate by file. |
@@ -54,13 +54,14 @@ The tool returns a single text block in `content[0].text` plus structured `detai
    - rejects whitespace-only patterns while preserving the pattern verbatim;
    - defaults omitted or empty `path` to `["."]` (the workspace root);
    - normalizes `skip` to a non-negative integer;
-   - expands delimiter-flattened `path` entries with `expandDelimitedPathEntries()`, keeping existing delimiter-containing paths intact, splitting semicolon-delimited lists unconditionally, accepting comma splits when at least one part resolves, and accepting whitespace splits only when every part resolves;
+   - builds its approved, session-bound URL filesystem before expanding paths, including session SSH aliases;
+   - expands delimiter-flattened `path` entries with `expandDelimitedPathEntries()` and that filesystem, preserving literal resources and URL query/fragment data while recognizing mixed internal-URL/relative-host scopes; comma splits require at least one part to resolve and whitespace splits require every part to resolve;
    - peels any line-range selector from each resulting entry;
    - reads `grep.contextBefore` and `grep.contextAfter` from session settings (`1` and `3` by default);
    - enables multiline only when `pattern` contains `\n` or an actual newline.
 2. Each `path` root is normalized with `normalizePathLikeInput()` again during shared scope resolution; this is a no-op for entries already normalized by delimiter expansion.
 3. Archive member paths such as `bundle.zip:src/foo.ts` are materialized to temporary UTF-8 scratch files before native grep. Binary or non-UTF-8 archive members are reported as skipped/unreadable.
-4. Each call builds one `InternalUrlFilesystem` from the session's `sessionResolveContext()` and the tier the call was approved at (`resolveToolTier()`, i.e. `router.readTier()` over the raw paths). Internal URLs stay URLs (single-slash aliases normalized by `router.normalize()`); they are never located or materialized by the tool:
+4. The call reuses its `InternalUrlFilesystem` from the session's `sessionResolveContext()` and approved tier (`resolveToolTier()`, i.e. `router.readTier()` over the raw paths), including during shared scope resolution. Internal URLs stay URLs (single-slash aliases normalized by `router.normalize()`); they are never located or materialized by the tool:
    - internal URL globs split like host globs (`parseSearchPath()`): the base stays a URL, the glob tail (percent-decoded; encoded metacharacters stay literal) matches raw entry names. `router.isGlob()` decides whether a URL globs at all, so the query (`?key=…`, e.g. `issue://?search=fix*`), fragment, and authority brackets (an IPv6 host) are never glob syntax;
    - readable external URLs (`http(s)://`, collapsed `http(s):/host`, `www.` spellings when no local path exists) are fetched and materialized to immutable local files; `ftp`/`ws`/`wss` and declined fetches fail with an explicit error.
 5. For multi-path calls, `partitionExistingPaths()` stats every base through the URL filesystem and skips only ENOENT entries. If every entry is missing, the tool errors.
@@ -116,6 +117,8 @@ The tool returns a single text block in `content[0].text` plus structured `detai
    - Native grep walks and reads them through the URL filesystem (`skill://<name>` searches the skill directory; `omp://` walks every embedded documentation file, so it works as a docs search root). Hits are named by full URL.
    - URL globs split into base URL + glob (`local://notes/**/*.md`, `local://*.md`).
    - SSH directories are enumerated one level at a time through their protocol handler; the native walker keeps the same regex, gitignore, case and pagination behavior as local scans. Semicolon-separated SSH directories remain separate search roots.
+   - Fixed SSH stat, read, and directory-list operations use read approval and session-local aliases. Explicit `ssh://host/` retains the remote root; normalization cannot remove or replace its host authority.
+   - Transport, truncation, and permission failures inside a requested remote scope fail the search instead of becoming an empty result. Only actual missing-resource errors are skipped; optional ancestor probes outside a requested mount do not poison the scan.
    - A directory resource whose handler cannot enumerate children fails explicitly instead of searching its listing text.
    - Sources from immutable schemes suppress editable hashline anchors; `local://` hits keep them.
 
@@ -150,14 +153,14 @@ The tool returns a single text block in `content[0].text` plus structured `detai
 - `Pattern must not be empty` when trimmed `pattern` is empty.
 - `Skip must be a non-negative number` for negative or non-finite `skip`.
 - `Search scope entries must be non-empty paths or globs` when any normalized `path` entry is empty.
-- `Cannot search <url>: <reason>` when an internal URL (or a URL glob's base) cannot be stat'ed through the URL filesystem: the handler's diagnosis (`Artifact 9 not found. Available: …`, `skill:// URL requires a skill name` for `skill://*/SKILL.md`) or the tier refusal (`ssh:// access needs exec approval; …`).
-- `… lists only through the read tool` (from native grep) for a directory resource with no local path (e.g. a remote `ssh://` directory).
+- `Cannot search <url>: <reason>` when an internal URL (or a URL glob's base) cannot be stat'ed through the URL filesystem: the handler's diagnosis (`Artifact 9 not found. Available: …`, `skill:// URL requires a skill name` for `skill://*/SKILL.md`) or a refusal when the scheme needs a higher approval tier.
+- A directory resource whose handler cannot enumerate children fails explicitly. SSH handlers support enumeration and native recursive search.
 - `Cannot search external URL: ... Use \`read\` to fetch web content, then search the returned text.` for non-fetchable external URL schemes (`ftp`/`ws`/`wss`) or declined fetches.
 - Line-range selector errors include `Line-range selector requires a single file, not a glob: ...`, `Line-range selector requires a single file: ... is a directory`, and `Path not found for line-range selector: ...`.
 - `Cannot search archive member(s): ...` when all archive selectors are unreadable, binary, or non-UTF-8.
 - `Path not found: ...` when a filesystem-backed resolved base path is missing (multi-path calls append the hint `(\`path\` list entries must each exist relative to cwd)`), or `Path not found: ...; list each target in the semicolon-delimited \`path\`` when every multi-path filesystem entry is missing (with an archive hint when unreadable archive members contributed).
 - Native search normally falls back from Rust regex to PCRE2 and finally to a literal pattern rather than rejecting regex syntax; a residual native regex error surfaces as `Invalid regex: ...`.
-- Multi-file native scans skip per-file open/search failures inside `grep.rs`; the scan continues with surviving files.
+- Ordinary host scans can skip per-file open/search failures inside `grep.rs`. In-scope routed remote I/O failures are retained and raised, so a broken remote read cannot establish absence of matches.
 - ``Grep timed out after 30s; narrow paths or pattern, or scope with `glob` first`` when native grep hits `SEARCH_GREP_TIMEOUT_MS`.
 
 ## Notes
@@ -165,7 +168,7 @@ The tool returns a single text block in `content[0].text` plus structured `detai
 - Native `build_matcher()` auto-escapes braces that cannot be valid quantifiers. Valid quantifiers such as `a{2,4}` remain regex syntax.
 - If Rust regex and PCRE2 both reject group syntax, native compilation retries after escaping unescaped parentheses, then finally treats the original pattern literally.
 - Internal URLs never become host paths in the tool: native grep resolves them through the URL filesystem, and hits keep their URL spelling.
-- Approval is the router's `readTier` over the raw `path` text (substring scan, so a delimited list cannot hide an exec-tier scheme such as `ssh://`); the URL filesystem refuses any scheme whose read tier exceeds it.
+- Approval is the router's `readTier` over the raw `path` text, including delimited scopes; the URL filesystem refuses any scheme whose read tier exceeds the approved tier. Fixed SSH filesystem reads are read-tier operations; arbitrary SSH commands and remote mutations remain exec-tier operations.
 - A bare glob such as `*.ts` matches at any depth. `dir/*.ts` matches only direct children; use `dir/**/*.ts` to recurse. Literal existing paths containing glob characters take precedence over host-path glob parsing.
 - `hidden:true` is hard-coded in `grep.ts`; there is no model-facing flag to exclude dotfiles.
 - `gitignore:false` only affects native directory traversal. It does not disable the tool's own path normalization or explicit-file handling.

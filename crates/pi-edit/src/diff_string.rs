@@ -890,8 +890,6 @@ static LINE_HINT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static TOP_OF_FILE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 	Regex::new(r"(?i)^(top|start|beginning)\s+of\s+file$").expect("valid top-of-file regex")
 });
-static NUMBERED_LINE_REGEX: LazyLock<Regex> =
-	LazyLock::new(|| Regex::new(r"^\s*(\d{1,6})\s+(.+)$").expect("valid numbered-line regex"));
 
 fn parse_unified_hunk_header(line: &str) -> Option<UnifiedHunkHeader> {
 	let captures = UNIFIED_HUNK_HEADER_REGEX.captures(line)?;
@@ -910,46 +908,6 @@ fn parse_error(message: impl AsRef<str>, line_number: u32) -> EditError {
 		message: format!("Line {line_number}: {}", message.as_ref()),
 		line:    Some(line_number),
 	}
-}
-
-fn strip_line_number_prefixes(hunk: &mut DiffHunk) {
-	let all_lines = hunk
-		.old_lines
-		.iter()
-		.chain(&hunk.new_lines)
-		.filter(|line| !line.trim().is_empty())
-		.collect::<Vec<_>>();
-	if all_lines.len() < 2 {
-		return;
-	}
-	let number_matches = all_lines
-		.iter()
-		.filter_map(|line| NUMBERED_LINE_REGEX.captures(line))
-		.collect::<Vec<_>>();
-	// Math.ceil(length * 0.6), without floating point.
-	let minimum_matches = 2_usize.max((all_lines.len() * 6).div_ceil(10));
-	if number_matches.len() < minimum_matches {
-		return;
-	}
-	let numbers = number_matches
-		.iter()
-		.filter_map(|captures| captures.get(1)?.as_str().parse::<u32>().ok())
-		.collect::<Vec<_>>();
-	let sequential = numbers
-		.windows(2)
-		.filter(|pair| pair[1] == pair[0] + 1)
-		.count();
-	if numbers.len() >= 3 && sequential < 1_usize.max(numbers.len() - 2) {
-		return;
-	}
-	let strip = |line: &String| {
-		NUMBERED_LINE_REGEX
-			.captures(line)
-			.and_then(|captures| captures.get(2).map(|value| value.as_str().to_owned()))
-			.unwrap_or_else(|| line.clone())
-	};
-	hunk.old_lines = hunk.old_lines.iter().map(strip).collect();
-	hunk.new_lines = hunk.new_lines.iter().map(strip).collect();
 }
 
 struct ParseHunkResult {
@@ -1146,7 +1104,6 @@ fn parse_one_hunk(
 			line_number + u32::try_from(start_index).unwrap_or(u32::MAX),
 		));
 	}
-	strip_line_number_prefixes(&mut hunk);
 	Ok(ParseHunkResult { hunk, lines_consumed: parsed_lines + start_index })
 }
 

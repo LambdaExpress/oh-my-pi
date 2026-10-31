@@ -119,7 +119,7 @@ export interface SchemeSpec {
 	immutable: boolean;
 	/** Resources are session artifact storage (artifact://); located read pages skip the artifact spill. */
 	artifactStore?: true;
-	/** Approval tier for reading/searching this scheme. Default `read`; ssh:// is `exec`. */
+	/** Approval tier for reading/searching this scheme. Effectful reads declare a tier above the `read` default. */
 	readTier?: ToolTier;
 	/** Read output bypasses result truncation limits (skill:// instructions). */
 	unbounded?: boolean;

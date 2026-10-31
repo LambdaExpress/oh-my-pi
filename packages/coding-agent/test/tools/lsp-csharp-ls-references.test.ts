@@ -307,23 +307,37 @@ describe("lsp csharp-ls references", () => {
 		}
 	});
 
-	it("keeps the bare empty message (and useless marker) for non-csharp-ls servers", async () => {
+	it("marks empty references as useless for TypeScript input", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-fake-ts-");
 		try {
-			await writeCsFixture(tempDir.path(), "fake-ts", "fake-ts");
+			await Bun.write(path.join(tempDir.path(), "Inventory.ts"), "export function uploadInventoryData() {}\n");
+			await Bun.write(
+				path.join(tempDir.path(), ".omp", "lsp.json"),
+				JSON.stringify({
+					servers: {
+						"fake-ts": {
+							command: "fake-ts",
+							fileTypes: [".ts"],
+							rootMarkers: ["."],
+							languageId: "typescript",
+						},
+					},
+				}),
+			);
 			await mockWhich({ "fake-ts": path.join(tempDir.path(), "bin", "fake-ts") });
-			installFakeLsp({ referencesResult: [] });
+			const server = installFakeLsp({ referencesResult: [] });
 
 			const tool = new LspTool(makeSession(tempDir.path()));
 			const result = await tool.execute("call-2", {
 				action: "references",
-				file: "Inventory.cs",
-				line: 45,
-				symbol: "UploadInventoryData",
+				file: "Inventory.ts",
+				line: 1,
+				symbol: "uploadInventoryData",
 				timeout: 60,
 			});
 
-			expect(textResult(result)).toBe("No references found");
+			expect(server.referencesRequests.length).toBeGreaterThan(0);
+			expect(result.details).toMatchObject({ action: "references", success: true });
 			expect(result.useless).toBe(true);
 		} finally {
 			await lspClient.shutdownAll();
@@ -380,6 +394,15 @@ describe("lsp csharp-ls references", () => {
 			const newName = "UploadInventorySnapshot";
 			const character = "        public void UploadInventoryData() { }".indexOf(oldName);
 			const server = installFakeLsp({
+				referencesResult: [
+					{
+						uri: targetUri,
+						range: {
+							start: { line: 44, character },
+							end: { line: 44, character: character + oldName.length },
+						},
+					},
+				],
 				renameResult: {
 					changes: {
 						[targetUri]: [

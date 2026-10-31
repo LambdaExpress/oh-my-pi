@@ -23,6 +23,7 @@
 
 ### Fixed
 
+- Fixed streamed text being reordered at multibyte inline-head boundaries, corrupting long JSONL output and full-output artifacts.
 - Fixed overflowing running tool cards repeatedly appending their headers and preview fragments to terminal history as loading animations or partial results update.
 - Fixed C# declaration projections being displayed as editable source lines; projected signatures now use distinct range labels and precise recovery ranges.
 - Fixed streamed answers temporarily losing their opening sections until completion when a stable publication spans the viewport or sits behind an active completed-run gate; offscreen stable rows now retire with preceding tool results in the same frame.

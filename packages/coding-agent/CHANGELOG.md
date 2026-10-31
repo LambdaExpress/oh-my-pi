@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- ADB `click` and `input` command completion now returns `inputDispatch: "unconfirmed"` with warning presentation; exit zero no longer claims accepted injection, and callers must not automatically replay input with an unknown outcome.
+
 ### Added
 
 - Added live `Browser`/`Eval` classification for folded eval rows, retained across failed, interrupted, and background executions without distinguishing scripting languages or browser connections.
@@ -10,6 +14,23 @@
 
 ### Fixed
 
+- Fixed SDK custom tools bypassing configured extra CA certificates; context-provided HTTP policies remain isolated between sessions and explicitly supplied adapter policies are preserved.
+- Fixed browser gesture acknowledgements, accessible role names, detached-frame recovery, and direct wait budgets without replaying unconfirmed input or closing borrowed tabs.
+- Fixed navigation and screenshot timeout cleanup exceeding browser deadlines; retained tabs remain available for diagnosis.
+- Fixed failed or cancelled ADB pulls overwriting existing files, truncated screenshots reporting success, spaced text input, and semantic clicks targeting covered controls.
+- Fixed ADB process completion accepting incomplete output drains and clarified transfer acknowledgement timeouts without restarting the shared server.
+- Fixed long Eval and ADB output being reordered at UTF-8 inline-head boundaries and corrupting retained artifacts.
+- Fixed read-only SSH glob approval and session alias routing, mixed internal-URL/relative search scopes, and remote I/O failures being mistaken for absent matches.
+- Fixed namespace-prefixed XLSX workbooks returning no content and ZIP/APK listings or small-member reads failing on unrelated oversized entries, while retaining extraction limits.
+- Fixed Markdown `agent://` report selectors and empty or stale agent outputs; clarified scout capability boundaries and device-only messaging permissions.
+- Fixed PowerShell comma-separated internal URI arrays and nullable optional fields when creating session SSH aliases.
+- Fixed JavaScript Eval resolving Windows absolute package directories without their `main` or `index` entry.
+- Fixed Git diff summaries dropping header-shaped changes and removed an uncancellable process from Windows shell startup.
+- Fixed incomplete C# renames changing declarations without known callers; unsafe server edits now fail before writing any file.
+- Fixed empty TypeScript diagnostic batches hiding semantic errors or unavailable projects, and Windows LSP batch launchers bypassing safe command resolution.
+- Fixed complete numeric-prefix patches being refused and fuzzy removals overwriting different source content; valid local TypeScript AST edits can retain unrelated parser recovery nodes.
+- Fixed large JSON/raw URL artifacts losing downloaded content before capture, slash-containing GitHub refs being split incorrectly, and image notes confusing source and preview formats.
+- Enabled bounded SSH JSON queries through the existing jq pipeline, preserving remote source identity and transfer limits.
 - Fixed Herdr pane and tab forks on Windows, preserving native command arguments and child configuration scope without requiring Unix shell utilities.
 - Fixed Alt+O leaving earlier tool cards expanded in terminal scrollback while a later run is active; completed-run toggles now replay history immediately while preserving live output and editor drafts.
 - Fixed conflict-block ranges and local archive-member URLs, and kept bounded raw reads free of spurious pagination and repetition notices.
@@ -31,6 +52,7 @@
 - Fixed SSH uploads and downloads failing immediately on transient preflight disconnects; read-only preparation now makes up to three attempts with cancellable backoff while authentication and host-key failures stop immediately.
 - Fixed deleted managed skills remaining advertised and edited skill frontmatter being served from a permanent content cache.
 - Fixed finite ADB log dumps exceeding their physical-line cap in both inline output and saved artifacts.
+- Fixed ADB device preflight ignoring command deadlines and cancellation, so stalled device and emulator identity checks no longer extend command budgets or leave cancelled ADB clients running.
 - Fixed long answers appearing truncated during streaming and recovering only after completion, including when completed-run collapse is enabled and folded tool rows precede the answer.
 - Fixed tool cards visually merging or losing output while status rows, subagent panels, or editor drafts grow; collapsing panels keeps the input adjacent to the remaining transcript without rewriting terminal history.
 - Fixed raw reads treating a terminal newline as an extra addressable line; bounded EOF and tail reads preserve the original BOM and line endings.

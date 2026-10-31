@@ -1,1 +1,1 @@
-`agent://<id>`: latest completed output (status + progress while unpublished); nested IDs dotted, `/key/index` JSON path; text fields support read line suffixes (`agent://<id>/report:70-155`); write = message, `agent://all` broadcast only.
+`agent://<id>`: latest completed output (status + progress while unpublished; unavailable output errors explicitly); nested IDs dotted, `/key/index` JSON path; `/report` reads the report field or the full plain-Markdown report; text supports read line suffixes (`agent://<id>/report:70-155`); write = message, `agent://all` broadcast only.

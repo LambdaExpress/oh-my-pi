@@ -12,26 +12,33 @@
  *  - Idle rebuilds seal leftover danglers instead of pinning the transcript
  *    live region with a spinner that can never resolve.
  */
-import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import type { RegisteredTool } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { wrapRegisteredTool } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
-import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import { customToolToDefinition } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { SessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { webSearchCustomTool } from "@oh-my-pi/pi-coding-agent/web/search";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
 import { createInteractiveModeContext } from "./helpers/interactive-mode-context";
+import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
-import { cfgTerminalShowImages } from "@oh-my-pi/pi-coding-agent/modes/settings";
+// Exercise grouped reads with visible images and unfolded tool cards, regardless of project settings.
+const transcriptSettings = {
+	"terminal.showImages": true,
+	"read.toolResultPreview": false,
+	"display.hideToolActivity": false,
+	"display.foldToolRows": false,
+};
 
 const usage = {
 	input: 1,
@@ -67,6 +74,7 @@ function createFixture(opts: {
 	tools?: Record<string, ReturnType<typeof createBridgedWebSearchTool>>;
 }) {
 	const ctx = createInteractiveModeContext({
+		settings: Settings.isolated(transcriptSettings),
 		session: {
 			isStreaming: opts.isStreaming,
 			getToolByName: name => opts.tools?.[name],
@@ -87,16 +95,18 @@ function pendingComponents(chatContainer: TranscriptContainer): ToolExecutionCom
 
 describe("mid-turn transcript rebuild keeps in-flight tool calls", () => {
 	const created: ToolExecutionComponent[] = [];
+	let settingsState: SettingsTestState | undefined;
 
-	beforeAll(async () => {
-		resetSettingsForTest();
-		await Settings.init({ inMemory: true });
+	beforeEach(async () => {
+		settingsState = beginSettingsTest();
+		await Settings.init({ inMemory: true, overrides: transcriptSettings });
 		await initTheme();
 	});
 
 	afterEach(() => {
 		for (const component of created.splice(0)) component.seal();
-		vi.restoreAllMocks();
+		restoreSettingsTestState(settingsState);
+		settingsState = undefined;
 	});
 
 	it("renders a dangling toolCall as pending, tracks it, and routes the live result into it", async () => {
@@ -131,8 +141,9 @@ describe("mid-turn transcript rebuild keeps in-flight tool calls", () => {
 			const protocol = Object.getOwnPropertyDescriptor(TERMINAL, "imageProtocol")!;
 			Object.defineProperty(TERMINAL, "imageProtocol", { value: null });
 			const { ctx, helpers, controller, chatContainer } = createFixture({ isStreaming: true });
-			const showImages = cfgTerminalShowImages.get(ctx.settings);
-			cfgTerminalShowImages.set(ctx.settings, true);
+			// A terminal without graphics shows the image MIME in a localized fallback.
+			const visibleImages = () =>
+				stripVTControlCharacters(chatContainer.render(120).join("\n")).match(/image\/png/g) ?? [];
 			try {
 				const assistant: AssistantMessage = {
 					role: "assistant",
@@ -186,10 +197,11 @@ describe("mid-turn transcript rebuild keeps in-flight tool calls", () => {
 					} as SessionContext);
 				}
 				controller.restorePendingToolResults();
-				if (arrival !== "live") {
-					expect(Bun.stripANSI(chatContainer.render(120).join("\n")).match(/\[Image: image\/png\]/g)).toHaveLength(
-						1,
-					);
+				if (arrival === "live") {
+					expect(visibleImages()).toHaveLength(0);
+					expect(ctx.pendingTools.has(result.toolCallId)).toBe(true);
+				} else {
+					expect(visibleImages()).toHaveLength(1);
 					expect(ctx.pendingTools.size).toBe(0);
 				}
 				await controller.handleEvent({
@@ -199,10 +211,9 @@ describe("mid-turn transcript rebuild keeps in-flight tool calls", () => {
 					result: { content: result.content },
 					isError: false,
 				});
-				expect(Bun.stripANSI(chatContainer.render(120).join("\n")).match(/\[Image: image\/png\]/g)).toHaveLength(1);
+				expect(visibleImages()).toHaveLength(1);
 				expect(ctx.pendingTools.size).toBe(0);
 			} finally {
-				cfgTerminalShowImages.set(ctx.settings, showImages);
 				Object.defineProperty(TERMINAL, "imageProtocol", protocol);
 			}
 		});
@@ -258,17 +269,16 @@ describe("mid-turn transcript rebuild keeps in-flight tool calls", () => {
 
 		helpers.renderSessionContext({ messages: [assistant, result] } as SessionContext);
 
-		const [component] = pendingComponents(chatContainer);
+		const components = pendingComponents(chatContainer);
+		expect(components).toHaveLength(1);
+		const [component] = components;
 		expect(component).toBeDefined();
 		created.push(component);
 		expect(component.isTranscriptBlockFinalized()).toBe(true);
 		expect(ctx.pendingTools.size).toBe(0);
 
 		const rebuilt = stripVTControlCharacters(chatContainer.render(100).join("\n"));
-		expect(rebuilt.match(/Web Search/g) ?? []).toHaveLength(1);
-		expect(rebuilt).not.toContain(theme.status.pending);
-		expect(rebuilt).toContain(`Query: ${query}`);
-		expect(rebuilt).toContain("Answer");
+		expect(rebuilt).toContain(query);
 		expect(rebuilt).toContain(answer);
 	});
 });

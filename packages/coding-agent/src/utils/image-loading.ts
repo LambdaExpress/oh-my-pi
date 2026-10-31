@@ -231,7 +231,10 @@ async function loadInMemoryImageInput(options: LoadInMemoryImageInputOptions): P
 		}
 	}
 
-	let textNote = `${options.textNotePrefix} [${outputMimeType}]`;
+	let textNote = `${options.textNotePrefix} [${options.image.mimeType}]`;
+	if (outputMimeType !== options.image.mimeType) {
+		textNote += `\nPreview: ${outputMimeType} (transcoded for display; source unchanged)`;
+	}
 	if (dimensionNote) {
 		textNote += `\n${dimensionNote}`;
 	}

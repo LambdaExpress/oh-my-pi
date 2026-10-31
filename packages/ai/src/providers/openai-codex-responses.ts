@@ -21,8 +21,10 @@ import {
 	getInstallId,
 	logger,
 	readSseJson,
+	resolveExtraCa,
 	structuredCloneJSON,
 	USER_AGENT,
+	withExtraCaInit,
 } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import { parseToolCallArguments, replayableToolCallArguments } from "../utils/tool-call-arguments";
@@ -1696,7 +1698,9 @@ async function openInitialCodexEventStream(
 					options ? event => options.onSseEvent?.(event, model) : undefined,
 				);
 			} catch (error) {
-				if (!(error instanceof CodexWebSocketTransportError)) throw error;
+				// Cancellation is not a failed transport attempt. Preserve its cause
+				// instead of replacing it in retry backoff or replaying it over SSE.
+				if (requestSetup.requestSignal.aborted || !(error instanceof CodexWebSocketTransportError)) throw error;
 				const fatalWebSocketMessage = error.message.toLowerCase();
 				const isFatal = CODEX_WEBSOCKET_FATAL_PATTERNS.some(pattern =>
 					fatalWebSocketMessage.includes(pattern.toLowerCase()),
@@ -4124,14 +4128,18 @@ class CodexWebSocketConnection {
 			await this.#connectPromise;
 			return;
 		}
-		const { promise, resolve, reject } = Promise.withResolvers<void>();
-		this.#connectPromise = promise;
+		const extraCa = resolveExtraCa();
+		const tls = extraCa ? withExtraCaInit(undefined, extraCa).tls : undefined;
 		const socket = new (WebSocket as unknown as new (url: string, opts: Bun.WebSocketOptions) => Bun.WebSocket)(
 			this.#url,
-			{ headers: this.#headers, proxy: this.#proxy },
+			{ headers: this.#headers, proxy: this.#proxy, tls },
 		);
 		socket.binaryType = "nodebuffer";
 		this.#socket = socket;
+		// Synchronous configuration/constructor failures must not publish a
+		// shared handshake that no event handler can ever settle.
+		const { promise, resolve, reject } = Promise.withResolvers<void>();
+		this.#connectPromise = promise;
 		let settled = false;
 		let timeout: NodeJS.Timeout | undefined;
 		const clearPending = () => {
@@ -4158,11 +4166,12 @@ class CodexWebSocketConnection {
 		}
 		if (!settled) {
 			timeout = setTimeout(() => {
-				this.close("connect-timeout");
 				if (!settled) {
 					settled = true;
 					clearPending();
 					reject(new CodexWebSocketTransportError(`connection timeout`));
+					// close() can synchronously dispatch a generic pre-open error.
+					this.close("connect-timeout");
 				}
 			}, CODEX_WEBSOCKET_CONNECT_TIMEOUT_MS);
 		}

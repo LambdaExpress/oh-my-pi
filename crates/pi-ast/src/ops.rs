@@ -1,11 +1,14 @@
-use std::path::{Path, PathBuf};
+use std::{
+	collections::HashMap,
+	path::{Path, PathBuf},
+};
 
 use anyhow::{Result, anyhow};
 use ast_grep_core::{
-	MatchStrictness,
+	AstGrep, MatchStrictness,
 	matcher::{Pattern, PatternError},
 	source::Edit,
-	tree_sitter::LanguageExt,
+	tree_sitter::{LanguageExt, StrDoc},
 };
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
@@ -391,6 +394,79 @@ pub fn apply_edits<'e>(
 	Ok(output)
 }
 
+/// Validate staged, unique edits against the original syntax tree.
+///
+/// Existing recovery nodes may survive outside the edited spans, but no new or
+/// widened ERROR/MISSING node may appear in the rewritten source.
+pub fn validate_rewrite<'e>(
+	ast: &AstGrep<StrDoc<SupportLang>>,
+	rewritten: &str,
+	edits: impl Iterator<Item = &'e Edit<String>> + Clone,
+) -> Result<()> {
+	let mut existing = HashMap::new();
+	for node in ast
+		.root()
+		.dfs()
+		.filter(|node| node.is_error() || node.is_missing())
+	{
+		let range = node.range();
+		let mut shift = 0_isize;
+		for edit in edits.clone() {
+			let end = edit.position.saturating_add(edit.deleted_length);
+			let touches = if range.is_empty() || edit.deleted_length == 0 {
+				edit.position <= range.end && end >= range.start
+			} else {
+				edit.position < range.end && end > range.start
+			};
+			if touches {
+				let position = node.start_pos();
+				return Err(anyhow!(
+					"rewrite touches a pre-existing parse error at {}:{} ({})",
+					position.line() + 1,
+					position.column(&node) + 1,
+					node.kind()
+				));
+			}
+			if end <= range.start {
+				shift += edit.inserted_text.len() as isize - edit.deleted_length as isize;
+			}
+		}
+		let start = range
+			.start
+			.checked_add_signed(shift)
+			.ok_or_else(|| anyhow!("Computed parse-error range is out of bounds"))?;
+		let end = range
+			.end
+			.checked_add_signed(shift)
+			.ok_or_else(|| anyhow!("Computed parse-error range is out of bounds"))?;
+		*existing
+			.entry((start, end, node.kind_id(), node.is_missing()))
+			.or_insert(0_usize) += 1;
+	}
+
+	let rewritten_ast = (*ast.root().lang()).ast_grep(rewritten);
+	for node in rewritten_ast
+		.root()
+		.dfs()
+		.filter(|node| node.is_error() || node.is_missing())
+	{
+		let range = node.range();
+		let count = existing.get_mut(&(range.start, range.end, node.kind_id(), node.is_missing()));
+		if let Some(count) = count.filter(|count| **count > 0) {
+			*count -= 1;
+			continue;
+		}
+		let position = node.start_pos();
+		return Err(anyhow!(
+			"rewrite introduces a parse error at {}:{} ({})",
+			position.line() + 1,
+			position.column(&node) + 1,
+			node.kind()
+		));
+	}
+	Ok(())
+}
+
 pub fn collect_matched_files(
 	cwd: &Path,
 	patterns: &[String],
@@ -464,8 +540,84 @@ mod tests {
 
 	use super::{
 		SupportLang, apply_edits, collect_matches, compile_pattern, compile_rewrite_rules,
-		compile_search_patterns, rewrite_source,
+		compile_search_patterns, rewrite_source, validate_rewrite,
 	};
+
+	const TYPED_JEST: &str = r#"const ActualHomeService = jest.requireActual<typeof import("../../services/home-service")>(
+  "../../services/home-service",
+).default;
+expect(root.settingsStore.setRetryFunc).not.toHaveBeenCalled();
+mockRespondArrival.mockResolvedValueOnce(undefined);
+"#;
+
+	#[test]
+	fn rewrite_validation_preserves_the_reported_typed_jest_recovery_node() {
+		let ast = SupportLang::TypeScript.ast_grep(TYPED_JEST);
+		assert!(
+			ast.root()
+				.dfs()
+				.any(|node| node.is_error() && node.text() == ",")
+		);
+		let old = "root.settingsStore.setRetryFunc";
+		let edit = Edit {
+			position:       TYPED_JEST.find(old).unwrap(),
+			deleted_length: old.len(),
+			inserted_text:  b"root.settingsStore.requestReadRetry".to_vec(),
+		};
+		let output = apply_edits(TYPED_JEST, [&edit]).expect("replacement bytes should apply");
+		validate_rewrite(&ast, &output, [&edit].into_iter())
+			.expect("an unchanged unrelated grammar error must not block a healthy expression");
+		assert!(
+			output.contains("expect(root.settingsStore.requestReadRetry).not.toHaveBeenCalled()")
+		);
+	}
+
+	#[test]
+	fn rewrite_validation_maps_existing_errors_across_utf8_and_multiline_edits() {
+		let source = format!("const café = \"原始\";\n{TYPED_JEST}");
+		let ast = SupportLang::TypeScript.ast_grep(&source);
+		let old = "\"原始\"";
+		let edit = Edit {
+			position:       source.find(old).unwrap(),
+			deleted_length: old.len(),
+			inserted_text:  "\"改写\"\n  + \"另一个值\"".as_bytes().to_vec(),
+		};
+		let output = apply_edits(&source, [&edit]).expect("replacement bytes should apply");
+		validate_rewrite(&ast, &output, [&edit].into_iter())
+			.expect("byte offsets, not old line numbers, identify the unchanged recovery node");
+		assert!(output.starts_with("const café = \"改写\"\n  + \"另一个值\";\n"));
+	}
+
+	#[test]
+	fn rewrite_validation_rejects_new_or_touched_recovery_nodes() {
+		let ast = SupportLang::TypeScript.ast_grep(TYPED_JEST);
+		let old = "root.settingsStore.setRetryFunc";
+		let invalid_edit = Edit {
+			position:       TYPED_JEST.find(old).unwrap(),
+			deleted_length: old.len(),
+			inserted_text:  b"root.settingsStore.requestReadRetry(".to_vec(),
+		};
+		let invalid = apply_edits(TYPED_JEST, [&invalid_edit]).unwrap();
+		assert!(validate_rewrite(&ast, &invalid, [&invalid_edit].into_iter()).is_err());
+
+		let comma = TYPED_JEST.find("\",\n").unwrap() + 1;
+		let touching = Edit { position: comma, deleted_length: 1, inserted_text: Vec::new() };
+		let repaired = apply_edits(TYPED_JEST, [&touching]).unwrap();
+		assert!(validate_rewrite(&ast, &repaired, [&touching].into_iter()).is_err());
+	}
+
+	#[test]
+	fn rewrite_validation_rejects_missing_tokens_in_previously_valid_source() {
+		let source = "const value = legacyCall();\n";
+		let ast = SupportLang::TypeScript.ast_grep(source);
+		let edit = Edit {
+			position:       source.find("legacyCall()").unwrap(),
+			deleted_length: "legacyCall()".len(),
+			inserted_text:  b"modernCall(".to_vec(),
+		};
+		let output = apply_edits(source, [&edit]).unwrap();
+		assert!(validate_rewrite(&ast, &output, [&edit].into_iter()).is_err());
+	}
 
 	#[test]
 	fn compile_pattern_matches_csharp_bare_identifier() {

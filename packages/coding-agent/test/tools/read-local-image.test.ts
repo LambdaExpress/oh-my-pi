@@ -17,6 +17,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InternalUrlRouter, LocalProtocolHandler, parseInternalUrl } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
+import { encodeRawPng } from "@oh-my-pi/pi-coding-agent/utils/png-encode";
 import { $which, removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const hasFfprobe = Boolean($which("ffprobe"));
@@ -118,6 +119,46 @@ describe("read local:// images", () => {
 		// the replacement char; the fixed path must never emit it as text.
 		expect(joinText(result.content)).not.toContain("\uFFFDPNG");
 	});
+
+	it("distinguishes a PNG source from its real transcoded preview without changing the source bytes", async () => {
+		// The long edge exceeds the production 1568px cap, so this opaque noisy
+		// PNG must leave the no-resize fast path; lossy formats beat its PNG size.
+		const sourceWidth = 1_600;
+		const sourceHeight = 400;
+		const pixels = new Uint8Array(sourceWidth * sourceHeight * 3);
+		let seed = 1;
+		for (let index = 0; index < pixels.length; index++) {
+			seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
+			pixels[index] = seed >>> 24;
+		}
+		const png = encodeRawPng(pixels, sourceWidth, sourceHeight, 3);
+		const file = path.join(localRoot, "screenshot.png");
+		await Bun.write(file, png);
+		const session = makeSession(testDir);
+		// makeSession pins false in the runtime layer; a global set cannot override it.
+		session.settings.override("images.autoResize", true);
+		const result = await new ReadTool(session).execute("transcoded-preview", { path: "local://screenshot.png" });
+		const image = result.content.find(block => block.type === "image");
+		if (image?.type !== "image") throw new Error("Image preview missing");
+		const preview = await new Bun.Image(Buffer.from(image.data, "base64")).metadata();
+		const diagnostic = JSON.stringify(
+			{
+				text: joinText(result.content),
+				source: { width: sourceWidth, height: sourceHeight, bytes: png.byteLength },
+				preview: { mimeType: image.mimeType, format: preview.format, width: preview.width, height: preview.height },
+			},
+			null,
+			2,
+		);
+		expect(["image/jpeg", "image/webp"], diagnostic).toContain(image.mimeType);
+		expect(joinText(result.content), diagnostic).toContain("Read image file [image/png]");
+		expect(joinText(result.content), diagnostic).toContain(`Preview: ${image.mimeType}`);
+		expect(`image/${preview.format}`, diagnostic).toBe(image.mimeType);
+		expect(preview.width, diagnostic).toBeLessThan(sourceWidth);
+		expect(preview.height, diagnostic).toBeLessThan(sourceHeight);
+		expect(await Bun.file(file).bytes()).toEqual(new Uint8Array(png));
+	});
+
 	it("resets the repeat-read hint when an image at the same path changes", async () => {
 		const file = path.join(localRoot, "regenerated.png");
 		const tool = new ReadTool(makeSession(testDir));

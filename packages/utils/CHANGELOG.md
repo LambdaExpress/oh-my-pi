@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Fixed extra CA bundles replacing the runtime's enabled default or system certificate trust; explicitly curated CA lists remain restricted.
+- Fixed ZIP indexing rejecting unrelated oversized members while retaining selected-member and cumulative extraction limits, including repeated failed package reads.
 - Fixed archive recognition omitting Unity `.unitypackage` files, including archive-member selectors and uppercase extensions.
 - Fixed ASAR indexing rejecting oversized members before extraction, allowing archive listings and small-member reads while preserving extraction limits.
 - Fixed import-only and wildcard package exports resolving incorrectly while preserving private export boundaries.

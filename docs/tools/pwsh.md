@@ -30,6 +30,11 @@
 
 Use an explicit timeout for long-running commands. A script with `timeout: 0` continues until it exits or the caller cancels it; this does not make the operation safe to retry after an interruption.
 
+Internal URI arguments follow PowerShell quoting and array syntax. For example,
+`Get-Item -LiteralPath local://first.txt,local://second.txt` resolves two files.
+A comma belonging to a filename must be quoted, escaped with a backtick, or encoded
+as `%2C`; ordinary strings that merely mention a URI remain strings.
+
 ## When to use
 - Default shell work goes to `bash`; reach for `pwsh` only for PowerShell-specific syntax, cmdlets, providers/drives, `$env:`/`$PS*` state, or Windows shell semantics.
 - A Windows host alone is not a PowerShell-specific requirement.

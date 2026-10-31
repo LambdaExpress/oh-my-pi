@@ -40,11 +40,17 @@ export class ZipPackage {
 	/** Inflate one member, or `undefined` when absent. Throws once distinct inflated bytes exceed the cap. */
 	async readBytes(memberPath: string): Promise<Uint8Array | undefined> {
 		if (!this.#members.has(memberPath)) return undefined;
+		if (!this.#counted.has(memberPath)) {
+			const size = this.#archive.getNode(memberPath)?.size ?? 0;
+			assertInMemorySize(this.#inflated + size, this.#limits);
+		}
 		const { bytes } = await this.#archive.readFile(memberPath);
 		if (!this.#counted.has(memberPath)) {
+			// Check again after awaiting: another member may have completed in
+			// parallel. Failed reads must never become exempt from the cap.
+			assertInMemorySize(this.#inflated + bytes.length, this.#limits);
 			this.#counted.add(memberPath);
 			this.#inflated += bytes.length;
-			assertInMemorySize(this.#inflated, this.#limits);
 		}
 		return bytes;
 	}

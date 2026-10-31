@@ -25,13 +25,13 @@ type Mutation = { op: "write"; key: string; content: string } | { op: "delete"; 
 
 class FakeSshProtocolHandler implements ProtocolHandler {
 	readonly scheme = "ssh";
-	/** Mirrors the real `ssh://` handler spec: remote, mutable, exec-tiered, handler-owned writes. */
+	/** Mirrors the real `ssh://` handler: read-safe access and handler-owned exec-tier writes. */
 	readonly spec: SchemeSpec = {
 		backing: "remote",
 		selectors: "lines",
 		portAuthority: true,
 		immutable: false,
-		readTier: "exec",
+		readTier: "read",
 		write: { via: "handler", payload: "text", scope: "workspace", tier: () => "exec" },
 	};
 	readonly files: Map<string, string>;

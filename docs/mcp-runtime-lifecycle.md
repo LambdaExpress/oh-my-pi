@@ -162,6 +162,13 @@ The bridge adds `details.diagnostic` with `source: "client"`, `kind: "undiagnose
 
 This is missing-outcome guidance, not a new retry policy or proof of a timeout. It cannot recover C# execution results or upstream errors discarded by an external plugin. A plugin may continue executing after its response wait expires, so inspect server/application logs, execution history, and generated result files before considering a manual retry, especially for operations with side effects. The plugin must preserve its upstream error or execution result to diagnose what happened.
 
+Application readiness is a server-owned contract. A completed MCP request does
+not establish that compilation or import finished; contradictory ready/compiling
+fields require a fix in that server's waiter and final state snapshot. Likewise,
+an application-private artifact path requires the producer's explicit export or
+resource API before another process can read it. The generic host does not
+rewrite these results, infer mounts, or replay state-changing calls.
+
 ## Refresh/reload paths (startup vs live reload)
 
 ### Initial startup path

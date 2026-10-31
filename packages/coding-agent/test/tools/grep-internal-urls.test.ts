@@ -13,6 +13,7 @@ import {
 	InternalUrlRouter,
 	LocalProtocolHandler,
 	type ProtocolHandler,
+	resolveLocalRoot,
 } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
@@ -115,6 +116,12 @@ describe("GrepTool internal URL resolution", () => {
 			settings: Settings.isolated({ "grep.contextBefore": 0, "grep.contextAfter": 0 }),
 			...overrides,
 		};
+	}
+
+	function configureLocalRoot(): string {
+		const options = { getArtifactsDir: () => artifactsDir, getSessionId: () => "session" };
+		LocalProtocolHandler.setOverride(options);
+		return resolveLocalRoot(options);
 	}
 
 	async function registerSkillDirectory(): Promise<string> {
@@ -479,6 +486,133 @@ describe("GrepTool internal URL resolution", () => {
 
 		const text = getResultText(result);
 		expect(text).toContain("PLAN.md");
+	});
+
+	it("greps real local URI and relative or absolute host files through the native engine", async () => {
+		const localRoot = configureLocalRoot();
+		const hostRelative = "packages/fixture/host.ts";
+		const hostPath = path.join(tmpDir, hostRelative);
+		await fs.mkdir(path.dirname(hostPath), { recursive: true });
+		await Bun.write(hostPath, "NO_PROXY host entry\n");
+		await Bun.write(path.join(localRoot, "session.ts"), "NO_PROXY local entry\n");
+		await Bun.write(path.join(localRoot, "notes;copy #%.ts"), "NO_PROXY local entry\n");
+		const tool = new GrepTool(createSession());
+
+		for (const local of ["local://session.ts", "local://notes%3Bcopy%20%23%25.ts"]) {
+			for (const host of [hostRelative, hostPath]) {
+				const result = await tool.execute("mixed-local-host", {
+					pattern: "NO_PROXY",
+					path: `${local};${host}`,
+					gitignore: false,
+				});
+				expect(result.details?.fileCount).toBe(2);
+				expect(result.details?.matchCount).toBe(2);
+				expect(getResultText(result)).toContain("NO_PROXY local entry");
+				expect(getResultText(result)).toContain("NO_PROXY host entry");
+			}
+		}
+	});
+
+	it("keeps an existing semicolon URI literal ahead of a relative-host split, including its range", async () => {
+		const localRoot = configureLocalRoot();
+		const hostRelative = "packages/fixture/host.ts";
+		const literal = path.join(localRoot, "session.ts;packages", "fixture", "host.ts");
+		await fs.mkdir(path.dirname(literal), { recursive: true });
+		await Bun.write(literal, "NO_PROXY literal outside\nNO_PROXY literal inside\n");
+		await Bun.write(path.join(localRoot, "session.ts"), "NO_PROXY split local\n");
+		await Bun.write(path.join(tmpDir, hostRelative), "NO_PROXY split host\n");
+		const tool = new GrepTool(createSession());
+
+		for (const [suffix, matches] of [
+			["", 2],
+			[":2-2", 1],
+		] as const) {
+			const result = await tool.execute("literal-local-semicolon", {
+				pattern: "NO_PROXY",
+				path: `local://session.ts;${hostRelative}${suffix}`,
+				gitignore: false,
+			});
+			expect(result.details?.fileCount).toBe(1);
+			expect(result.details?.matchCount).toBe(matches);
+			expect(getResultText(result)).toContain("NO_PROXY literal inside");
+			expect(getResultText(result)).not.toContain("NO_PROXY split local");
+			expect(getResultText(result)).not.toContain("NO_PROXY split host");
+			if (suffix) expect(getResultText(result)).not.toContain("NO_PROXY literal outside");
+		}
+	});
+
+	it("keeps semicolon host literals grouped inside a mixed native search, including ranges", async () => {
+		const localRoot = configureLocalRoot();
+		const hostRelative = "packages/fixture/host;copy.ts";
+		await Bun.write(path.join(localRoot, "session.ts"), "NO_PROXY local entry\n");
+		await Bun.write(path.join(tmpDir, hostRelative), "NO_PROXY host outside\nNO_PROXY host inside\n");
+		await Bun.write(path.join(tmpDir, "packages/fixture/host"), "NO_PROXY prefix decoy\n");
+		await Bun.write(path.join(tmpDir, "copy.ts"), "NO_PROXY suffix decoy\n");
+		const tool = new GrepTool(createSession());
+
+		for (const [suffix, matches] of [
+			["", 3],
+			[":2-2", 2],
+		] as const) {
+			const result = await tool.execute("literal-host-semicolon", {
+				pattern: "NO_PROXY",
+				path: `local://session.ts;${hostRelative}${suffix}`,
+				gitignore: false,
+			});
+			expect(result.details?.fileCount).toBe(2);
+			expect(result.details?.matchCount).toBe(matches);
+			expect(getResultText(result)).toContain("NO_PROXY local entry");
+			expect(getResultText(result)).toContain("NO_PROXY host inside");
+			expect(getResultText(result)).not.toContain("NO_PROXY prefix decoy");
+			expect(getResultText(result)).not.toContain("NO_PROXY suffix decoy");
+			if (suffix) expect(getResultText(result)).not.toContain("NO_PROXY host outside");
+		}
+	});
+
+	it("keeps URL query and fragment semicolons opaque to relative-host recovery", async () => {
+		registerVirtualDocs(new Map([["resource", "NO_PROXY queried URI\n"]]));
+		const hostRelative = "packages/fixture/host.ts";
+		await Bun.write(path.join(tmpDir, hostRelative), "NO_PROXY unintended host\n");
+		const tool = new GrepTool(createSession());
+
+		for (const suffix of [`?q=needle;${hostRelative}`, `#part;${hostRelative}`]) {
+			const result = await tool.execute("opaque-url-suffix", {
+				pattern: "NO_PROXY",
+				path: `virtual://resource${suffix}`,
+				gitignore: false,
+			});
+			expect(result.details?.fileCount).toBe(1);
+			expect(result.details?.matchCount).toBe(1);
+			expect(getResultText(result)).toContain("NO_PROXY queried URI");
+			expect(getResultText(result)).not.toContain("NO_PROXY unintended host");
+		}
+	});
+
+	it("keeps question-mark URL globs usable in mixed native grep and glob scopes", async () => {
+		const localRoot = configureLocalRoot();
+		const hostRelative = "packages/fixture/host.ts";
+		await Bun.write(path.join(localRoot, "note1.ts"), "NO_PROXY local wildcard\n");
+		await Bun.write(path.join(localRoot, "other.ts"), "NO_PROXY wildcard decoy\n");
+		await Bun.write(path.join(tmpDir, hostRelative), "NO_PROXY host entry\n");
+		const session = createSession();
+		const scope = `local://note?.ts;${hostRelative}`;
+
+		const result = await new GrepTool(session).execute("mixed-url-glob", {
+			pattern: "NO_PROXY",
+			path: scope,
+			gitignore: false,
+		});
+		expect(result.details?.fileCount).toBe(2);
+		expect(result.details?.matchCount).toBe(2);
+		expect(getResultText(result)).toContain("NO_PROXY local wildcard");
+		expect(getResultText(result)).toContain("NO_PROXY host entry");
+		expect(getResultText(result)).not.toContain("NO_PROXY wildcard decoy");
+
+		const files = await new GlobTool(session).execute("mixed-url-glob-files", {
+			path: scope,
+			gitignore: false,
+		});
+		expect(new Set(files.details?.files)).toEqual(new Set(["local://note1.ts", hostRelative]));
 	});
 
 	it("walks local:// directory subpaths for read and find", async () => {

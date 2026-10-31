@@ -30,7 +30,6 @@ import {
 	type LspServerStatus,
 	notifyClientWatchedFiles,
 	prepareFileForRequest,
-	prepareTypeScriptProject,
 	prepareTypeScriptWorkspaceSymbols,
 	reconcileFileFromDisk,
 	reconcileIdleChecker,
@@ -38,6 +37,7 @@ import {
 	sendNotification,
 	sendRequest,
 	shutdownStaleClients,
+	supportsTsserverRequest,
 	supportsWorkspaceSymbols,
 	waitForProjectLoaded,
 } from "./client";
@@ -96,6 +96,7 @@ import { type LspParams, type LspToolDetails } from "@oh-my-pi/pi-tui/tools/lsp"
 import {
 	applyCodeAction,
 	dedupeWorkspaceSymbols,
+	EquivalentUriMap,
 	extractHoverText,
 	fileToUri,
 	filterWorkspaceSymbols,
@@ -129,7 +130,7 @@ const LOCATION_REQUEST_METHODS: Readonly<Record<string, true>> = {
 
 function formatDiagnosticsUnavailableMessage(relPath: string, serverNames: string[]): string {
 	const servers = serverNames.length === 1 ? serverNames[0] : serverNames.join(", ");
-	return `[warning] [lsp] Diagnostics unavailable for ${relPath}: ${servers} did not publish fresh diagnostics for this file. The file may still contain issues.`;
+	return `[warning] [lsp] Diagnostics unavailable for ${relPath}: ${servers} did not provide fresh, complete diagnostics for this file. The file may still contain issues.`;
 }
 
 interface FileRenamePair {
@@ -475,6 +476,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					if (isCsharpLspServer(serverName, serverConfig)) {
 						scopeNotes.push(csharpSemanticScope(serverName, serverConfig, serverCwd));
 					}
+					let diagnosticsClient: LspClient | undefined;
 					try {
 						throwIfAborted(signal);
 						if (serverConfig.createClient) {
@@ -486,12 +488,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							continue;
 						}
 						const client = await getOrCreateClient(serverConfig, serverCwd, undefined, signal);
+						diagnosticsClient = client;
 						const minVersion = client.diagnosticsVersion;
 						await prepareFileForRequest(client, resolved, { signal, refreshDiagnostics: true });
 						if (isProjectAwareLspServer(serverConfig)) {
 							await waitForProjectLoaded(client, signal);
 							throwIfAborted(signal);
-							await prepareTypeScriptProject(client, resolved, signal);
 						}
 						const expectedDocumentVersion = client.openFiles.get(uri)?.version;
 						// Project-aware servers (Roslyn, tsserver, …) compute pull diagnostics
@@ -530,6 +532,10 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 									? err.message
 									: String(err);
 						failedServers.push(`${serverName}: ${errorMessage}`);
+						if (diagnosticsClient && supportsTsserverRequest(diagnosticsClient.serverCapabilities)) {
+							unavailableServerNames.push(serverName);
+							diagnosticsUnavailable = true;
+						}
 						logger.debug("LSP diagnostics server failed", {
 							server: serverName,
 							file: relPath,
@@ -579,7 +585,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 					if (uniqueDiagnostics.length === 0) {
 						if (unavailableMessages.length > 0) {
-							const output = `${DIAGNOSTICS_UNAVAILABLE_SUMMARY}:\n${formatGroupedDiagnosticMessages(unavailableMessages)}`;
+							const output = [
+								`${DIAGNOSTICS_UNAVAILABLE_SUMMARY}:\n${formatGroupedDiagnosticMessages(unavailableMessages)}`,
+								...(failedServers.length > 0
+									? [`${theme.status.warning} some servers failed: ${failedServers.join(", ")}`]
+									: []),
+							].join("\n");
 							return {
 								content: [{ type: "text", text: withScope(output) }],
 								details: { action, serverName: Array.from(allServerNames).join(", "), success: false },
@@ -1854,6 +1865,26 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						};
 					}
 
+					// csharp-ls can return a declaration-only rename even after its
+					// references handler found callers. Query the same synchronized
+					// client before mutation; never synthesize replacement edits from
+					// those locations or from a text search.
+					let renameReferences: Location[] | undefined;
+					if (isCsharpLspServer(serverName, serverConfig)) {
+						try {
+							renameReferences = normalizeLocationResult(
+								(await sendRequest(
+									client,
+									"textDocument/references",
+									{ textDocument: { uri }, position, context: { includeDeclaration: true } },
+									signal,
+								)) as Location[] | null,
+							);
+						} catch (error) {
+							if (!isMethodNotFoundError(error)) throw error;
+						}
+					}
+
 					const result = (await sendRequest(
 						client,
 						"textDocument/rename",
@@ -1876,6 +1907,65 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							details: { action, serverName, success: false, request: params },
 						};
 					} else {
+						if (isCsharpLspServer(serverName, serverConfig)) {
+							// Match application precedence; a legacy changes map must
+							// not make ignored callsite edits look covered.
+							const textEdits = new EquivalentUriMap<TextEdit[]>();
+							for (const [editUri, edits] of flattenWorkspaceTextEdits(
+								result.documentChanges ? { documentChanges: result.documentChanges } : result,
+							)) {
+								const existing = textEdits.get(editUri);
+								if (existing) existing.push(...edits);
+								else textEdits.set(editUri, edits);
+							}
+							const omitted = (renameReferences ?? []).filter(
+								reference =>
+									!textEdits
+										.get(reference.uri)
+										?.some(
+											edit =>
+												(edit.range.start.line < reference.range.start.line ||
+													(edit.range.start.line === reference.range.start.line &&
+														edit.range.start.character <= reference.range.start.character)) &&
+												(edit.range.end.line > reference.range.end.line ||
+													(edit.range.end.line === reference.range.end.line &&
+														edit.range.end.character >= reference.range.end.character)),
+										),
+							);
+							const declarationEdits = textEdits.get(uri);
+							const declarationOnly =
+								textEdits.size === 1 &&
+								declarationEdits?.length === 1 &&
+								(declarationEdits[0].range.start.line < position.line ||
+									(declarationEdits[0].range.start.line === position.line &&
+										declarationEdits[0].range.start.character <= position.character)) &&
+								(declarationEdits[0].range.end.line > position.line ||
+									(declarationEdits[0].range.end.line === position.line &&
+										declarationEdits[0].range.end.character > position.character));
+							let incompleteReason: string | undefined;
+							if (omitted.length > 0) {
+								incompleteReason = [
+									`Rename refused: the language server's workspace edit omits ${omitted.length} reference(s) returned by the same semantic client.`,
+									...omitted
+										.slice(0, REFERENCE_CONTEXT_LIMIT)
+										.map(location => `  ${formatLocation(location, this.session.cwd)}`),
+								].join("\n");
+							} else if (declarationOnly && !renameReferences?.length) {
+								incompleteReason =
+									"Rename refused: the C# server returned only the queried declaration, but did not provide references to validate completeness.";
+							}
+							if (incompleteReason) {
+								return {
+									content: [
+										{
+											type: "text",
+											text: `${incompleteReason}\nNo files were changed. Check the server's project loading and rename support before retrying.\n${csharpSemanticScope(serverName, serverConfig, clientCwd)}`,
+										},
+									],
+									details: { action, serverName, success: false, request: params },
+								};
+							}
+						}
 						const shouldApply = apply !== false;
 						if (shouldApply) {
 							const applied = await applyWorkspaceEditWithLsp(result, clientCwd, signal);

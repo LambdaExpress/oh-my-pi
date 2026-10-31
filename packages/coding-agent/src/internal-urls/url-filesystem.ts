@@ -66,7 +66,7 @@ export class UrlFsError extends Error {
 /** A URL split at its mount root, with `.`/`..`/empty segments resolved lexically. */
 interface UrlPath {
 	scheme: string;
-	/** `scheme://` when the authority is a path segment (local://), else `scheme://<authority>`. */
+	/** `scheme://` for path authorities; otherwise the fixed authority, including an explicit host-root `/`. */
 	root: string;
 	/** Raw (percent-encoded) segments below the root. */
 	segments: string[];
@@ -76,23 +76,31 @@ function parseUrlPath(input: string, spec: SchemeSpec): UrlPath {
 	const match = URL_PATH_RE.exec(input);
 	if (!match) throw new UrlFsError("EINVAL", `Not a URL path: ${input}`);
 	const scheme = match[1].toLowerCase();
-	// The authority takes part in `..` resolution: `skill://a/..` is `skill://`.
+	let root = `${scheme}://`;
+	let pathname = match[2];
+	if (!spec.pathAuthority) {
+		// An id/host is a mount boundary, not a path segment that `..` may
+		// remove. Keep an explicit host-root slash: ssh://host/ is absolute,
+		// while ssh://host (no remote path) must still be rejected.
+		const slash = pathname.indexOf("/");
+		const authority = slash === -1 ? pathname : pathname.slice(0, slash);
+		root += authority;
+		pathname = slash === -1 ? "" : pathname.slice(slash + 1);
+		if (slash !== -1 && (spec.portAuthority || authority === "")) root += "/";
+	}
 	const segments: string[] = [];
-	for (const part of match[2].split("/")) {
+	for (const part of pathname.split("/")) {
 		if (part === "" || part === ".") continue;
 		if (part === "..") segments.pop();
 		else segments.push(part);
 	}
-	if (spec.pathAuthority) return { scheme, root: `${scheme}://`, segments };
-	return { scheme, root: `${scheme}://${segments[0] ?? ""}`, segments: segments.slice(1) };
+	return { scheme, root, segments };
 }
 
 /** `url` followed by `segments`, without doubling the slash after a bare `scheme://`. */
 function appendSegments(url: string, segments: readonly string[]): string {
 	if (segments.length === 0) return url;
-	const trimmed = url.replace(/\/+$/, "");
-	// Trimming `scheme://` leaves `scheme:`; its segments follow the `//` directly.
-	return trimmed.endsWith(":") ? `${trimmed}//${segments.join("/")}` : `${trimmed}/${segments.join("/")}`;
+	return `${url}${url.endsWith("/") ? "" : "/"}${segments.join("/")}`;
 }
 
 function formatUrlPath(target: UrlPath): string {
@@ -439,13 +447,18 @@ export class InternalUrlFilesystem {
 		if (node.sourcePath) return { local: node.sourcePath };
 		const { handler } = this.#route(node.url);
 		if (handler?.readDir) {
-			const entries = await handler.readDir(parseInternalUrl(node.url), this.#context);
-			return {
-				entries: entries.map(entry => ({
-					name: entry.name,
-					fileType: entry.isDirectory ? ShellFsFileType.Dir : ShellFsFileType.File,
-				})),
-			};
+			try {
+				const entries = await handler.readDir(parseInternalUrl(node.url), this.#context);
+				return {
+					entries: entries.map(entry => ({
+						name: entry.name,
+						fileType: entry.isDirectory ? ShellFsFileType.Dir : ShellFsFileType.File,
+					})),
+				};
+			} catch (error) {
+				const { code, message } = this.#errno(error, node.spec);
+				throw new UrlFsError(code, message);
+			}
 		}
 		throw new UrlFsError("ENOTSUP", `${node.url} lists only through the read tool`);
 	}
@@ -650,7 +663,10 @@ export class InternalUrlFilesystem {
 		try {
 			resource = await this.#router.resolve(url, this.#context);
 		} catch (error) {
-			if (handler || this.#context.signal?.aborted) throw error;
+			if (handler || this.#context.signal?.aborted) {
+				const { code, message } = this.#errno(error, spec);
+				throw new UrlFsError(code, message);
+			}
 			// Unregistered schemes only exist as MCP resources: no server offering one means no such file.
 			const message = error instanceof Error ? error.message : String(error);
 			throw new UrlFsError(message.startsWith("MCP resource read error") ? "EIO" : "ENOENT", message);
@@ -757,12 +773,16 @@ export class InternalUrlFilesystem {
 		if (this.#context.signal?.aborted) throw new UrlFsError("ECANCELED", "Operation cancelled");
 	}
 
-	#errno(error: unknown): { code: string; message: string } {
+	#errno(error: unknown, spec?: SchemeSpec): { code: string; message: string } {
 		const message = error instanceof Error ? error.message : String(error);
 		if (error instanceof UrlFsError) return { code: error.code, message };
 		if (this.#context.signal?.aborted) return { code: "ECANCELED", message };
 		if (error instanceof UrlContainmentError) return { code: "EACCES", message };
 		if (isFsError(error) && ERRNO_CODE_RE.test(error.code)) return { code: error.code, message };
+		// Host-backed remote handlers mark actual misses/invalid URLs with
+		// errno. A transfer diagnostic or filename containing "unknown" or
+		// "not found" must not turn a failed read into an absent optional probe.
+		if (spec?.backing === "remote" && spec.portAuthority) return { code: "EIO", message };
 		// Handlers report misses and refusals as plain errors; classify them by what they say.
 		if (DENIED_MESSAGE_RE.test(message)) return { code: "EACCES", message };
 		if (MISSING_MESSAGE_RE.test(message)) return { code: "ENOENT", message };

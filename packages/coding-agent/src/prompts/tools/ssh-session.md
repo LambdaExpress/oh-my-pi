@@ -1,7 +1,7 @@
 Manage SSH aliases for the current session.
 
 <instruction>
-- `create` requires `name` and `host`; it may temporarily shadow a configured alias.
+- `create` requires `name` and `host`; optional `null` fields stay unset. It may temporarily shadow a configured alias.
 - `update` changes an existing session alias. Omitted fields stay unchanged; `null` clears optional fields.
 - `delete` removes a session alias; any shadowed configured alias becomes available again.
 - `list` returns session aliases and `hasPassword` status. It NEVER returns password values.

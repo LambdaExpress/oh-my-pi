@@ -1102,7 +1102,10 @@ export class OutputSink {
 				this.#headLines += countNewlines(capped);
 				return;
 			}
-			// Split: head takes a UTF-8-safe prefix; remainder flows to tail.
+			// Once any bytes go to the tail, the head is closed. A UTF-8-safe
+			// split can leave nominal room; filling it with a later ASCII chunk
+			// would reorder that chunk ahead of the already-buffered tail.
+			this.#headRetentionDisabled = true;
 			const headSlice = truncateHeadBytes(capped, room);
 			if (headSlice.bytes > 0) {
 				this.#head += headSlice.text;

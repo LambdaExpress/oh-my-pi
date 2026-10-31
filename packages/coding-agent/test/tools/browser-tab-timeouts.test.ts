@@ -77,6 +77,8 @@ async function createHandleWorker(createHandle: () => ElementHandle): Promise<Ha
 			throw new Error("Fixture uses page event capture, not CDP");
 		},
 		setRequestInterception: async () => {},
+		setDefaultTimeout: () => {},
+		setDefaultNavigationTimeout: () => {},
 		evaluateHandle: async (_fn: unknown, ref: string) => {
 			if (ref !== "e5") throw new Error(`Unknown fixture ARIA ref ${ref}`);
 			return { asElement: () => createHandle(), dispose: async () => {} };

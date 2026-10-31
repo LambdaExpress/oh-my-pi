@@ -6,6 +6,11 @@ import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 const SERIAL = "emulator-5554";
 const OTHER_SERIAL = "device-two";
+const INPUT_WINDOWS = `Input Dispatcher State:
+  Display: 0
+    Windows:
+      0: name=app/.MainActivity, id=1, displayId=0, inputConfig={DEFAULT}, alpha=1.00, frame=[0,0][1080,2400], touchableRegion=[0,0][1080,2400], ownerPid=123
+  Global Monitors: <none>`;
 
 interface CommandCall {
 	args: readonly string[];
@@ -44,14 +49,22 @@ function harness(
 	options: {
 		read?: (call: CommandCall, index: number) => Frame | Promise<Frame>;
 		input?: (call: CommandCall) => void | Promise<void>;
+		windows?: string | ((call: CommandCall) => Promise<string>);
 	} = {},
 ) {
 	const captures: CommandCall[] = [];
+	const windowQueries: CommandCall[] = [];
 	const inputs: CommandCall[] = [];
 	let current: Frame = frames[0] ?? hierarchy();
 	const automation = new AdbUiAutomation({
 		async runBinary(args, timeoutMs, signal) {
 			const call = { args, timeoutMs, signal };
+			if (args[3] === "dumpsys") {
+				windowQueries.push(call);
+				const windows =
+					typeof options.windows === "function" ? await options.windows(call) : (options.windows ?? INPUT_WINDOWS);
+				return { bytes: new TextEncoder().encode(windows), exitCode: 0, cancelled: false };
+			}
 			captures.push(call);
 			current = options.read ? await options.read(call, captures.length - 1) : (frames.shift() ?? current);
 			if (current instanceof Error) throw current;
@@ -75,7 +88,7 @@ function harness(
 			};
 		},
 	});
-	return { automation, captures, inputs };
+	return { automation, captures, windowQueries, inputs };
 }
 
 describe("ADB UI reference safety", () => {
@@ -224,6 +237,132 @@ describe("ADB UI semantic clicking", () => {
 			"50",
 			"600",
 		]);
+	});
+});
+
+describe("ADB UI touch-point occlusion", () => {
+	it("refuses an overlapping same-window interactive branch instead of opening its overlay", async () => {
+		const target = node({
+			text: "Start job",
+			bounds: "[800,2070][1064,2228]",
+		});
+		const overlay = node({
+			text: "Console notification",
+			bounds: "[0,2144][1080,2271]",
+		});
+		for (const branches of [
+			[target, overlay],
+			[overlay, target],
+		]) {
+			const { automation, inputs, windowQueries } = harness([hierarchy(...branches)]);
+			await expect(automation.click(SERIAL, { text: "Start job" }, false, 2_000)).rejects.toThrow(
+				/occluded|ambiguous touch/i,
+			);
+			expect(inputs).toEqual([]);
+			expect(windowQueries).toEqual([]);
+		}
+	});
+
+	it("tests the actual point, not any overlap elsewhere within the target bounds", async () => {
+		const { automation, inputs } = harness([
+			hierarchy(
+				node({ bounds: "[0,0][100,100]" }),
+				node({ text: "Overlay below the point", bounds: "[0,60][100,100]" }),
+			),
+		]);
+		await automation.click(SERIAL, { text: "Save" }, false, 2_000);
+		expect(inputs.map(call => call.args)).toEqual([["-s", SERIAL, "shell", "input", "tap", "50", "50"]]);
+	});
+
+	it("clips another branch by its own ancestors before treating it as an obstruction", async () => {
+		const { automation, inputs } = harness([
+			hierarchy(
+				node(),
+				node(
+					{ text: "", clickable: "false", bounds: "[120,0][300,100]" },
+					node({ text: "Offscreen overlay", bounds: "[0,0][300,100]" }),
+				),
+			),
+		]);
+		await automation.click(SERIAL, { text: "Save" }, false, 2_000);
+		expect(inputs[0]!.args.at(-2)).toBe("60");
+	});
+
+	it.each([
+		{ text: "202603", bounds: "[486,1622][586,1722]", region: "[0,1428][1080,2337]" },
+		{ text: "Sign in", bounds: "[127,1655][955,1791]", region: "[0,1428][1080,2337]" },
+		{ text: "Save", bounds: "[10,20][110,80]", region: "[200,0][300,100]|[0,0][100,100]" },
+	])("rejects the native IME covering $text without sending back or another tap", async ({ text, bounds, region }) => {
+		const windows = INPUT_WINDOWS.replace(
+			"      0: name=app/",
+			`      0: name=InputMethod, id=2, displayId=0, inputConfig={NOT_FOCUSABLE | TRUSTED_OVERLAY}, alpha=1.00, frame=[0,0][1080,2400], touchableRegion=${region}, ownerPid=234\n      1: name=app/`,
+		);
+		const { automation, inputs, windowQueries } = harness([hierarchy(node({ text, bounds }))], { windows });
+		await expect(automation.click(SERIAL, { text }, false, 2_000)).rejects.toThrow(/occluded.*input window/i);
+		expect(inputs).toEqual([]);
+		expect(windowQueries[0]!.args).toEqual(["-s", SERIAL, "exec-out", "dumpsys", "input"]);
+	});
+
+	it("allows a point outside a floating IME's touchable region even inside its full frame", async () => {
+		const windows = INPUT_WINDOWS.replace(
+			"      0: name=app/",
+			"      0: name=InputMethod, id=2, displayId=0, inputConfig={NOT_FOCUSABLE}, alpha=1.00, frame=[0,0][1080,2400], touchableRegion=[400,1400][1000,2300], ownerPid=234\n      1: name=app/",
+		);
+		const { automation, inputs } = harness(undefined, { windows });
+		await automation.click(SERIAL, { text: "Save" }, false, 2_000);
+		expect(inputs.map(call => call.args)).toEqual([["-s", SERIAL, "shell", "input", "tap", "60", "50"]]);
+	});
+
+	it("ignores invisible, untouchable, spy, and other-display windows at the point", async () => {
+		const entries = ["NOT_VISIBLE", "NOT_TOUCHABLE", "SPY"].map(
+			(config, index) =>
+				`      ${index}: name=InputMethod, displayId=0, inputConfig={${config}}, touchableRegion=[0,0][1080,2400], ownerPid=234`,
+		);
+		entries.push(
+			"      3: name=InputMethod, displayId=1, inputConfig={DEFAULT}, touchableRegion=[0,0][1080,2400], ownerPid=234",
+		);
+		const windows = INPUT_WINDOWS.replace("      0: name=app/", `${entries.join("\n")}\n      4: name=app/`);
+		const { automation, inputs } = harness(undefined, { windows });
+		await automation.click(SERIAL, { text: "Save" }, false, 2_000);
+		expect(inputs).toHaveLength(1);
+	});
+
+	it("handles the legacy input-window visibility and flag format", async () => {
+		const windows = `Input Dispatcher State:
+  Windows:
+    0: name='Window{123 InputMethod}', visible=true, flags=0x00000028, type=0x000007db, frame=[0,0][1080,2400], touchableRegion=[0,1400][1080,2400], ownerPid=234
+    1: name='Window{456 app/.MainActivity}', visible=true, flags=0x00000000, frame=[0,0][1080,2400], touchableRegion=[0,0][1080,2400], ownerPid=123`;
+		const { automation, inputs } = harness(undefined, { windows });
+		await automation.click(SERIAL, { text: "Save" }, false, 2_000);
+		expect(inputs[0]!.args.at(-1)).toBe("50");
+	});
+
+	it.each([
+		"",
+		"Permission Denial: can't dump input",
+		INPUT_WINDOWS.replace("touchableRegion=[0,0][1080,2400]", "touchableRegion=[0,0][1080,"),
+	])("does not claim a safe point when window geometry is unavailable or incomplete", async windows => {
+		const { automation, inputs } = harness(undefined, { windows });
+		await expect(automation.click(SERIAL, { text: "Save" }, false, 2_000)).rejects.toBeInstanceOf(ToolError);
+		expect(inputs).toEqual([]);
+	});
+
+	it("cancels a blocked input-window query without dispatching input", async () => {
+		const started = Promise.withResolvers<void>();
+		const pending = Promise.withResolvers<string>();
+		const controller = new AbortController();
+		const { automation, inputs } = harness(undefined, {
+			windows: async () => {
+				started.resolve();
+				return pending.promise;
+			},
+		});
+		const click = automation.click(SERIAL, { text: "Save" }, false, 2_000, controller.signal);
+		await started.promise;
+		controller.abort();
+		await expect(click).rejects.toBeInstanceOf(ToolAbortError);
+		pending.resolve(INPUT_WINDOWS);
+		expect(inputs).toEqual([]);
 	});
 });
 

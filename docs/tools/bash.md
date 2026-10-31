@@ -67,6 +67,12 @@ The tool returns a `text` content block plus optional `details` and image blocks
 
 Stdout and stderr are merged before the model sees them. Definite non-zero exit codes are appended to the returned error result text as `Command exited with code <n>`.
 
+The shared output sink preserves UTF-8 text in its original stream order, including when a multibyte character crosses the inline head boundary. A bounded preview may omit content; the full spill artifact retains the complete text without later chunks being inserted before earlier ones. Eval, ADB, and other streaming tools use the same sink.
+
+Git diff summaries distinguish file headers from lines inside each unified hunk.
+SQL comment deletions and added lines resembling `---` or `+++` remain changes;
+the linked original-output artifact retains the complete diff.
+
 ## Command policy and dedicated-tool routing
 
 Two independent settings can prevent a Bash subprocess from starting. They serve different purposes and run at different points in the tool-call lifecycle.

@@ -2,9 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { SSHHost } from "@oh-my-pi/pi-coding-agent/capability/ssh";
+import { parseInternalUrl } from "@oh-my-pi/pi-coding-agent/internal-urls/parse";
+import { SshProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls/ssh-protocol";
 import type { SSHConnectionTarget } from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
 import * as connectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
-import { executeSshFileTransfer, type SshFileTransferPlan } from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
+import {
+	executeSshFileTransfer,
+	prepareSshFileTransfer,
+	type SshFileTransferPlan,
+} from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
 import { $which, getRemoteHostDir } from "@oh-my-pi/pi-utils";
 
 const POWERSHELL = $which("pwsh");
@@ -86,6 +93,74 @@ describe.skipIf(process.platform !== "win32" || !POWERSHELL)("PowerShell SSH tra
 			return encodedInvocation(await transform(script));
 		});
 	}
+
+	it("round-trips short UTF-8 without a final newline through the complete PowerShell login command", async () => {
+		const host: SSHHost = {
+			name: `framed-powershell-${crypto.randomUUID()}`,
+			host: "framed.invalid",
+			_source: { provider: "session", providerName: "Session", path: "session://framed", level: "project" },
+		};
+		const cache = path.join(getRemoteHostDir(), `${connectionManager.getSshHostInfoKey(host)}.json`);
+		const remotePath = path.join(directory, "ROM Services", "[draft] O'Brien", "job-schema.sql");
+		const sql = "SELECT N'元数据';\nSELECT 'no final newline';";
+		const replacement = "SELECT N'已编辑';";
+		await fs.mkdir(path.dirname(cache), { recursive: true });
+		await fs.writeFile(
+			cache,
+			JSON.stringify({
+				version: 7,
+				os: "windows",
+				shell: "powershell",
+				powerShellCommand: "pwsh",
+				compatEnabled: false,
+			}),
+		);
+		await fs.writeFile(source, sql);
+		try {
+			// Keep the generated nested -EncodedCommand and the login-shell
+			// framing intact. Only sshd's process launch is replaced locally.
+			vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockImplementation(
+				async (target, command, options) => {
+					const args = await connectionManager.buildRemoteCommand(target, command, options);
+					return { executable: POWERSHELL!, args: ["-NoProfile", "-NonInteractive", "-Command", args.at(-1)!] };
+				},
+			);
+			const prepared = await prepareSshFileTransfer({
+				operation: "upload",
+				target: host,
+				localPath: source,
+				remotePath,
+				overwrite: false,
+			});
+			await executeSshFileTransfer(prepared);
+			expect(await fs.readFile(remotePath)).toEqual(Buffer.from(sql));
+
+			const handler = new SshProtocolHandler();
+			const url = parseInternalUrl(
+				`ssh://${host.name}/${remotePath.replaceAll("\\", "/").split("/").map(encodeURIComponent).join("/")}`,
+			);
+			const context = { sshHosts: [host] };
+			expect((await handler.resolve(url, context)).content).toBe(sql);
+			await handler.write(url, replacement, context);
+			expect((await handler.resolve(url, context)).content).toBe(replacement);
+			expect(await fs.readFile(remotePath)).toEqual(Buffer.from(replacement));
+
+			const download = path.join(directory, "downloaded.sql");
+			await executeSshFileTransfer(
+				await prepareSshFileTransfer({
+					operation: "download",
+					target: host,
+					localPath: download,
+					remotePath,
+					overwrite: false,
+				}),
+			);
+			expect(await fs.readFile(download)).toEqual(Buffer.from(replacement));
+			expect(await fs.readFile(source)).toEqual(Buffer.from(sql));
+		} finally {
+			await fs.rm(cache, { force: true });
+		}
+	}, 60_000);
 
 	for (const overwrite of [false, true]) {
 		it(`commits a ${overwrite ? "replacement" : "new file"} with exit zero and round-trips binary stdout`, async () => {

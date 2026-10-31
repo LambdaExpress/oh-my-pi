@@ -15,9 +15,36 @@
  * cell budget.
  */
 import { CELL_BUDGET_SLACK_MS } from "../run-scope";
+import { TOOL_TIMEOUTS } from "../tool-timeouts";
+import type { TabCallStep } from "./tab-call";
 
 const QUICK_OP_TIMEOUT_MS = 20_000;
 const ACTION_OP_TIMEOUT_MS = 8_000;
+
+/**
+ * Direct helpers have no separate run options. Raise their default run budget for an explicit
+ * millisecond wait, including frame calls, while leaving explicit outer deadlines and global
+ * caps to the caller. Handle acquisition and its following wait share this one budget.
+ */
+export function resolveBrowserCallTimeout(chain: readonly TabCallStep[]): number | undefined {
+	let waitBudget = 0;
+	for (const { method, args } of chain) {
+		const optionsIndex =
+			method === "waitFor" || method === "waitForSelector" || method === "waitForText" || method === "waitForUrl"
+				? 1
+				: method === "waitForDownload"
+					? 0
+					: undefined;
+		if (optionsIndex === undefined) continue;
+		const options = args[optionsIndex];
+		if (options === null || typeof options !== "object" || Array.isArray(options)) continue;
+		const timeout = (options as { timeout?: unknown }).timeout;
+		if (typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0) waitBudget += timeout;
+	}
+	return waitBudget > 0
+		? Math.max(TOOL_TIMEOUTS.browser.default, Math.ceil((waitBudget + CELL_BUDGET_SLACK_MS) / 1000))
+		: undefined;
+}
 
 /**
  * A selector op whose selector has matched nothing for this long fails fast with the

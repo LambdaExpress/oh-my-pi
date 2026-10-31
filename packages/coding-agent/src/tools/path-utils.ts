@@ -729,9 +729,11 @@ async function literalDelimitedPathEnd(
 		const entry = normalizePathLikeInput(parts.slice(start, end).join(";"));
 		if (!isInternalUrlPath(entry)) {
 			if ((await probeLiteralPathExists(entry, cwd)) !== "missing") return end;
+			const selectedPath = splitPathAndSel(entry).path;
+			if (selectedPath !== entry && (await probeLiteralPathExists(selectedPath, cwd)) !== "missing") return end;
 			continue;
 		}
-		const url = router.normalize(expandPath(entry));
+		const url = router.split(router.normalize(expandPath(entry))).path;
 		// Only file-backed URLs name literal filenames. Do not materialize
 		// virtual/remote resources merely to disambiguate a delimiter.
 		if (router.spec(extractUriScheme(url) ?? "")?.backing !== "file") break;
@@ -775,10 +777,17 @@ async function splitInternalUrlDelimitedList(
 			const current = normalizePathLikeInput(rawParts.slice(start, end).join(";"));
 			const next = normalizePathLikeInput(rawParts[end]);
 			const explicitTarget = INTERNAL_URL_SCHEME_RE.test(next) || path.win32.isAbsolute(next);
+			const currentIsUrl = isInternalUrlPath(current);
+			// Query/fragment data can look like an existing workspace path.
+			// Do not invent implicit relative boundaries inside that suffix;
+			// the existing explicit URL/absolute-path boundaries still apply.
+			const opaqueUrlSuffix =
+				currentIsUrl && (current.includes("#") || (current.includes("?") && !router.isGlob(current)));
 			const workspaceTarget =
 				filesystem &&
+				!opaqueUrlSuffix &&
 				next.length > 0 &&
-				(!isInternalUrlPath(current) ||
+				(!currentIsUrl ||
 					router.isGlob(current) ||
 					hasGlobPathChars(next) ||
 					(await delimitedPathPartResolves(next, cwd, splitter)) ||
@@ -973,7 +982,10 @@ function parseUrlSearchPath(input: string): ParsedSearchPath | undefined {
 	const firstGlobIndex = firstGlobSegment(segments, hostAuthority ? 1 : 0);
 	if (firstGlobIndex === -1) return { basePath: url };
 	return {
-		basePath: url.slice(0, rootLength) + segments.slice(0, firstGlobIndex).join("/"),
+		basePath:
+			url.slice(0, rootLength) +
+			segments.slice(0, firstGlobIndex).join("/") +
+			(hostAuthority && firstGlobIndex === 1 ? "/" : ""),
 		glob: segments
 			.slice(firstGlobIndex)
 			.map(segment => decodeUrlGlobSegment(segment, input))
@@ -1535,7 +1547,7 @@ export async function resolveToolSearchScope(opts: ToolScopeOptions): Promise<To
 	if (normalizedRawPaths.some(rawPath => rawPath.length === 0)) {
 		throw new ToolError("Search scope entries must be non-empty paths or globs");
 	}
-	const rawPaths = await expandDelimitedPathEntries(normalizedRawPaths, cwd);
+	const rawPaths = await expandDelimitedPathEntries(normalizedRawPaths, cwd, { filesystem: opts.filesystem });
 	if (rawPaths.some(rawPath => rawPath.length === 0)) {
 		throw new ToolError("Search scope entries must be non-empty paths or globs");
 	}

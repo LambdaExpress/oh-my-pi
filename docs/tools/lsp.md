@@ -75,7 +75,7 @@
 - A resolvable server binary, a completed `initialize` / `initialized` handshake (`ready`), and semantic service for a particular file are distinct states.
 - For servers advertising `typescript.tsserverRequest`, `sendRequest()` preflights `textDocument/definition`, `typeDefinition`, `implementation`, `references`, `hover`, `rename`, and `prepareRename` when their params contain a local `textDocument.uri`. The `projectInfo` response must identify the project and report `languageServiceDisabled: false` before the semantic method is sent.
 - Availability is recorded per queried file and its reported project, not assumed for all files handled by the same client. File-scoped clients use the nearest matching project root, including nested projects.
-- Explicit file/glob diagnostics also use this project-readiness check after opening/refreshing the document and waiting for project load. Workspace diagnostics remain external compiler/checker commands.
+- Explicit file/glob diagnostics also use this project-readiness check after opening/refreshing the document and waiting for project load. Servers exposing the TypeScript bridge must additionally return explicit `syntacticDiagnosticsSync` and `semanticDiagnosticsSync` results; an empty publish or pull report alone does not prove semantic completion. Workspace diagnostics remain external compiler/checker commands.
 - Servers without the advertised command, including native TypeScript and C# servers that do not advertise it, retain their existing request behavior; there is no generic tsserver probe or inferred TypeScript availability for them.
 
 ### `diagnostics`
@@ -86,11 +86,11 @@
 **Execution**
 - `file: "*"`: `runWorkspaceDiagnostics()` detects every supported root-marker language in Rust → TypeScript → Go → Python order and runs up to two checkers concurrently. It runs `cargo check --message-format=short` for `Cargo.toml`, `npx tsc --noEmit` for `tsconfig.json`, `pyright` for `pyproject.toml` / `pyrightconfig.json`, and `go build` for `go.work` / `go.mod`. `go.work` takes precedence over `go.mod`: it reads `go work edit -json` and builds every `Use[].DiskPath/...` pattern (falling back to `./...`); a single module uses `./...`. Polyglot output contains ordered per-language sections. Unknown projects return a supported-marker message without spawning a checker.
 - Concrete file or glob: `resolveDiagnosticTargets()` treats non-globs as one target, otherwise expands a `Bun.Glob` up to `MAX_GLOB_DIAGNOSTIC_TARGETS`.
-- Per file, every matching server runs: custom clients call `lint(file)`; real LSP servers capture `diagnosticsVersion`, open/refresh the document, and, for project-aware servers, wait for project load and check TypeScript project readiness when supported before `waitForDiagnostics()`. It accepts fresh push diagnostics (exact document versions immediately, otherwise a settled publish) and issues `textDocument/diagnostic` when the server supports pull diagnostics. A failed readiness check is a server failure, not a clean result; a failed pull with no usable fresh publish is also a server failure.
+- Per file, every matching server runs: custom clients call `lint(file)`; real LSP servers capture `diagnosticsVersion`, open/refresh the document, and wait for project load when applicable. For servers exposing `typescript.tsserverRequest`, the shared waiter obtains project readiness plus explicit syntax and semantic diagnostics within one budget. Other servers use fresh push diagnostics and supported `textDocument/diagnostic` requests. Missing, disabled, failed, or malformed semantic results are unavailable rather than clean; a failed pull without usable fresh diagnostics is also a server failure.
 - Results are deduplicated by range+message and severity-sorted.
 
 **Output text**
-- Single target with no issues from at least one successful server and no unavailable diagnostic results: `OK`, with a warning if other servers failed, including a failed project-readiness check. Total server failure returns `details.success: false` and an explicit failure message; a server that produced no fresh diagnostics is reported as unavailable rather than clean.
+- Single target with no issues from at least one successful server and no unavailable diagnostic results: `OK`, with a warning for ordinary failures of other servers. Unavailable TypeScript semantics return `details.success: false` even when a separate linter reports no issues. Write-time diagnostics retain the semantic-unavailable warning instead of dropping it. A server that produced no fresh diagnostics is unavailable rather than clean.
 - Single target with issues: `<summary>:\n<grouped diagnostics>`.
 - Batch/glob target: one section per file, plus an initial truncation warning when the glob exceeds the file cap.
 - Workspace mode: `Workspace diagnostics (<detected descriptions>):\n<command output>`. An empty successful checker reports `No issues found`; a non-zero empty result reports that the workspace was not verified.
@@ -162,8 +162,10 @@ Uses the same location normalization and output shape as `definition`, but sends
 
 **Execution**
 - Requires `symbol` when `line` is given on project-aware servers, then waits for project load, sends `textDocument/rename`, receives a `WorkspaceEdit`.
-- `apply !== false` applies edits immediately with `applyWorkspaceEdit()`.
+- C# renames first obtain references from the same synchronized client. Every known reference must be covered by an edit that will actually apply; `documentChanges` takes precedence over `changes`. Missing callsite edits or an unverifiable declaration-only result return failure before any write or preview. The server's edits remain authoritative; OMP never invents text replacements.
+- `apply !== false` applies validated edits with `applyWorkspaceEditWithLsp()`, reconciling live document overlays.
 - `apply === false` renders a preview with `formatWorkspaceEdit()`.
+- Coverage checks validate known references only. They do not certify the loaded MSBuild project graph or override a wrapper that changes the requested cwd.
 
 **Output text**
 - `Rename returned no edits`, `Applied rename:` plus applied change lines, or `Rename preview:` plus summarized edits.

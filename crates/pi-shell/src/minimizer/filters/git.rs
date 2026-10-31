@@ -961,8 +961,36 @@ fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
 	let mut current: Option<DiffFile> = None;
 	let mut current_hunk: Option<DiffHunk> = None;
 	let mut pending_old_path: Option<String> = None;
+	let (mut old_remaining, mut new_remaining): (usize, usize) = (0, 0);
 
 	for line in input.lines() {
+		// Hunk contents are identified by their ranges, not by a prefix
+		// blacklist: deleting SQL `-- ...` produces `--- ...`, and adding
+		// `++ ...` produces `+++ ...`. Neither is a file header here.
+		if old_remaining > 0 || new_remaining > 0 {
+			match line.as_bytes().first() {
+				Some(b'+') if new_remaining > 0 => {
+					new_remaining -= 1;
+					if let Some(file) = current.as_mut() {
+						file.added += 1;
+						push_diff_line(&mut current_hunk, line);
+					}
+				},
+				Some(b'-') if old_remaining > 0 => {
+					old_remaining -= 1;
+					if let Some(file) = current.as_mut() {
+						file.removed += 1;
+						push_diff_line(&mut current_hunk, line);
+					}
+				},
+				Some(b' ') => {
+					old_remaining = old_remaining.saturating_sub(1);
+					new_remaining = new_remaining.saturating_sub(1);
+				},
+				_ => {},
+			}
+			continue;
+		}
 		if let Some(path) = parse_diff_git_path(line) {
 			flush_hunk(&mut current, &mut current_hunk);
 			if let Some(file) = current.take() {
@@ -1010,23 +1038,11 @@ fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
 			pending_old_path = None;
 			continue;
 		}
-		if line.starts_with("@@") {
+		if let Some((old, new)) = parse_hunk_counts(line) {
 			flush_hunk(&mut current, &mut current_hunk);
 			current_hunk = Some(DiffHunk { header: line.to_string(), lines: Vec::new() });
-			continue;
-		}
-		if line.starts_with("+++") || line.starts_with("---") {
-			continue;
-		}
-		let Some(file) = current.as_mut() else {
-			continue;
-		};
-		if line.starts_with('+') {
-			file.added += 1;
-			push_diff_line(&mut current_hunk, line);
-		} else if line.starts_with('-') {
-			file.removed += 1;
-			push_diff_line(&mut current_hunk, line);
+			old_remaining = old;
+			new_remaining = new;
 		}
 	}
 
@@ -1038,6 +1054,19 @@ fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
 		.into_iter()
 		.filter(|file| file.added > 0 || file.removed > 0)
 		.collect()
+}
+
+fn parse_hunk_counts(line: &str) -> Option<(usize, usize)> {
+	fn count(range: &str, prefix: char) -> Option<usize> {
+		let range = range.strip_prefix(prefix)?;
+		let (start, count) = range.split_once(',').unwrap_or((range, "1"));
+		start.parse::<usize>().ok()?;
+		count.parse().ok()
+	}
+	let mut parts = line.strip_prefix("@@ ")?.split_ascii_whitespace();
+	let old = count(parts.next()?, '-')?;
+	let new = count(parts.next()?, '+')?;
+	(parts.next()? == "@@").then_some((old, new))
 }
 
 fn parse_diff_git_path(line: &str) -> Option<String> {
@@ -1849,6 +1878,51 @@ mod tests {
 		assert!(out.text.contains("--- Changes ---"));
 		assert!(out.text.contains("-old"));
 		assert!(out.text.contains("+new"));
+	}
+
+	#[test]
+	fn diff_counts_sql_comment_deletions_inside_hunks() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = test_ctx(Some("diff"), "git diff --no-index -- before.sql after.sql", &cfg);
+		let input = "diff --git a/before.sql b/after.sql\n--- a/before.sql\n+++ b/after.sql\n@@ \
+		             -1,3 +1,3 @@\n CREATE TABLE t (\n---    AND ISJSON([GeofenceSnapshotsJson]) = \
+		             1\n+      AND ISJSON([GeofenceSnapshotsJson]) = 1\n );\n";
+
+		let out = filter(&ctx, input, 1);
+
+		assert!(out.changed);
+		assert!(
+			out.text
+				.contains("1 file changed, 1 insertions(+), 1 deletions(-)")
+		);
+		assert!(
+			out.text
+				.contains("---    AND ISJSON([GeofenceSnapshotsJson]) = 1")
+		);
+		assert!(
+			out.text
+				.contains("+      AND ISJSON([GeofenceSnapshotsJson]) = 1")
+		);
+	}
+
+	#[test]
+	fn diff_distinguishes_header_shaped_content_from_the_next_files_headers() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = test_ctx(Some("diff"), "git diff", &cfg);
+		let input = "--- before.txt\n+++ after.txt\n@@ -1,3 +1,3 @@\n--- old-header\n+++ \
+		             new-header\n context\n last\n--- second-before.txt\n+++ second-after.txt\n@@ \
+		             -1 +1 @@\n-old\n+new\n";
+
+		let out = filter(&ctx, input, 1);
+
+		assert!(
+			out.text
+				.contains("2 files changed, 2 insertions(+), 2 deletions(-)")
+		);
+		assert!(out.text.contains("File: after.txt"));
+		assert!(out.text.contains("  --- old-header"));
+		assert!(out.text.contains("  +++ new-header"));
+		assert!(out.text.contains("File: second-after.txt"));
 	}
 
 	#[test]

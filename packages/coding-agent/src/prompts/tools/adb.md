@@ -7,7 +7,8 @@ Control Android devices and Android Virtual Devices through the Android SDK.
 - `observe` returns JSON lines: a snapshot header, then elements with refs, text, resource IDs, descriptions, bounds, hierarchy and state flags. Password text is redacted. Truncated output links its full artifact.
 - `click.selector` accepts an observed `ref` or a non-empty attribute selector. Attributes combine with AND; strings match exactly except `textContains`. Multiple matching elements are rejected; narrow the selector.
 - Refs belong to the latest observation on one device in this session. New observations and device mutations invalidate them. Stale refs fail; observe again instead of guessing another ref.
-- `click` refreshes the hierarchy before acting. Disabled or invisible targets are rejected; labels can target a clickable ancestor. A successful click confirms input dispatch, not the expected screen change.
+- `click` refreshes the hierarchy before acting. Disabled, invisible, or covered targets are rejected; labels can target a clickable ancestor.
+- Completed `click` and `input` commands return `details.inputDispatch: "unconfirmed"` with a warning. Android's command does not supply a positive injection acknowledgement; exit zero and `isError` absence describe command completion only. Observable injection denials fail. Do not automatically repeat unconfirmed input; observe or wait for the required UI state.
 - `wait` with `visible`, `hidden`, `enabled`, or `disabled` requires an attribute `selector`, never a ref. Positive conditions require one matching visible element; `hidden` means no visible matches. Dump failures remain errors.
 - To wait for text or checked/focused state, include those attributes in the selector and use `until: "visible"`.
 - `stop` applies only to emulators; physical devices cannot be stopped.

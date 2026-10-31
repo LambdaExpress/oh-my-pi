@@ -272,18 +272,42 @@ function installProtocolPeer(options: PeerOptions = {}): PeerTrace[] {
 					};
 					if (
 						params.command !== "typescript.tsserverRequest" ||
-						params.arguments[0] !== "projectInfo" ||
 						params.arguments[2].executionTarget !== 0 ||
 						cwd !== options.typeScriptProjectRoot ||
 						!openDocuments.has(params.arguments[1].file)
 					) {
 						send({ id: message.id, error: { code: 1, message: "No Project." } });
-					} else {
+					} else if (params.arguments[0] === "projectInfo") {
 						respond({
 							body: {
 								configFileName: path.join(cwd, "tsconfig.json"),
 								languageServiceDisabled: options.languageServiceDisabled ?? false,
 							},
+						});
+					} else if (
+						params.arguments[0] === "syntacticDiagnosticsSync" ||
+						params.arguments[0] === "semanticDiagnosticsSync"
+					) {
+						const source = project.getSourceFileOrThrow(sourcePath(params.arguments[1].file));
+						const languageService = project.getLanguageService().compilerObject;
+						const items =
+							params.arguments[0] === "semanticDiagnosticsSync"
+								? languageService.getSemanticDiagnostics(source.getFilePath())
+								: languageService.getSyntacticDiagnostics(source.getFilePath());
+						respond({
+							body: items.map(diagnostic => {
+								const start = source.compilerNode.getLineAndCharacterOfPosition(diagnostic.start ?? 0);
+								const end = source.compilerNode.getLineAndCharacterOfPosition(
+									(diagnostic.start ?? 0) + (diagnostic.length ?? 0),
+								);
+								return {
+									start: { line: start.line + 1, offset: start.character + 1 },
+									end: { line: end.line + 1, offset: end.character + 1 },
+									text: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+									code: diagnostic.code,
+									category: "error",
+								};
+							}),
 						});
 					}
 					break;

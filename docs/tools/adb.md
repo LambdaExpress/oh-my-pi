@@ -9,6 +9,7 @@
 - Registration: `packages/coding-agent/src/tools/index.ts`
 - Direct ADB process execution and executable discovery: `packages/coding-agent/src/adb/adb-executor.ts`
 - AVD discovery and lifecycle: `packages/coding-agent/src/adb/emulator-manager.ts`
+- Hierarchy queries and conservative input targeting: `packages/coding-agent/src/adb/{ui-automation,ui-hit-testing}.ts`
 
 ## Availability and prerequisites
 
@@ -29,7 +30,7 @@ The tool does not install the Android SDK or create AVDs.
 
 The schema is a strict discriminated union. Unknown fields are rejected. All non-empty string fields must remain non-empty after trimming; coordinates are non-negative integers; `durationMs` is an integer from `1` through `60000`; and `lines` is an integer from `1` through `10000`.
 
-Two inventory forms and sixteen operational forms make up the complete public schema:
+The command and emulator lifecycle forms are:
 
 | Form | Required fields | Optional fields | Behavior and defaults |
 |---|---|---|---|
@@ -52,9 +53,21 @@ Two inventory forms and sixteen operational forms make up the complete public sc
 | `input/text` | `op: "input"`, `action: "text"`, `text` | `device`, `timeout` | Sends device input text. |
 | `input/keyevent` | `op: "input"`, `action: "keyevent"`, `key` | `device`, `timeout` | `key` is a non-empty string or a non-negative integer. |
 
+The hierarchy forms are:
+
+| Form | Required fields | Optional fields | Behavior |
+|---|---|---|---|
+| `observe` | `op: "observe"` | `device`, `timeout` | Returns a snapshot header and one JSON line per accessible element. |
+| `click` | `op: "click"`, `selector` | `device`, `longClick`, `timeout` | Refreshes the hierarchy, validates one target and its touch point, then issues one tap or long-press command. |
+| `wait` for UI | `op: "wait"`, `selector`, `until: "visible" \| "hidden" \| "enabled" \| "disabled"` | `device`, `timeout` | Polls an attribute selector; refs cannot be used for waits. |
+
+`click.selector` accepts either `{ ref }` from the latest observation on that device or a non-empty AND selector over text, resource ID, description, class, package, and state attributes. Strings match exactly except `textContains`. New observations and mutations invalidate refs.
+
 `device` is always an ADB serial string. It may be omitted only when exactly one online device is available. If zero devices are online, selection fails. If multiple devices are online, selection fails rather than guessing; call `devices` and pass the intended serial. Explicit serials must identify an online device.
 
 `timeout` is a positive number of seconds. The shared ADB timeout configuration defaults to `180` seconds and has an absolute minimum of `1` second and maximum of `3600` seconds. A positive `tools.maxTimeout` first caps the default or explicitly supplied value; the result is then clamped to `1..3600`. Operations that do not expose a `timeout` field still use that shared default budget internally; supplying the field to those forms is a schema error.
+
+For `status`, ordinary device commands, and screenshots, device selection, emulator identity lookup, and command execution share one budget. Preflight time reduces the time available to the command. Timeout or cancellation terminates the active ADB client and prevents later stages from starting; process termination and output draining may add a short cleanup delay. The tool does not restart the shared ADB server or stop other devices to recover from a timeout.
 
 ## Connection and boot states
 
@@ -70,6 +83,20 @@ The implementation launches the resolved `adb` or `emulator` executable directly
 
 Paths, package names, activities, coordinates, filters, and input values occupy their defined argument positions. `shell.command` is likewise passed as one argument after `adb shell`; ADB delivers it to the Android device shell. It is therefore capable of device-shell syntax and device-side effects, but it is never evaluated by the host's local shell.
 
+Text input encodes ordinary spaces using Android input's `%s` convention and quotes the complete value for the remote POSIX shell. String key events receive the same remote-shell quoting; punctuation cannot introduce another device-shell command.
+
+A process-backed command succeeds only after exit code zero and natural EOF on both output streams within its shared budget. A transfer acknowledgement alone is insufficient. Timeout diagnostics distinguish waiting for the ADB client to exit from waiting for inherited output pipes to close; cleanup never restarts the shared server.
+
+## Input targeting and acknowledgement
+
+`observe` visibility describes the clipped UI hierarchy, not proof that a physical point is unobstructed. Semantic clicks also check the default display's InputDispatcher touchable regions. An input-method window, another covering window, or unknown geometry refuses the action. Overlapping interactive branches in the same window are refused when hierarchy data cannot establish their drawing order. The tool does not dismiss the keyboard, send Back, or guess another point.
+
+Input-denial messages present on command stdout or stderr fail the operation even after exit code zero. Some Android versions discard the injection result and report denial only in `system_server` logs. A quiet command exit does not establish that Android accepted the event or that application state changed.
+
+Completed `click` and all four `input` actions therefore return `details.inputDispatch: "unconfirmed"`. The semantic click payload also exposes `click.inputDispatch`. Result text explains the uncertainty, and the ADB card uses warning presentation rather than a success check. Absence of `isError` means the command completed; it does not certify event acceptance. Raw `shell` retains its command-output contract and supplies no implicit injection acknowledgement.
+
+The event may already have been injected, so an unconfirmed result must not be automatically repeated. Observe or wait for the caller's required UI state. This status does not install a device helper, change Android permissions, or infer acceptance from an unchanged hierarchy or the absence of a log message.
+
 ## Approval
 
 The operation determines the base approval tier:
@@ -83,14 +110,17 @@ Malformed input and unknown or missing operations classify as exec rather than f
 
 Most successful operations return text. Text execution streams recent output to the renderer and uses the shared output limits. When output exceeds the inline spill threshold, the complete text is retained as a session artifact and the result points to `artifact://<id>`; previews retain the bounded tail. A successful command with no stdout returns `(no output)`.
 
+`pull` transfers into a same-volume staging path and publishes only after the transfer succeeds. An existing file remains unchanged on failed or cancelled transfer. Existing-directory pulls preserve basename and recursive-merge behavior, including unrelated destination entries. Publication errors retain their operation and path context.
+
 Finite `logcat` dumps retain at most `lines` recent physical lines in both the result and its artifact. Buffer headers and multiline-message continuations count toward this limit; a terminating newline does not add another line. With `follow: true`, `lines` remains the initial native tail request and does not cap subsequent streamed output.
 
 `screenshot` is different:
 
-1. It runs `adb -s <serial> exec-out screencap -p` and requires a valid PNG signature.
-2. It writes the exact returned bytes to a unique `omp-adb-screenshot-…​.png` path under the operating-system temporary directory.
-3. It returns a text block naming the path and byte count, followed by the same bytes as a base64 image block with MIME type `image/png`.
-4. `AdbToolDetails` records `path`, `bytes`, `mimeType: "image/png"`, and, when a valid PNG IHDR is available, `width` and `height`. It also retains the selected `device`, `serial`, and optional AVD name.
+1. It runs `adb -s <serial> exec-out screencap -p` and requires successful process completion and both output streams to reach EOF.
+2. It validates complete PNG chunks, checksums, image data and end marker, and decodes the image before saving it. A PNG signature or dimensions alone cannot establish a complete screenshot.
+3. It writes the exact returned bytes to a unique `omp-adb-screenshot-…​.png` path under the operating-system temporary directory.
+4. It returns a text block naming the path and byte count, followed by the same bytes as a base64 image block with MIME type `image/png`.
+5. `AdbToolDetails` records `path`, `bytes`, `mimeType: "image/png"`, `width`, and `height`. It also retains the selected `device`, `serial`, and optional AVD name.
 
 Other result details are operation-specific and can include `avd`, `state`, `devices`, `avds`, `localPath`, `remotePath`, `package`, `activity`, and text-output metadata.
 

@@ -16,6 +16,7 @@ import {
 	parseArchivePathCandidates,
 	writeArchive,
 } from "@oh-my-pi/pi-utils/ar";
+import { makeNamespacedXlsxFixture, writeLargeZipFixture } from "../helpers/archive-documents";
 
 const enc = (value: string): Uint8Array => new TextEncoder().encode(value);
 
@@ -161,6 +162,47 @@ describe("read archive binary members", () => {
 		expect(text).not.toContain("Cannot read binary archive entry");
 		expect(text).not.toContain("<?xml");
 	});
+
+	it("reads prefixed XLSX cells through both the local-file and archive-member reader paths", async () => {
+		const bytes = await makeNamespacedXlsxFixture();
+		const workbookPath = path.join(testDir, "prefixed.xlsx");
+		await Bun.write(workbookPath, bytes);
+		const bundlePath = await writeBundle(testDir, { "prefixed.xlsx": bytes });
+		const tool = new ReadTool(makeSession(testDir));
+
+		for (const target of [workbookPath, `${bundlePath}:prefixed.xlsx`]) {
+			const result = await tool.execute("workbook", { path: target });
+			const text = joinText(result.content);
+			expect(text).toContain("## 执行记录");
+			expect(text).toContain("| Alice & Bob | 00042 | TRUE | 3 | pre served |");
+			expect(text).not.toContain("Conversion produced no output");
+		}
+	});
+
+	it.each([
+		["zip", Math.floor(141.5 * 1024 * 1024), false],
+		["apk", 271_848_681, true],
+	] as const)(
+		"lists .%s and reads selected JSON beside a large member",
+		async (extension, size, stored) => {
+			const bundlePath = path.join(testDir, `large.${extension}`);
+			const fixture = await writeLargeZipFixture(bundlePath, size, stored);
+			const tool = new ReadTool(makeSession(testDir));
+
+			const overview = await tool.execute("overview", { path: bundlePath });
+			expect(overview.details?.isDirectory).toBe(true);
+			expect(joinText(overview.content)).toContain("evidence/");
+			const largeDirectory = fixture.largePath.slice(0, fixture.largePath.lastIndexOf("/"));
+			const listing = await tool.execute("listing", { path: `${bundlePath}:${largeDirectory}` });
+			expect(joinText(listing.content)).toContain(path.posix.basename(fixture.largePath));
+			const selected = await tool.execute("selected", { path: `${bundlePath}:${fixture.jsonPath}:raw` });
+			expect(joinText(selected.content)).toBe(fixture.json);
+			await expect(tool.execute("large", { path: `${bundlePath}:${fixture.largePath}` })).rejects.toThrow(
+				/too large to extract/i,
+			);
+		},
+		30_000,
+	);
 
 	it("lists ASAR archives and reads small member ranges beside an oversized member", async () => {
 		const packageJson = enc('{\n  "name": "asar-fixture",\n  "main": "dist/app.js"\n}\n');

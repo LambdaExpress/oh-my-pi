@@ -7,43 +7,32 @@ import { ZipPackage } from "@oh-my-pi/pi-utils/ar";
 const EXTENSIONS = [".xlsx"];
 const MIMETYPES = ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"];
 
-/** A text value: bare string/number, or a `{ "#text" }` node when the element carries attributes. */
-type XmlText = string | number | { "#text"?: string };
+/** A text value, or a `{ "#text" }` node when the element carries attributes. */
+type XmlText = string | number | { "#text"?: string | number };
+type XmlElement = Record<string, unknown>;
 
-interface RichTextRun {
+interface RichTextRun extends XmlElement {
 	t?: XmlText;
 }
-interface StringItem {
+interface StringItem extends XmlElement {
 	t?: XmlText;
 	r?: RichTextRun | RichTextRun[];
 }
-interface Cell {
+interface Cell extends XmlElement {
 	"@_t"?: string;
 	v?: string | number;
 	is?: StringItem;
 }
-interface Row {
+interface Row extends XmlElement {
 	c?: Cell | Cell[];
 }
-interface WorksheetDoc {
-	worksheet?: { sheetData?: { row?: Row | Row[] } };
-}
-interface Sheet {
+interface Sheet extends XmlElement {
 	"@_name": string;
 	"@_r:id": string;
-}
-interface WorkbookDoc {
-	workbook?: { sheets?: { sheet?: Sheet | Sheet[] } };
-}
-interface SharedStringsDoc {
-	sst?: { si?: StringItem | StringItem[] };
 }
 interface Relationship {
 	"@_Id": string;
 	"@_Target": string;
-}
-interface RelationshipsDoc {
-	Relationships?: { Relationship?: Relationship | Relationship[] };
 }
 
 export class XlsxConverter implements Converter {
@@ -61,22 +50,25 @@ export class XlsxConverter implements Converter {
 			ignoreAttributes: false,
 			attributeNamePrefix: "@_",
 			textNodeName: "#text",
+			parseTagValue: false,
+			trimValues: false,
 			processEntities: { maxTotalExpansions: 1_000_000 },
 		});
 		// Parse shared strings
 		const ssXml = await zip.readText("xl/sharedStrings.xml");
-		const ss = ssXml ? (parser.parse(ssXml) as SharedStringsDoc) : null;
-		const siList = ss?.sst?.si;
-		const shared = toArray(siList);
+		const ss = ssXml ? xmlChild<XmlElement>(parser.parse(ssXml), "sst") : undefined;
+		const shared = toArray(xmlChild<StringItem | StringItem[]>(ss, "si"));
 		// Parse workbook for sheet names
 		const wbXml = await zip.readText("xl/workbook.xml");
 		if (!wbXml) throw new Error("Invalid XLSX: missing workbook.xml");
-		const wb = parser.parse(wbXml) as WorkbookDoc;
-		const sheets = toArray(wb.workbook?.sheets?.sheet);
+		const wb = xmlChild<XmlElement>(parser.parse(wbXml), "workbook");
+		if (!wb) throw new Error("Invalid XLSX: missing workbook element");
+		const sheets = toArray(xmlChild<Sheet | Sheet[]>(xmlChild<XmlElement>(wb, "sheets"), "sheet"));
+		if (sheets.length === 0) throw new Error("Invalid XLSX: workbook contains no sheets");
 		// Parse workbook rels to map rIds to sheet files
 		const relsXml = await zip.readText("xl/_rels/workbook.xml.rels");
-		const rels = relsXml ? (parser.parse(relsXml) as RelationshipsDoc) : null;
-		const relList = toArray(rels?.Relationships?.Relationship);
+		const rels = relsXml ? xmlChild<XmlElement>(parser.parse(relsXml), "Relationships") : undefined;
+		const relList = toArray(xmlChild<Relationship | Relationship[]>(rels, "Relationship"));
 		const relMap = new Map<string, string>();
 		for (const r of relList) {
 			relMap.set(r["@_Id"], r["@_Target"]);
@@ -84,19 +76,21 @@ export class XlsxConverter implements Converter {
 		const sections: string[] = [];
 		for (const sheet of sheets) {
 			const sheetName = sheet["@_name"];
-			const rId = sheet["@_r:id"];
-			const target = relMap.get(rId);
-			if (!target) continue;
+			const rId = xmlChild<string>(sheet, "id", true);
+			const target = rId ? relMap.get(rId) : undefined;
+			if (!target) throw new Error(`Invalid XLSX: missing worksheet relationship for '${sheetName}'`);
 			const sheetPath = target.startsWith("/") ? target.slice(1) : `xl/${target}`;
 			const sheetXml = await zip.readText(sheetPath);
-			if (!sheetXml) continue;
-			const parsed = parser.parse(sheetXml) as WorksheetDoc;
-			const rows = toArray(parsed.worksheet?.sheetData?.row);
+			if (!sheetXml) throw new Error(`Invalid XLSX: missing worksheet '${sheetPath}'`);
+			const worksheet = xmlChild<XmlElement>(parser.parse(sheetXml), "worksheet");
+			if (!worksheet) throw new Error(`Invalid XLSX: missing worksheet element in '${sheetPath}'`);
+			sections.push(`## ${sheetName}`);
+			const rows = toArray(xmlChild<Row | Row[]>(xmlChild<XmlElement>(worksheet, "sheetData"), "row"));
 			if (rows.length === 0) continue;
 			// Extract all rows as string arrays
 			const tableRows: string[][] = [];
 			for (const row of rows) {
-				const cells = toArray(row.c);
+				const cells = toArray(xmlChild<Cell | Cell[]>(row, "c"));
 				const values: string[] = [];
 				for (const cell of cells) {
 					values.push(this.getCellValue(cell, shared));
@@ -112,7 +106,6 @@ export class XlsxConverter implements Converter {
 			for (const row of tableRows) {
 				while (row.length < maxCols) row.push("");
 			}
-			sections.push(`## ${sheetName}`);
 			const [header, ...body] = tableRows;
 			const lines: string[] = [];
 			lines.push(`| ${header.join(" | ")} |`);
@@ -126,48 +119,59 @@ export class XlsxConverter implements Converter {
 	}
 
 	getCellValue(cell: Cell, shared: StringItem[]): string {
+		const value = xmlChild<string | number>(cell, "v");
 		// Shared string
 		if (cell["@_t"] === "s") {
-			return this.getSharedString(shared, Number(cell.v));
+			return this.getSharedString(shared, Number(value));
 		}
 		// Inline string
 		if (cell["@_t"] === "inlineStr") {
-			const is = cell.is;
-			if (!is) return "";
-			if (is.t != null) return textValue(is.t);
-			if (is.r)
-				return toArray(is.r)
-					.map(r => textValue(r.t))
-					.join("");
-			return "";
+			return stringItemValue(xmlChild<StringItem>(cell, "is"));
 		}
 		// Boolean
 		if (cell["@_t"] === "b") {
-			return cell.v === 1 || cell.v === "1" ? "TRUE" : "FALSE";
+			return value === 1 || value === "1" ? "TRUE" : "FALSE";
 		}
 		// Number or formula result
-		if (cell.v != null) return String(cell.v);
+		if (value != null) return String(value);
 		return "";
 	}
 
 	getSharedString(shared: StringItem[], idx: number): string {
-		const si = shared[idx];
-		if (!si) return "";
-		// Simple text
-		if (si.t != null) return textValue(si.t);
-		// Rich text runs
-		if (si.r) {
-			return toArray(si.r)
-				.map(r => textValue(r.t))
-				.join("");
-		}
-		return "";
+		return stringItemValue(shared[idx]);
 	}
+}
+
+/**
+ * OOXML namespace prefixes are arbitrary. Inspect parsed local names rather
+ * than assuming the default namespace or rewriting the XML text (which could
+ * corrupt cell contents). Attribute lookups keep element and attribute keys
+ * separate, including relationship ids using a nonstandard prefix.
+ */
+function xmlChild<T>(node: unknown, name: string, attribute = false): T | undefined {
+	if (node === null || typeof node !== "object") return undefined;
+	const element = node as XmlElement;
+	const exact = attribute ? `@_${name}` : name;
+	if (Object.hasOwn(element, exact)) return element[exact] as T;
+	for (const key in element) {
+		if (key.startsWith("@_") !== attribute) continue;
+		const colon = key.indexOf(":");
+		if (colon > 0 && key.slice(colon + 1) === name) return element[key] as T;
+	}
+	return undefined;
+}
+
+function stringItemValue(item: StringItem | undefined): string {
+	const text = xmlChild<XmlText>(item, "t");
+	if (text != null) return textValue(text);
+	return toArray(xmlChild<RichTextRun | RichTextRun[]>(item, "r"))
+		.map(run => textValue(xmlChild<XmlText>(run, "t")))
+		.join("");
 }
 
 function textValue(t: XmlText | undefined): string {
 	if (t == null) return "";
-	if (typeof t === "object") return t["#text"] || "";
+	if (typeof t === "object") return String(t["#text"] ?? "");
 	return String(t);
 }
 

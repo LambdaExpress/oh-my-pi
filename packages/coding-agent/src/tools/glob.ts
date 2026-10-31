@@ -190,10 +190,13 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 			const scopedPaths = toPathList(pathInput);
 			const effectivePaths = scopedPaths.length > 0 ? scopedPaths : ["."];
 			const internalRouter = InternalUrlRouter.instance();
+			const sshHosts = effectivePaths.some(input => /ssh:\/\//i.test(input))
+				? await this.session.getSessionSshHosts?.()
+				: undefined;
 			// Delimiter probes and native walks share the session mapping and
 			// approval tier; a mixed URL/workspace union must not escape either.
 			const urlFilesystem = new InternalUrlFilesystem({
-				context: sessionResolveContext(this.session, { signal }),
+				context: sessionResolveContext(this.session, { signal, sshHosts }),
 				tier: resolveToolTier(this, params),
 			});
 			const rawPatternInputs = this.#customOps

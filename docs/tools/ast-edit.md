@@ -8,7 +8,7 @@
 - Key collaborators:
   - `crates/pi-natives/src/ast.rs` — native rewrite planning and file mutation
   - `crates/pi-ast/src/language/mod.rs` — language aliases and extension inference used by the native wrapper.
-  - `crates/pi-ast/src/ops.rs` — pattern compilation, JSON member-fragment fallback, and edit overlap validation
+  - `crates/pi-ast/src/ops.rs` — pattern compilation, JSON member-fragment fallback, and rewrite overlap/syntax validation
   - `packages/coding-agent/src/tools/path-utils.ts` — path/glob parsing (host paths and internal URLs) and multi-path resolution
   - `packages/coding-agent/src/internal-urls/url-filesystem.ts` — `InternalUrlFilesystem`, the URL filesystem native ast-edit reads and writes through
   - `packages/coding-agent/src/tools/resolve.ts` — preview/apply queueing
@@ -63,7 +63,8 @@ Shared AST pattern grammar and language catalog: see [`ast_grep`](./ast-grep.md#
    - collects candidate files from a file or gitignore-aware directory scan,
    - infers a language independently for every candidate file unless `lang` was supplied internally,
    - compiles each rewrite for every discovered language; a rule that cannot parse in one language skips that language's files and reports parse issues,
-   - parses each file, skips files with syntax-error trees, collects `replace_by(...)` edits for every match, enforces replacement and file caps, and returns textual before/after slices plus source ranges.
+   - parses each file and collects `replace_by(...)` edits, enforcing replacement and file caps. Best-effort TypeScript/TSX edits may retain unrelated existing `ERROR`/`MISSING` nodes only when their kind, count, and byte-offset-adjusted ranges remain unchanged. Edits touching those nodes or introducing new syntax damage reject that file. Strict mode and other languages retain the existing parse-error rejection.
+   - checks edit overlap and rewritten syntax before both preview and apply, then returns textual before/after slices plus source ranges.
 7. The TS wrapper deduplicates and caps parse errors, groups changes by file, and renders preview diff lines.
 8. If preview found replacements and `applied` is false, `queueResolveHandler(...)` registers a non-forcing pending resolve invoker. While it is pending the session surfaces a `SoftToolRequirement` (`toolName: "write"` with an `xd://resolve` or `xd://reject` `satisfies` predicate) carrying the resolve reminder; the agent runtime injects the reminder and forces `write` only if the model declines that turn.
 9. On a `write xd://resolve` dispatch, the queued callback reruns the same rewrite set with `dryRun: false`, recomputes counts, and returns an error result if the live result no longer matches the preview (`stalePreview`). The current implementation compares replacement totals and per-file counts after the rerun; if the new run has already written different counts, the result is marked error.
@@ -114,13 +115,13 @@ Shared AST pattern grammar and language catalog: see [`ast_grep`](./ast-grep.md#
   - cancellation or timeout.
 - With `failOnParseError: false` (the wrapper always uses this), pattern compile failures and file parse failures become `parseErrors` instead of aborting the whole run.
 - If every rewrite pattern fails to compile, native `ast_edit` returns a successful zero-replacement result with `parseErrors` populated.
-- Files containing tree-sitter error nodes are skipped for rewriting; they do not get partial edits.
+- Existing recovery nodes block strict-mode and non-TypeScript rewrites. Best-effort TypeScript/TSX may preserve untouched recovery nodes; touching them, widening them, or introducing new nodes reports a parse issue and leaves that file unchanged.
 - Apply can fail after a successful preview if the preview becomes stale. The resolve callback compares replacement totals and per-file counts and returns an error result rather than silently reporting success for a mismatched preview.
 
 ## Notes
 - `ast_edit` does not expose the native `lang`, `strictness`, `selector`, `maxReplacements`, `failOnParseError`, or `timeoutMs` fields to the model. The runtime fixes the call shape to a preview-first, smart-strictness, best-effort parse mode.
 - Mixed-language scopes are supported: the native layer infers each candidate's language and compiles each rule per discovered language. A pattern that parses for only some languages rewrites those files and reports parse issues for incompatible languages.
 - Idempotency is not enforced. An identity rewrite such as `foo($A) -> foo($A)` still reports matching replacements in preview; apply skips the physical write when a file's resulting content is unchanged. Rewrites that keep matching their output can report replacements on repeated calls.
-- Rewrites are accumulated per file, then applied from the end of the file backward after an overlap check. Exact duplicate edits (same range and replacement) from multiple rules are counted once. Other overlapping edits abort apply; the dry-run preview does not perform that apply-time check.
+- Rewrites are accumulated per file, then validated and applied from the end of the file backward. Exact duplicate edits (same range and replacement) from multiple rules are counted once. Other overlapping edits are rejected in both dry-run preview and apply.
 - Native rewrite rule order is by pattern-string sort, not by the original `ops` array order, because `normalize_rewrite_map(...)` sorts the `(pattern, rewrite)` pairs.
 - Preview/apply parity is validated by totals and per-file counts after the apply rerun, not by a byte-for-byte diff of every replacement payload.

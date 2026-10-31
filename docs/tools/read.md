@@ -154,6 +154,7 @@ Literal filesystem paths take precedence over selector interpretation, so an exi
 - File-backed internal archive URLs use the same member syntax, for example `local://bundle.tar.gz:src/module.py:10-25` or `local://bundle.tar.gz:src/`.
 - Unity packages use the same listing and member selectors, for example `assets.unitypackage:<asset-directory>/pathname`.
 - `openArchive()` dispatches through the `@oh-my-pi/pi-utils/ar` registry (`packages/utils/src/ar/open.ts`); limits live in `packages/utils/src/ar/limits.ts`: in-memory archives cap at 256 MiB, index reads at 64 MiB, and individual member extraction at 64 MiB.
+- ZIP/APK listings inspect central-directory metadata without extracting member payloads. An unrelated oversized member does not block browsing or reading a smaller member; packed and unpacked member limits still apply before extracting the selected target. Whole-archive materialization and document packages retain separate cumulative limits.
 - Archive paths normalize `/`, drop `.` segments, and reject `..`.
 - Directory reads list immediate children; files show `name` plus ` (size)` when size > 0.
 - Directory listing default limit is `500` entries in `readArchiveDirectory()`.
@@ -227,6 +228,7 @@ Literal filesystem paths take precedence over selector interpretation, so an exi
 
 - `CONVERTIBLE_EXTENSIONS` in `packages/coding-agent/src/utils/markit.ts` covers `.pdf`, `.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx`, `.rtf`, `.epub`.
 - `convertFileWithMarkit()` converts the file to text/markdown; line-range and `:raw` selectors then apply to the converted output (`file.pdf:50-100`, `:5-16,40-80`).
+- XLSX conversion supports namespace-prefixed SpreadsheetML, shared and inline rich strings, and cached formula values. Missing worksheet relationships or parts are explicit failures; an empty worksheet still retains its sheet heading.
 - PDF member-looking paths now request Chromium page screenshots, not embedded-image extraction. `doc.pdf:p11-img0.png` or `doc.pdf:page11.png` selects page 11; an empty or unrecognized member defaults to page 1. There is no member listing or extracted-image cache. Numeric line selectors still page converted document text.
 - Page screenshots use the shared headless browser, a temporary tab closed after capture, and a 30-second render deadline. They support `?q=` image questions and otherwise follow normal image presentation.
 - Conversion failures return a text block like `[Cannot read .pdf file: ...]`.
@@ -249,6 +251,7 @@ Literal filesystem paths take precedence over selector interpretation, so an exi
 - Max accepted image size is `20 MiB` (`MAX_IMAGE_INPUT_BYTES`, re-exported as `MAX_IMAGE_SIZE`). Larger files throw.
 - `read <image>?q=<question>` loads the image for the resolved vision model and returns its answer as one text block.
 - Without `?q=`, image-capable active models receive a text note plus an inline image block.
+- The text note identifies the source MIME. When resizing transcodes the preview, a separate `Preview:` field identifies the emitted image MIME; the source file remains unchanged.
 - Without `?q=`, text-only active models receive metadata (MIME, bytes, dimensions, channels, alpha) plus a `?q=<question>` hint.
 - `images.questionTimeoutMs` limits each delegated image question; `0` disables the timeout.
 - Unsupported/undecodable image formats throw a `ToolError`.
@@ -257,10 +260,10 @@ Literal filesystem paths take precedence over selector interpretation, so an exi
 
 - `read` delegates internal and MCP-advertised schemes to `InternalUrlRouter`; the built-in registry currently includes `agent://`, `artifact://`, `attachment://`, `cfg://`, `conflict://`, `history://`, `issue://`, `local://`, `mcp://`, `memory://`, `omp://`, `pr://`, `proc://`, `rule://`, `security://`, `skill://`, `ssh://`, `vault://`, and `xd://`.
    - `security://` is reserved for the OMP-owned, producer-neutral, read-only security-analysis store.
-   - `agent://<id>` reads a subagent's latest completed output, including a successful parent-requested message-result follow-up after revival; while a newer turn runs, the previous output is marked superseded. Agents without published output return status and progress. `/key/index` extracts from the latest published JSON result. Peer-woken message replies and cancelled or empty message-result follow-ups do not replace the accepted result, nor do structured wakes without a `yield`. `agent://all` is write-only. Bare `history://` lists registered agents and persisted subagents; `history://<id>` reads a transcript across turns.
+   - `agent://<id>` reads a subagent's latest completed output, including a successful parent-requested message-result follow-up after revival; while a newer turn runs, the previous output is marked superseded. Live agents without published output return status and progress; empty or unavailable outputs are explicit rather than empty successful reads. `/key/index` extracts from the latest published JSON result, while `/report` also names a plain Markdown report and supports the same line coordinates as the bare URI. Peer-woken message replies and cancelled or empty message-result follow-ups do not replace the accepted result, nor do structured wakes without a `yield`. `agent://all` is write-only. Bare `history://` lists registered agents and persisted subagents; `history://<id>` reads a transcript across turns.
    - `proc://` lists caller-visible background jobs (including running agents without job rows) and project services; `proc://<id>` returns status and available output/logs without consuming async-result delivery. Service log files are searchable with `grep proc://<id>`.
    - `xd://` lists mounted tool devices; `xd://<name>` returns that device's input documentation. Device documentation and topics support shared line/raw selectors, such as `xd://eval/helpers:raw:1-140`. Writing JSON to the device URI dispatches it through `write`.
-   - `ssh://host/<path>` reads a remote UTF-8 file or directory; bare `ssh://` lists configured hosts. Remote paths are limited to 1 MiB and require a POSIX remote shell. Percent-encode literal `:`, `?`, or `#` in the path.
+   - `ssh://host/<path>` reads a remote UTF-8 file or directory; bare `ssh://` lists configured hosts. Reads use a verified POSIX or PowerShell transfer backend and retain the 1 MiB UTF-8 limit. JSON files support the same `?q=<jq>`, raw/compact output, pagination, and trailing line selectors as local JSON; the query is consumed before remote path resolution. Percent-encode literal `:`, `?`, or `#` in filenames, keeping `%3F` distinct from the JSON query delimiter.
    - `history://current/full` exposes the caller's complete current branch when `compaction.experimentalContextManagement` is enabled. It includes original text, tool outputs, entry IDs, and compaction boundaries. Use shared line/raw selectors such as `history://current/full:raw:1-200`; queries, fragments, extra paths, and trailing slashes are rejected. It requires a matching live session owner and never falls back to registry or disk lookup. Bare `history://current` still names an ordinary agent called `current`. See [experimental context windows](../compaction.md#experimental-notes-backed-context-windows).
 - `#handleInternalUrl()` behavior:
    - parses the URL with `parseInternalUrl()` so colons inside the host segment are legal
@@ -308,6 +311,8 @@ Notes: ...
 - `method` records the winning path (`json`, `feed`, `text`, `alternate-markdown`, `md-suffix`, `content-negotiation`, `image`, `markit`, `llms.txt`, `raw`, `raw-html`, etc.).
 - URL reads may return an inline image block when the fetched resource is a supported image and survives resizing.
 - A version-qualified PyPI project URL reads that exact release's metadata and description; only an unversioned project URL selects the latest release.
+- GitHub tree/blob URLs resolve their ref/path boundary against repository heads and tags, including slash-containing names. Ambiguous references are explicit; a failed directory request is not a successful empty tree.
+- JSON and explicit raw URL artifacts retain all downloaded content rather than an earlier 500000-character renderer prefix. Downloads remain bounded at 50 MiB; when that underlying limit truncates a response, both the preview and artifact identify it as incomplete. Raw tail selectors address physical source lines and do not bypass inline byte limits.
 - PDF extraction consumes the original successful HTTP response body. Concurrent reads share extraction, and successful PDF text is retained as a bounded session snapshot for subsequent ranges and searches. HTTP, invalid-PDF and extraction failures remain explicit errors rather than short documents with misleading line counts.
 
 ## Side Effects

@@ -2,15 +2,14 @@ use std::{
 	collections::HashSet,
 	env,
 	path::{Path, PathBuf},
-	process::Command,
 };
 
 use anyhow::{Error, Result};
 use brush_core::{Shell as BrushShell, ShellValue, ShellVariable};
 use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
 
-pub fn configure_windows_path(shell: &mut BrushShell) -> Result<()> {
-	let GitDiscovery { install_roots, paths: git_paths } = discover_git();
+pub async fn configure_windows_path(shell: &mut BrushShell) -> Result<()> {
+	let GitDiscovery { install_roots, paths: git_paths } = discover_git(shell).await;
 	if install_roots.is_empty() && git_paths.is_empty() {
 		return Ok(());
 	}
@@ -98,23 +97,33 @@ struct GitDiscovery {
 	paths:         Vec<String>,
 }
 
-fn discover_git() -> GitDiscovery {
-	discover_git_with(query_git_install_path_from_registry, query_git_install_path_from_where)
+async fn discover_git(shell: &BrushShell) -> GitDiscovery {
+	// Resolve through the shell's existing PATHEXT-aware filesystem lookup.
+	// Running `where git` here used a synchronous, untracked child before the
+	// command's pipes/spawn registry existed, so cancellation could not stop
+	// startup or even service its deadline while that child was blocked.
+	let path_root = shell
+		.find_first_executable_in_path("git")
+		.await
+		.as_deref()
+		.and_then(git_install_root_from_path)
+		.map(|root| root.to_string_lossy().into_owned());
+	discover_git_with(query_git_install_path_from_registry, || path_root)
 }
 
-fn discover_git_with<R, W>(registry_query: R, where_query: W) -> GitDiscovery
+fn discover_git_with<R, P>(registry_query: R, path_query: P) -> GitDiscovery
 where
 	R: FnOnce() -> Option<String>,
-	W: FnOnce() -> Option<String>,
+	P: FnOnce() -> Option<String>,
 {
 	let registry_path = registry_query();
-	let where_path = where_query();
+	let path_path = path_query();
 	let mut install_roots = Vec::new();
 	let mut paths = Vec::new();
 	let mut seen_roots = HashSet::new();
 	let mut seen_paths = HashSet::new();
 
-	for install_path in [registry_path, where_path].into_iter().flatten() {
+	for install_path in [registry_path, path_path].into_iter().flatten() {
 		for path in git_paths_for_install_root(&install_path) {
 			let normalized_path = normalize_path(Path::new(&path));
 			if !normalized_path.is_empty() && seen_paths.insert(normalized_path) {
@@ -146,23 +155,6 @@ fn query_git_install_path_from_registry() -> Option<String> {
 	}
 
 	None
-}
-
-fn query_git_install_path_from_where() -> Option<String> {
-	let output = Command::new("where").arg("git").output().ok()?;
-	if !output.status.success() {
-		return None;
-	}
-
-	let stdout = String::from_utf8_lossy(&output.stdout);
-	let line = stdout.lines().next()?.trim();
-	if line.is_empty() {
-		return None;
-	}
-
-	let git_path = Path::new(line);
-	let install_root = git_install_root_from_path(git_path)?;
-	Some(install_root.to_string_lossy().into_owned())
 }
 
 fn git_install_root_from_path(git_path: &Path) -> Option<PathBuf> {
@@ -280,7 +272,7 @@ fn is_windows_style_path(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-	use std::{cell::Cell, fs};
+	use std::fs;
 
 	use super::*;
 
@@ -298,42 +290,51 @@ mod tests {
 		root
 	}
 
-	#[test]
-	fn git_discovery_queries_each_source_once_per_invocation_and_remains_fresh() {
-		let registry_calls = Cell::new(0);
-		let where_calls = Cell::new(0);
+	#[tokio::test]
+	async fn git_discovery_uses_each_sessions_executable_path() {
+		let roots = [git_install_fixture(), git_install_fixture()];
+		for root in &roots {
+			let mut shell = BrushShell::builder()
+				.do_not_inherit_env(true)
+				.profile(brush_core::ProfileLoadBehavior::Skip)
+				.rc(brush_core::RcLoadBehavior::Skip)
+				.build()
+				.await
+				.expect("shell fixture");
+			let cmd = root.path().join("cmd");
+			let mut var = ShellVariable::new(ShellValue::String(cmd.to_string_lossy().into_owned()));
+			var.export();
+			shell
+				.env_mut()
+				.set_global("PATH", var)
+				.expect("session PATH");
 
-		for _ in 0..2 {
-			let discovery = discover_git_with(
-				|| {
-					registry_calls.set(registry_calls.get() + 1);
-					None
-				},
-				|| {
-					where_calls.set(where_calls.get() + 1);
-					None
-				},
-			);
-			assert!(discovery.install_roots.is_empty());
-			assert!(discovery.paths.is_empty());
+			configure_windows_path(&mut shell)
+				.await
+				.expect("configure PATH");
+
+			let configured = shell
+				.env()
+				.get_str("PATH", &shell)
+				.expect("configured PATH");
+			let paths: Vec<_> = env::split_paths(configured.as_ref()).collect();
+			assert_eq!(paths.first(), Some(&cmd));
+			assert!(paths.contains(&root.path().join("usr/bin")));
 		}
-
-		assert_eq!(registry_calls.get(), 2);
-		assert_eq!(where_calls.get(), 2);
 	}
 
 	#[test]
 	fn git_discovery_preserves_provider_and_candidate_order() {
 		let registry_root = git_install_fixture();
-		let where_root = git_install_fixture();
+		let path_root = git_install_fixture();
 		let registry_path = registry_root.path().to_string_lossy().into_owned();
-		let where_path = where_root.path().to_string_lossy().into_owned();
+		let path_path = path_root.path().to_string_lossy().into_owned();
 
-		let discovery = discover_git_with(|| Some(registry_path), || Some(where_path));
+		let discovery = discover_git_with(|| Some(registry_path), || Some(path_path));
 
 		assert_eq!(discovery.install_roots, vec![
 			registry_root.path().to_path_buf(),
-			where_root.path().to_path_buf()
+			path_root.path().to_path_buf()
 		]);
 		assert_eq!(discovery.paths, vec![
 			registry_root
@@ -352,9 +353,9 @@ mod tests {
 				.join("bin")
 				.to_string_lossy()
 				.into_owned(),
-			where_root.path().join("cmd").to_string_lossy().into_owned(),
-			where_root.path().join("bin").to_string_lossy().into_owned(),
-			where_root
+			path_root.path().join("cmd").to_string_lossy().into_owned(),
+			path_root.path().join("bin").to_string_lossy().into_owned(),
+			path_root
 				.path()
 				.join("usr")
 				.join("bin")
@@ -367,9 +368,9 @@ mod tests {
 	fn git_discovery_deduplicates_the_same_installation_from_both_sources() {
 		let root = git_install_fixture();
 		let registry_path = root.path().to_string_lossy().into_owned();
-		let where_path = registry_path.clone();
+		let path_path = registry_path.clone();
 
-		let discovery = discover_git_with(|| Some(registry_path), || Some(where_path));
+		let discovery = discover_git_with(|| Some(registry_path), || Some(path_path));
 
 		assert_eq!(discovery.install_roots, vec![root.path().to_path_buf()]);
 		assert_eq!(discovery.paths, vec![

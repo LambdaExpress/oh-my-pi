@@ -3,9 +3,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { formatBytes, postmortem, Snowflake, untilAborted, withTimeout } from "@oh-my-pi/pi-utils";
-import type { HTMLElement } from "@oh-my-pi/pi-utils/dom";
+import type { Element as DomElement, HTMLElement } from "@oh-my-pi/pi-utils/dom";
 import type {
-	Accessibility,
 	Browser,
 	CDPSession,
 	ElementHandle,
@@ -28,6 +27,7 @@ import { formatScreenshot, resizeImage } from "../../utils/image-resize";
 import { resolveToCwd } from "../path-utils";
 import {
 	bindRunFacade,
+	CELL_BUDGET_SLACK_MS,
 	installBrowserWorkerRejectionGuard,
 	isBrowserRunOwnedRejection,
 	markBrowserRunRejection,
@@ -277,7 +277,10 @@ declare module "puppeteer-core" {
 
 declare global {
 	interface Element extends HTMLElement {}
-	function getComputedStyle(element: Element): Record<string, unknown>;
+	function getComputedStyle(
+		element: DomElement,
+		pseudoElement?: string | null,
+	): Record<string, unknown> & { readonly content: string };
 	var innerWidth: number;
 	var innerHeight: number;
 	var document: {
@@ -946,6 +949,9 @@ class NavigationTimeoutError extends ToolError {}
 /** The page's renderer crashed; every later call on the page stalls until its timeout. */
 class RendererCrashedError extends ToolError {}
 
+/** Main-frame repair failed before the run could execute user code. */
+class MainFrameUnavailableError extends ToolError {}
+
 interface RunPageScope {
 	page: Page;
 	/** Restore the page's own listener methods and remove every handler this run registered. */
@@ -1154,6 +1160,7 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 function errorPayload(error: unknown): RunErrorPayload {
 	const navigationTimeout = error instanceof NavigationTimeoutError || undefined;
 	const rendererCrashed = error instanceof RendererCrashedError || undefined;
+	const mainFrameUnavailable = error instanceof MainFrameUnavailableError || undefined;
 	if (error instanceof ToolAbortError) {
 		return { name: error.name, message: error.message, stack: error.stack, isToolError: false, isAbort: true };
 	}
@@ -1166,6 +1173,7 @@ function errorPayload(error: unknown): RunErrorPayload {
 			isAbort: false,
 			navigationTimeout,
 			rendererCrashed,
+			mainFrameUnavailable,
 		};
 	}
 	if (error instanceof Error) {
@@ -1470,6 +1478,7 @@ interface ActiveRun {
 	/** Helper invocations currently awaiting the page/network, keyed by op id. */
 	inflight: Map<number, InflightOp>;
 	opCounter: number;
+	deadlineAt: number;
 }
 
 /** Human-readable label for a screenshot op, used in op tracking + timeout errors. */
@@ -1525,6 +1534,8 @@ export class WorkerCore {
 	#elementCache = new Map<number, ElementHandle>();
 	#observedElements = new Map<number, ObservedElement>();
 	#elementCounter = 0;
+	/** Finding an action target permanently disarms its zero-match guard, even if the action removes it. */
+	readonly #matchedSelectorSignals = new WeakSet<AbortSignal>();
 	#active: ActiveRun | null = null;
 	#runtime: JsRuntime | null = null;
 	#unsub: () => void;
@@ -1555,6 +1566,13 @@ export class WorkerCore {
 	 */
 	readonly #onFrameNavigated = (event: Protocol.Page.FrameNavigatedEvent): void => {
 		if (event.type === "BackForwardCacheRestore") this.#clearElementCache();
+	};
+	readonly #onFrameDetached = (): void => {
+		if (!this.#started || !this.#page?.mainFrame().detached) return;
+		this.#transport.send({ type: "main-frame-state", detached: true });
+	};
+	readonly #onPageClosed = (): void => {
+		if (this.#started) this.#transport.send({ type: "target-closed" });
 	};
 
 	/** The renderer crashed; the supervisor recycles this worker, so it runs nothing more. */
@@ -1734,6 +1752,8 @@ export class WorkerCore {
 			}
 			this.#page.mainFrame().client.on("Page.frameNavigated", this.#onFrameNavigated);
 			this.#page.on("error", this.#onPageCrashed);
+			this.#page.on("framedetached", this.#onFrameDetached);
+			this.#page.on("close", this.#onPageClosed);
 			if (payload.mode === "headless" || payload.emulateFocus) {
 				// Background Chromium tabs stop producing frames, stalling rAF,
 				// IntersectionObserver, and input acknowledgements. Keep owned tabs
@@ -1875,15 +1895,18 @@ export class WorkerCore {
 		const targetId = this.#targetId ?? (await targetIdForPage(page));
 		this.#targetId = targetId;
 		const dialogPending = this.#dialogs?.state().open ?? false;
+		const mainFrameDetached = page.mainFrame().detached;
+		const blocked = dialogPending || mainFrameDetached;
 		return {
 			url: redactUrlCredentials(page.url()),
-			title: dialogPending ? undefined : await page.title().catch(() => undefined),
+			title: blocked ? undefined : await page.title().catch(() => undefined),
 			// Evaluating dimensions while a modal is pending would block the dialog
 			// handling run itself. Retain the last measured dimensions in that case.
-			viewport: dialogPending
+			viewport: blocked
 				? (page.viewport() ?? this.#lastViewport ?? DEFAULT_VIEWPORT)
 				: await this.#viewport().catch(() => this.#lastViewport ?? DEFAULT_VIEWPORT),
 			targetId,
+			...(mainFrameDetached ? { mainFrameDetached: true } : {}),
 		};
 	}
 
@@ -1906,7 +1929,8 @@ export class WorkerCore {
 
 	async #postReadyInfo(): Promise<void> {
 		try {
-			this.#transport.send({ type: "ready", info: await this.#currentReadyInfo() });
+			const info = await withTimeout(this.#currentReadyInfo(), 200, "Tab metadata refresh timed out");
+			this.#transport.send({ type: "ready", info });
 		} catch (error) {
 			this.#log("debug", "Failed to refresh tab info", {
 				error: error instanceof Error ? error.message : String(error),
@@ -1923,18 +1947,32 @@ export class WorkerCore {
 		// frame until the next frame-tree update. Resync through the pinned CDP
 		// manager, retaining the Page and all its routes, scripts, and observers.
 		// This runs before user code only: never retry a possibly completed action.
-		const manager = (frame as unknown as CdpFrame)._frameManager;
+		// The public bundle and internal module declare separate Frame class identities.
+		// Bridge once to the pinned CDP implementation, then keep frame-tree operations in that type.
+		const cdpFrame = frame as unknown as CdpFrame;
+		const manager = cdpFrame._frameManager;
 		this.#clearElementCache();
 		this.#ariaSnapshotBaselines.clear();
 		this.#screenshotHistory.clear();
-		// A navigation received before detachment can consume the first snapshot
-		// via FrameManager's pending-navigation marker. A second read rebuilds
-		// that frame; protocol errors are never retried or hidden.
-		for (let attempt = 0; attempt < 2 && page.mainFrame().detached; attempt++) {
-			await untilAborted(signal, () => manager.initialize(manager.client));
-		}
-		if (page.mainFrame().detached) {
-			throw new ToolError("Browser main frame is still detached after refreshing the live target");
+		try {
+			// A disposed frame can still be indexed in FrameTree. initialize() otherwise reuses it;
+			// CdpFrame's private detached flag and disposed realms can never be revived.
+			if (manager._frameTree.getById(cdpFrame._id) === cdpFrame) {
+				manager._frameTree.removeFrame(cdpFrame);
+			}
+			// A pending-navigation marker can consume the first snapshot. This is frame-tree
+			// synchronization, never a retry of a failed protocol command or user action.
+			for (let attempt = 0; attempt < 2 && page.mainFrame().detached; attempt++) {
+				await untilAborted(signal, () => manager.initialize(manager.client));
+			}
+			if (page.mainFrame().detached) throw new Error("main frame remains detached");
+			this.#transport.send({ type: "main-frame-state", detached: false });
+		} catch (error) {
+			throwIfAborted(signal);
+			throw new MainFrameUnavailableError(
+				`Browser main frame could not be refreshed; user code did not run: ${error instanceof Error ? error.message : String(error)}`,
+				{ cause: error },
+			);
 		}
 	}
 
@@ -1993,6 +2031,7 @@ export class WorkerCore {
 			floatingFailure,
 			inflight: new Map(),
 			opCounter: 0,
+			deadlineAt: performance.now() + msg.timeoutMs,
 		};
 		this.#active = active;
 		this.#unanswered = active;
@@ -2004,6 +2043,9 @@ export class WorkerCore {
 			throwIfAborted(signal);
 			await this.#refreshDetachedMainFrame(signal);
 			const page = this.#requirePage();
+			const defaultTimeout = Math.max(1, Math.floor(active.deadlineAt - performance.now() - CELL_BUDGET_SLACK_MS));
+			page.setDefaultTimeout(defaultTimeout);
+			page.setDefaultNavigationTimeout(defaultTimeout);
 			if (this.#activatePageBeforeRun) await untilAborted(signal, () => page.bringToFront());
 			await untilAborted(signal, () => this.#emulation?.reapply() ?? Promise.resolve());
 			runPage = createRunPageScope(page, () => this.#requireNetwork().restoreInterception());
@@ -2280,8 +2322,12 @@ export class WorkerCore {
 					: count === undefined
 						? ""
 						: formatSelectorMatchHint(count);
+				const diagnostic =
+					label.startsWith("tab.screenshot(") || label === "tab.diffScreenshot()"
+						? "; capture did not complete; the tab was preserved. Inspect it with tab.evaluate(), tab.requests(), or tab.errors(); an empty application DOM is not evidence of a renderer crash"
+						: "";
 				throw markBrowserRunRejection(
-					new ToolError(`${label} timed out after ${perOpTimeoutMs}ms${hint}`),
+					new ToolError(`${label} timed out after ${perOpTimeoutMs}ms${hint}${diagnostic}`),
 					active.rejectionOwner,
 				);
 			}
@@ -2303,18 +2349,21 @@ export class WorkerCore {
 	async #zeroMatchWatchdog(selector: string, label: string, afterMs: number, signal: AbortSignal): Promise<never> {
 		const page = this.#requirePage();
 		const resolved = normalizeSelector(selector);
-		const deadline = Date.now() + afterMs;
+		let emptySince: number | undefined;
 		while (!signal.aborted) {
+			if (this.#matchedSelectorSignals.has(signal)) break;
 			let count: number | null = null;
 			try {
-				const handles = await page.$$(resolved);
+				const handles = await untilAborted(signal, () => page.$$(resolved));
 				count = handles.length;
 				for (const handle of handles) void handle.dispose().catch(() => undefined);
 			} catch {
 				// Inconclusive probe — keep polling without advancing toward failure.
 			}
-			if (count !== null && count > 0) break;
-			if (count === 0 && Date.now() >= deadline) {
+			if (this.#matchedSelectorSignals.has(signal) || (count !== null && count > 0)) break;
+			if (count === null) emptySince = undefined;
+			else emptySince ??= Date.now();
+			if (emptySince !== undefined && Date.now() - emptySince >= afterMs) {
 				throw new ToolError(`${label} failed fast after ${afterMs}ms${formatSelectorMatchHint(0)}`);
 			}
 			try {
@@ -2401,20 +2450,29 @@ export class WorkerCore {
 			goto: (url, opts) =>
 				op(`tab.goto(${JSON.stringify(url)})`, INF, async sig => {
 					this.#clearElementCache();
+					const navigationMs = Math.min(
+						budgetBound,
+						Math.max(1, Math.floor(active.deadlineAt - performance.now() - CELL_BUDGET_SLACK_MS)),
+					);
+					const navigationTimeout = AbortSignal.timeout(navigationMs);
+					const navigationSignal = AbortSignal.any([sig, navigationTimeout]);
 					try {
 						// Default to "load" because dev servers with HMR/WS never reach networkidle.
 						// budgetBound (not the full cell) so a hung navigation fails named and
 						// catchable inside the run instead of dying with the whole cell.
-						await navigateMainFrame(page, opts?.waitUntil ?? "load", budgetBound, sig, options =>
+						await navigateMainFrame(page, opts?.waitUntil ?? "load", navigationMs, navigationSignal, options =>
 							page.goto(url, options),
 						);
 					} catch (err) {
-						if (err instanceof Error && err.name === "TimeoutError") {
+						if (
+							!sig.aborted &&
+							(navigationTimeout.aborted || (err instanceof Error && err.name === "TimeoutError"))
+						) {
 							// Abandon the hung navigation NOW — a still-pending load stalls every
 							// later op on this page and cascades into more opaque timeouts.
 							await this.#stopLoading();
 							throw new NavigationTimeoutError(
-								`tab.goto(${JSON.stringify(url)}) timed out after ${budgetBound}ms; pending navigation stopped — retry with a longer tool timeout or waitUntil:"domcontentloaded"`,
+								`tab.goto(${JSON.stringify(url)}) timed out after ${navigationMs}ms; the tab was preserved and pending navigation stop was requested — use tab.evaluate(), tab.requests(), or waitUntil:"domcontentloaded" to diagnose`,
 							);
 						}
 						throw err;
@@ -2475,7 +2533,9 @@ export class WorkerCore {
 						const label = `tab.click(${JSON.stringify(selector)})`;
 						const resolved = normalizeSelector(selector);
 						if (resolved.startsWith("text/") && parseAriaRefSelector(selector) === null) {
-							await clickQueryHandlerText(page, resolved, label, actionOpMs, sig);
+							await clickQueryHandlerText(page, resolved, label, actionOpMs, sig, () =>
+								this.#matchedSelectorSignals.add(sig),
+							);
 							return;
 						}
 						const handle = await this.#resolveActionHandle(selector, actionOpMs, sig);
@@ -3530,10 +3590,17 @@ export class WorkerCore {
 	 * (main world); anything else goes through the normal locator wait.
 	 */
 	async #resolveActionHandle(selector: string, timeoutMs: number, sig: AbortSignal): Promise<ElementHandle> {
-		if (parseAriaRefSelector(selector) !== null) return this.#resolveAriaRef(selector);
-		return (await untilAborted(sig, () =>
-			this.#requirePage().locator(normalizeSelector(selector)).setTimeout(timeoutMs).waitHandle({ signal: sig }),
-		)) as ElementHandle;
+		const handle =
+			parseAriaRefSelector(selector) !== null
+				? await this.#resolveAriaRef(selector)
+				: ((await untilAborted(sig, () =>
+						this.#requirePage()
+							.locator(normalizeSelector(selector))
+							.setTimeout(timeoutMs)
+							.waitHandle({ signal: sig }),
+					)) as ElementHandle);
+		this.#matchedSelectorSignals.add(sig);
+		return handle;
 	}
 	#clearElementCache(): void {
 		this.#observedElements.clear();
@@ -3550,12 +3617,8 @@ export class WorkerCore {
 	/** Best-effort `Page.stopLoading` so an abandoned navigation cannot stall later ops. */
 	async #stopLoading(): Promise<void> {
 		try {
-			const session = await this.#requirePage().createCDPSession();
-			try {
-				await session.send("Page.stopLoading");
-			} finally {
-				await session.detach().catch(() => undefined);
-			}
+			// A cleanup roundtrip must never outlive the named navigation timeout and turn it into a tab kill.
+			await this.#requirePage().mainFrame().client.send("Page.stopLoading", undefined, { timeout: 250 });
 		} catch (error) {
 			this.#log("debug", "Page.stopLoading failed", {
 				error: error instanceof Error ? error.message : String(error),

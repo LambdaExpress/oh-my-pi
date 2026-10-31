@@ -289,6 +289,7 @@ export class PwshTool implements AgentTool<typeof pwshSchema, PwshToolDetails> {
 		};
 		const script = await expandInternalUrls(rawScript, {
 			...internalUrlOptions,
+			syntax: "powershell",
 			ensureLocalParentDirs: true,
 			escapePath: quotePwshString,
 		});

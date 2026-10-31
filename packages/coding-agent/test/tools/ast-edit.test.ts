@@ -192,6 +192,14 @@ describe("ast_edit tool schema", () => {
 			await Bun.write(path.join(nestedDir, "child.ts"), "legacyWrap(childValue, childArg)\n");
 			await Bun.write(path.join(sourceDir, "ignore.js"), "legacyWrap(ignoreValue, ignoreArg)\n");
 			await Bun.write(path.join(tempDir, "outside.ts"), "legacyWrap(outsideValue, outsideArg)\n");
+			const originalFiles = await Promise.all(
+				[
+					path.join(sourceDir, "root.ts"),
+					path.join(nestedDir, "child.ts"),
+					path.join(sourceDir, "ignore.js"),
+					path.join(tempDir, "outside.ts"),
+				].map(async filePath => ({ path: filePath, bytes: await Bun.file(filePath).bytes() })),
+			);
 			const queue = new ToolChoiceQueue();
 
 			const tools = await createTools(
@@ -210,36 +218,35 @@ describe("ast_edit tool schema", () => {
 				paths: [`${packagesDir}/pkg-*/src/**/*.ts`],
 			});
 
-			const text = previewResult.content.find(content => content.type === "text")?.text ?? "";
 			const details = previewResult.details as
-				| { totalReplacements?: number; fileReplacements?: Array<{ path: string; count: number }> }
+				| {
+						applied?: boolean;
+						totalReplacements?: number;
+						fileReplacements?: Array<{ path: string; count: number }>;
+				  }
 				| undefined;
 
-			// Multi-level tree output: `# packages/pkg-…/src/`, `## root.ts#<hash>`, then a
-			// nested `## nested/` directory with `### child.ts#<hash>` under it.
-			expect(text).toMatch(/^## root\.ts#[0-9A-F]{4} \(\d+ replacement[s]?\)$/m);
-			expect(text).toMatch(/^### child\.ts#[0-9A-F]{4} \(\d+ replacement[s]?\)$/m);
-			expect(text).not.toContain("ignore.js");
-			expect(text).not.toContain("outside.ts");
+			expect(details?.applied).toBe(false);
 			expect(details?.totalReplacements).toBe(2);
+			expect(details?.fileReplacements).toHaveLength(2);
 			expect(details?.fileReplacements).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({ path: "packages/pkg-123/src/root.ts", count: 1 }),
 					expect.objectContaining({ path: "packages/pkg-123/src/nested/child.ts", count: 1 }),
 				]),
 			);
+			for (const original of originalFiles) {
+				expect(await Bun.file(original.path).bytes(), original.path).toEqual(original.bytes);
+			}
 
+			expect(queue.hasPendingInvoker).toBe(true);
 			const invoker = queue.peekPendingInvoker()!;
 			await invoker({ action: "apply", reason: "apply previewed AST edit with combined globs" });
 
-			expect(await Bun.file(path.join(sourceDir, "root.ts")).text()).toContain("modernWrap(rootValue, rootArg)");
-			expect(await Bun.file(path.join(nestedDir, "child.ts")).text()).toContain("modernWrap(childValue, childArg)");
-			expect(await Bun.file(path.join(sourceDir, "ignore.js")).text()).toContain(
-				"legacyWrap(ignoreValue, ignoreArg)",
-			);
-			expect(await Bun.file(path.join(tempDir, "outside.ts")).text()).toContain(
-				"legacyWrap(outsideValue, outsideArg)",
-			);
+			expect(await Bun.file(path.join(sourceDir, "root.ts")).text()).toBe("modernWrap(rootValue, rootArg)\n");
+			expect(await Bun.file(path.join(nestedDir, "child.ts")).text()).toBe("modernWrap(childValue, childArg)\n");
+			expect(await Bun.file(path.join(sourceDir, "ignore.js")).text()).toBe("legacyWrap(ignoreValue, ignoreArg)\n");
+			expect(await Bun.file(path.join(tempDir, "outside.ts")).text()).toBe("legacyWrap(outsideValue, outsideArg)\n");
 		} finally {
 			await removeWithRetries(tempDir);
 		}

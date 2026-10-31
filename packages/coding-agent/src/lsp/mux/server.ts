@@ -1,6 +1,8 @@
 import { type IpcConnection, IpcServer } from "@oh-my-pi/pi-natives";
 import { isRecord, logger, postmortem, ptree, setProcessName } from "@oh-my-pi/pi-utils";
+import { hostHasInheritableConsole } from "../../eval/py/spawn-options";
 import { encodeMessageFrame, MessageFramer } from "../../jsonrpc/message-framing";
+import { resolveStdioSpawnCommand, type StdioSpawnCommand } from "../../mcp/transports/stdio";
 import type { LspJsonRpcId, LspJsonRpcNotification, LspJsonRpcRequest, LspJsonRpcResponse } from "../types";
 import {
 	LSP_MUX_PROJECT_DIR_ENV,
@@ -102,14 +104,9 @@ class ServerInstance {
 	stopPromise?: Promise<void>;
 	stopping = false;
 
-	constructor(key: string, params: MuxConnectParams) {
+	constructor(key: string, proc: ptree.ChildProcess<"pipe">) {
 		this.key = key;
-		this.proc = ptree.spawn([params.command, ...params.args], {
-			cwd: params.cwd,
-			stdin: "pipe",
-			env: { ...Bun.env, ...params.env },
-			detached: process.platform !== "win32",
-		});
+		this.proc = proc;
 	}
 
 	muxId(): number {
@@ -287,8 +284,27 @@ export class LspMuxServer {
 			}
 			let spawned = false;
 			if (!server || server.stopping) {
-				server = this.#spawnServer(key, params);
+				let command: StdioSpawnCommand | undefined;
+				if (process.platform === "win32" && /\.(?:cmd|bat)$/i.test(params.command)) {
+					command = await resolveStdioSpawnCommand(
+						{ command: params.command, args: params.args },
+						{
+							cwd: params.cwd,
+							env: { ...Bun.env, ...params.env },
+							platform: process.platform,
+							hostHasInheritableConsole: hostHasInheritableConsole(),
+						},
+					);
+					if (session.closed) return;
+				}
+				// Spawn and reserve synchronously: publishing an idle instance
+				// across an await would let another live session claim it too.
+				server = this.#spawnServer(key, params, command);
 				spawned = true;
+			}
+			if (session.closed) {
+				await this.#stopServer(server);
+				return;
 			}
 			if (server.lingerTimer) clearTimeout(server.lingerTimer);
 			server.lingerTimer = undefined;
@@ -399,8 +415,23 @@ export class LspMuxServer {
 		await this.#writeServer(server, message);
 	}
 
-	#spawnServer(key: string, params: MuxConnectParams): ServerInstance {
-		const server = new ServerInstance(key, params);
+	#spawnServer(key: string, params: MuxConnectParams, spawnCommand?: StdioSpawnCommand): ServerInstance {
+		const env = { ...Bun.env, ...params.env };
+		const command: StdioSpawnCommand = spawnCommand ?? {
+			cmd: [params.command, ...params.args],
+			detached: process.platform !== "win32",
+		};
+		const server = new ServerInstance(
+			key,
+			ptree.spawn(command.cmd, {
+				cwd: params.cwd,
+				stdin: "pipe",
+				env,
+				detached: command.detached,
+				windowsHide: command.windowsHide,
+				windowsVerbatimArguments: command.windowsVerbatimArguments,
+			}),
+		);
 		this.#servers.add(server);
 		void this.#readServer(server);
 		// The normalized exit can wait indefinitely for stderr inherited by a

@@ -42,11 +42,11 @@ await tab.close();
 
 - `browser.open(options?) -> Promise<BrowserTab>` opens or reuses a named tab and returns its handle.
 - `browser.tab(name = "main") -> BrowserTab` creates a proxy for that name; it does not open a tab or check that one exists.
-- `browser.tabs() -> Promise<ManagedTabInfo[]>` lists live managed tabs with `name`, `url`, `title`, `targetId`, `kind`, and `persist`.
+- `browser.tabs() -> Promise<ManagedTabInfo[]>` lists live managed tabs with `name`, `url`, `title`, `targetId`, `kind`, and `persist`; `mainFrameDetached: true` identifies a live target with an unusable cached main frame.
 - `browser.close({ name?, all?, kill?, timeout? }) -> Promise<void>` releases one or all managed tabs.
 - `tab.close({ kill?, timeout? }) -> Promise<void>` releases that handle's tab.
 
-`close` and `run` resolve `timeout` like `open`: seconds, default 30, capped by positive `tools.maxTimeout`, then clamped to 1–300. `waitFor*` helpers take `timeout` in milliseconds and cannot outlast the enclosing call's `timeout`.
+`close` and `run` resolve `timeout` like `open`: seconds, default 30, capped by positive `tools.maxTimeout`, then clamped to 1–300. `waitFor*` helpers take `timeout` in milliseconds. A direct wait with a positive explicit timeout expands its default host-call budget to cover that wait and reporting slack, subject to an explicit outer timeout, positive `tools.maxTimeout`, and the 300-second maximum. A wait inside `tab.run` never expands the enclosing run deadline.
 
 ### Open options
 
@@ -95,6 +95,8 @@ Direct `waitFor` and `waitForSelector` return booleans for the resolved handle, 
 
 Selectors accept CSS and Puppeteer `aria/…`, `text/…`, `xpath/…`, `pierce/…`, plus `label/…`, `placeholder/…`, `testid/…`, `alt/…`, `title/…`, and `role/<role>[name="…"]` query handlers. Add ` exact` inside the role name filter for exact matching. Playwright-only pseudos such as `:has-text()` and `:visible` are rejected. Use `tab.select` for `<select>` elements; `tab.fill` does not support them.
 
+`text/Label exact` performs normalized exact text matching. Role names copied from `observe()` retain accessible CSS-generated icon content and its actual whitespace, so the same name can be used in a role selector. A trusted pointerdown or mousedown consumed by its target can acknowledge delivery when the control removes itself; an unconsumed mousedown alone is insufficient. Unconfirmed input is never automatically replayed.
+
 `focus` supports elements with native callable focus methods, including SVG with `tabindex`. `scroll(deltaX, deltaY, { selector? })` and `scroll({ deltaX?, deltaY?, selector? })` dispatch relative scrolling; object form requires at least one finite delta and defaults the omitted axis to zero. Absolute `x`/`y` coordinates are unsupported. Raw `page.setViewport()` changes inside a run remain the viewport for subsequent helpers while independent persistent emulation settings remain applied.
 
 `observe()` lists interactive elements and assigns numeric ids consumed by `tab.id`; `includeAll: true` adds non-interactive accessibility nodes, and `viewportOnly: true` keeps only elements intersecting the viewport (ignored on cmux). `ariaSnapshot()` assigns `[ref=eN]` ids consumed by `tab.ref`; `diff: true` returns a revisioned full, unchanged, or delta object. Navigation and re-rendering invalidate handles; re-observe and act in the same Eval cell.
@@ -117,6 +119,8 @@ const title = await tab.run(
 Functions receive `{ tab, page, browser, wait, assert }` as their first argument. Additional `args` follow it. Plain data, functions, and `RegExp` values are serialized; the function cannot capture Eval-cell closures. Code strings use the same names as globals and allow top-level `await`.
 
 The inner `tab` is the full worker helper API. In addition to the direct surface it includes handle-returning `waitFor`/`waitForSelector` and run-scoped `waitForNavigation`/`waitForResponse`. Start a navigation/response wait before the action that triggers it.
+
+Raw Puppeteer page defaults for waits and navigation follow the current run budget unless the run explicitly changes them.
 
 Runs use a persistent, per-tab JavaScript runtime with ordinary Eval helpers and full Bun/Node and tool-bridge access. This is API isolation, not a security sandbox. Raw `page.setRequestInterception` and run-added request listeners are cleaned up at run end; `tab.route` handlers persist until `unroute` or tab close.
 
@@ -159,6 +163,8 @@ Reusing one tab name across browser kinds is rejected until the existing tab is 
 
 Screenshots of user-driven connected/relay tabs do not implicitly activate a tab or window. A background capture covering a cross-origin iframe fails explicitly because its compositor output may be blank; bring that tab to the foreground before retrying.
 
+Navigation and screenshot timeouts retain the diagnostic tab. Capture, annotation cleanup, and navigation-stop waits are bounded. No automatic screenshot retry, reload, or activation of a borrowed user tab is performed.
+
 Images are saved beneath `browser.screenshotDir`, or the OS temporary directory when unset. Chromium saves full resolution when that directory or an explicit format is supplied; otherwise it saves the resized image. Model-visible images are resized to at most 1024×1024 and 150 KiB. When the image's pixels are not CSS pixels (resized, or captured at a device scale other than 1), the capture text gives the factor from image coordinates to CSS pixels: viewport pixels for `clickAt` on a plain capture, page pixels for `fullPage`, element-relative pixels for `selector`. Unless `silent: true`, a capture emits an Eval image. `annotate: true` overlays numeric interactive-element labels and refreshes `tab.id` mappings. Screenshot options do not accept an output path; `diffScreenshot(baselinePath, { threshold?, output? })` does, and `pdf({ path?, ... })` writes a PDF.
 
 Host result details preserve structured `value` separately from displayed content. Display text is capped by the shared inline-output policy; over-cap text is stored as a session artifact and the capped text is printed.
@@ -176,9 +182,11 @@ By default, omp-owned managed Chromium tabs freeze at turn settle and unfreeze o
 ## Common recovery
 
 - Missing/dead tab: call `browser.open` again.
+- Detached cached main frame on a live target: the next run repairs it before executing code. If recovery requires reattachment, the original call fails explicitly instead of being replayed. A closed target is removed from the live list; borrowed targets are never closed for this recovery.
 - Stale id/ref: call `observe` or `ariaSnapshot` again, then reacquire the handle.
 - Busy tab: await the active helper/run before issuing another.
 - Selector timeout: re-observe and use a supported selector.
+- Navigation or screenshot timeout: inspect the retained tab's title, DOM, `requests()`, and `errors()` before diagnosing a renderer crash. An empty application root alone does not establish a crash.
 - Relay unavailable: install/start the relay and verify its Chrome extension connection.
 - Attached target missing: inspect available pages and use a precise `app.target`.
 

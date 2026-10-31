@@ -238,9 +238,12 @@ describe("read tool URL handling", () => {
 
 		expect(resizeSpy).toHaveBeenCalledTimes(1);
 		expect(result.details?.method).toBe("image");
+		expect(result.details?.contentType).toBe("image/png");
 		expect(imageBlock?.mimeType).toBe("image/jpeg");
 		expect(imageBlock?.data).toBe("cmVzaXplZA==");
 		expect(textBlock?.type).toBe("text");
+		expect(textBlock?.text).toContain("Content-Type: image/png");
+		expect(textBlock?.text).toContain("Preview: image/jpeg");
 		expect(textBlock?.text).toContain("displayed at 1000x500");
 		expect(convertSpy).not.toHaveBeenCalled();
 	});

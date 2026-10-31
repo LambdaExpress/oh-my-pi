@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- Fixed Codex WebSocket connections ignoring custom CA bundles used by HTTP requests, while preserving certificate and hostname verification.
 - Fixed Codex native turns being interrupted by mid-response user input or queued messages; these messages now wait for the next request boundary instead of sending unsupported `response.steer` commands.
 - Fixed unrelated native-lane errors replaying an admitted Codex response or incorrectly disabling live steering.
 - Fixed malformed OpenAI tool arguments finalized only by a terminal event bypassing pre-output recovery; incomplete argument diagnostics remain non-executable.

@@ -294,7 +294,11 @@ export async function installScreenshotAnnotations(
 	const token = `omp-screenshot-${crypto.randomUUID()}`;
 	await untilAborted(signal, () => page.evaluate(installAnnotationOverlayInPage, { token, targets: [...targets] }));
 	return async () => {
-		await page.evaluate(removeAnnotationOverlayInPage, token).catch(() => undefined);
+		// Renderer or transport failure during capture must not turn best-effort overlay cleanup
+		// into an unbounded screenshot operation. Never reload or replace the document here.
+		await untilAborted(AbortSignal.timeout(200), () => page.evaluate(removeAnnotationOverlayInPage, token)).catch(
+			() => undefined,
+		);
 	};
 }
 

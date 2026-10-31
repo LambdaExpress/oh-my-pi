@@ -4,6 +4,7 @@ import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import type { AdbBinaryResult, AdbCommandResult } from "./adb-executor";
 import { matchUiElements, parseUiHierarchy, sameUiElement } from "./ui-hierarchy";
+import { assertHierarchyTouchPoint, assertInputWindowTouchPoint } from "./ui-hit-testing";
 import type {
 	AdbUiBounds,
 	AdbUiClickResult,
@@ -194,6 +195,22 @@ export class AdbUiAutomation {
 					element = matches[0]!;
 				}
 				const { x, y } = clickPoint(observation, element, longClick);
+				assertHierarchyTouchPoint(observation, element, x, y);
+				const windows = await untilAborted(deadline.signal, () =>
+					this.#dependencies.runBinary(
+						["-s", serial, "exec-out", "dumpsys", "input"],
+						remaining(deadline),
+						deadline.signal,
+					),
+				);
+				let inputWindows: string;
+				try {
+					inputWindows = decoder.decode(windows.bytes);
+				} catch {
+					throw new ToolError("ADB input-window data is not complete valid UTF-8; no input was sent");
+				}
+				assertInputWindowTouchPoint(inputWindows, element.packageName, x, y);
+				this.#assertCurrent(serial, state);
 				const budget = remaining(deadline);
 				if (longClick && budget <= LONG_CLICK_MS)
 					throw new ToolError("ADB UI operation timed out before long click");
@@ -202,7 +219,7 @@ export class AdbUiAutomation {
 				else args.push("tap", String(x), String(y));
 				await untilAborted(deadline.signal, () => this.#dependencies.runText(args, budget, deadline.signal));
 				remaining(deadline);
-				return { element, x, y };
+				return { element, x, y, inputDispatch: "unconfirmed" };
 			});
 		} finally {
 			// Even a failed input command can have reached the device.

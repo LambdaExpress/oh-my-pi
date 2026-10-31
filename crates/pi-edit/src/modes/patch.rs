@@ -1,7 +1,13 @@
 //! `patch` mode: JSON `edits[]` of `{op, rename?, diff?}` hunks against one
 //! path. Port of `packages/coding-agent/src/edit/modes/patch.ts`.
 
-use std::{cell::OnceCell, fmt::Write, sync::Arc};
+use std::{
+	cell::OnceCell,
+	fmt::Write,
+	sync::{Arc, LazyLock},
+};
+
+use regex::Regex;
 
 use crate::{
 	diff_string::{
@@ -93,6 +99,50 @@ struct HunkVariant {
 	old_lines:            Vec<String>,
 	new_lines:            Vec<String>,
 	context_line_indices: Vec<(usize, usize)>,
+}
+
+static NUMBERED_LINE_REGEX: LazyLock<Regex> =
+	LazyLock::new(|| Regex::new(r"^\s*(\d{1,6})\s+(.+)$").expect("valid numbered-line regex"));
+
+fn has_line_number_prefixes(hunk: &DiffHunk) -> bool {
+	let mut lines = 0_usize;
+	let mut numbers = 0_usize;
+	let mut sequential = 0_usize;
+	let mut previous = None;
+	for line in hunk.old_lines.iter().chain(&hunk.new_lines) {
+		if line.trim().is_empty() {
+			continue;
+		}
+		lines += 1;
+		if let Some(captures) = NUMBERED_LINE_REGEX.captures(line) {
+			let number = captures[1]
+				.parse::<u32>()
+				.expect("at most six decimal digits");
+			sequential += usize::from(previous.is_some_and(|value| number == value + 1));
+			previous = Some(number);
+			numbers += 1;
+		}
+	}
+	lines >= 2
+		&& numbers >= 2_usize.max((lines * 6).div_ceil(10))
+		&& (numbers < 3 || sequential >= 1_usize.max(numbers - 2))
+}
+
+fn line_number_variant(hunk: &DiffHunk) -> Option<HunkVariant> {
+	if !has_line_number_prefixes(hunk) {
+		return None;
+	}
+	let strip = |line: &String| {
+		NUMBERED_LINE_REGEX
+			.captures(line)
+			.and_then(|captures| captures.get(2).map(|value| value.as_str().to_owned()))
+			.unwrap_or_else(|| line.clone())
+	};
+	Some(HunkVariant {
+		old_lines:            hunk.old_lines.iter().map(strip).collect(),
+		new_lines:            hunk.new_lines.iter().map(strip).collect(),
+		context_line_indices: hunk.context_line_indices.clone(),
+	})
 }
 
 fn is_blank_line(line: &str) -> bool {
@@ -962,7 +1012,12 @@ fn assert_safe_match<'a>(
 		}
 		let actual = normalize_for_fuzzy(actual);
 		let expected = normalize_for_fuzzy(expected);
-		if actual == expected {
+		if actual == expected
+			|| actual
+				.chars()
+				.filter(|ch| !ch.is_whitespace())
+				.eq(expected.chars().filter(|ch| !ch.is_whitespace()))
+		{
 			continue;
 		}
 		if let Some(at) = actual.find(&expected) {
@@ -981,21 +1036,13 @@ fn assert_safe_match<'a>(
 				}
 			}
 		}
-		// Typos may select an inexact line, but similarity must not authorize
-		// deleting unmatched syntax. Compare ordered punctuation, not counts
-		// or membership in the new hunk; authored context is preserved above.
-		let syntax = |ch: &char| !ch.is_alphanumeric() && !ch.is_whitespace();
-		if !actual
-			.chars()
-			.filter(syntax)
-			.eq(expected.chars().filter(syntax))
-		{
-			return Err(EditError::apply(format!(
-				"Refusing inexact-line match in {path} at line {}: structural characters differ from \
-				 the old line. Provide the complete file line in the hunk.",
-				start + offset + 1
-			)));
-		}
+		// Similarity locates candidates; it does not authorize replacing
+		// different removed content, even when punctuation happens to agree.
+		return Err(EditError::apply(format!(
+			"Refusing inexact-line match in {path} at line {}: the file content differs from the old \
+			 line. Provide the complete file line in the hunk.",
+			start + offset + 1
+		)));
 	}
 	Ok(())
 }
@@ -1155,6 +1202,39 @@ fn compute_replacements(
 			);
 		}
 		let mut from_variant = false;
+		// Treat copied display numbers as a fallback, never as parser metadata.
+		// Literal complete lines must win even if unnumbered lookalikes exist.
+		if !matches!(
+			result.strategy,
+			Some(
+				SequenceMatchStrategy::Exact
+					| SequenceMatchStrategy::TrimTrailing
+					| SequenceMatchStrategy::Trim
+					| SequenceMatchStrategy::CommentPrefix
+					| SequenceMatchStrategy::Unicode
+			)
+		) && let Some(variant) = line_number_variant(hunk)
+		{
+			let candidate = find_sequence_with_hint(
+				lines,
+				&variant
+					.old_lines
+					.iter()
+					.map(String::as_str)
+					.collect::<Vec<_>>(),
+				line_index,
+				match_hint,
+				hunk.is_end_of_file,
+				false,
+			);
+			if candidate.index.is_some() {
+				pattern = variant.old_lines;
+				new_lines = variant.new_lines;
+				context_line_indices = variant.context_line_indices;
+				result = candidate;
+				from_variant = true;
+			}
+		}
 		if result.index.is_none() || result.match_count.is_some_and(|count| count > 1) {
 			for variant in lazy_variants() {
 				if variant.old_lines.is_empty() {
@@ -1415,6 +1495,7 @@ fn apply_hunks(
 			&& !hunk.old_lines.is_empty()
 			&& hunk.old_start_line.is_none()
 			&& !hunk.is_end_of_file
+			&& !has_line_number_prefixes(hunk)
 			&& let Some((mut next, warnings)) =
 				character_match(content, path, hunk, threshold, allow_fuzzy, first_match)?
 		{

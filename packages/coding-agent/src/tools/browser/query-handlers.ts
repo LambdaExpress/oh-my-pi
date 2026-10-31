@@ -1,4 +1,5 @@
 import { untilAborted } from "@oh-my-pi/pi-utils";
+import type { Element as DomElement } from "@oh-my-pi/pi-utils/dom";
 import type {
 	CustomQueryHandler,
 	ElementHandle,
@@ -24,7 +25,8 @@ interface QueryRoot {
 /** `text/` handler: smallest elements containing the normalized rendered text. */
 export function queryByText(node: QueryNode, selector: string): Element[] {
 	const normalize = (text: string): string => text.replace(/\s+/g, " ").trim();
-	const wanted = normalize(selector);
+	const exact = /\s+exact\s*$/.test(selector);
+	const wanted = normalize(exact ? selector.replace(/\s+exact\s*$/, "") : selector);
 	const result: Element[] = [];
 	const visit = (root: QueryNode): boolean => {
 		const element = root as unknown as Element & { innerText?: string; shadowRoot?: QueryNode };
@@ -45,7 +47,8 @@ export function queryByText(node: QueryNode, selector: string): Element[] {
 			element.tagName === "INPUT" || element.tagName === "TEXTAREA"
 				? element.value
 				: (element.innerText ?? element.textContent ?? "");
-		if (!normalize(text).includes(wanted)) return false;
+		const actual = normalize(text);
+		if (exact ? actual !== wanted : !actual.includes(wanted)) return false;
 		result.push(element);
 		return true;
 	};
@@ -139,10 +142,12 @@ export function queryByTitle(node: QueryNode, selector: string): Element[] {
  * accessible name.
  */
 export function queryByRole(node: QueryNode, selector: string): Element[] {
+	const normalize = (text: string): string => text.replace(/\s+/g, " ").trim();
 	const roleMatch = /^\s*([^\s[]+)/.exec(selector);
 	const wantedRole = (roleMatch?.[1] ?? "").toLocaleLowerCase();
 	const nameMatch = /\[\s*name\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\]\s]+))(?:\s+(exact))?\s*\]/i.exec(selector);
-	const wantedName = (nameMatch?.[1] ?? nameMatch?.[2] ?? nameMatch?.[3])?.trim().toLocaleLowerCase();
+	const rawName = nameMatch?.[1] ?? nameMatch?.[2] ?? nameMatch?.[3];
+	const wantedName = rawName === undefined ? undefined : normalize(rawName).toLocaleLowerCase();
 	const exact = nameMatch?.[4]?.toLocaleLowerCase() === "exact";
 	const implicitRole = (element: Element): string | null => {
 		const tag = element.tagName.toLocaleLowerCase();
@@ -179,9 +184,50 @@ export function queryByRole(node: QueryNode, selector: string): Element[] {
 		}
 		return null;
 	};
+	// Chromium includes CSS-generated icon glyphs in AX names, while textContent/innerText do not.
+	// Read rendered text and generated content together so a name copied from observe remains selectable.
+	const content = (element: DomElement, includeHidden = false): string => {
+		const style = getComputedStyle(element);
+		if (
+			!includeHidden &&
+			(element.getAttribute("aria-hidden") === "true" ||
+				style.display === "none" ||
+				style.visibility === "hidden" ||
+				style.visibility === "collapse")
+		) {
+			return "";
+		}
+		const pseudo = (kind: string): string => {
+			const value = getComputedStyle(element, kind).content;
+			if (!value || value === "none" || value === "normal") return "";
+			return (value.match(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g) ?? [])
+				.map(quoted =>
+					quoted
+						.slice(1, -1)
+						.replace(/\\([0-9a-f]{1,6})\s?|\\(.)/gi, (_match, hex: string, escaped: string) =>
+							hex ? String.fromCodePoint(Number.parseInt(hex, 16)) : escaped,
+						),
+				)
+				.join("");
+		};
+		const children = Array.from(element.childNodes)
+			.map(child =>
+				child.nodeType === 3
+					? (child.textContent ?? "")
+					: child.nodeType === 1
+						? content(child as DomElement, includeHidden)
+						: "",
+			)
+			.join("");
+		const alternative = element.getAttribute("aria-label") || element.getAttribute("alt") || children;
+		const before = pseudo("::before");
+		const after = pseudo("::after");
+		// Inline generated content does not introduce a separator. Preserve source/CSS whitespace
+		// so both "Login" and "Login " retain their distinct observed accessibility names.
+		return before + alternative + after;
+	};
 	const accessibleName = (element: Element): string => {
 		const ariaLabel = element.getAttribute("aria-label");
-		if (ariaLabel) return ariaLabel.trim();
 		// ID references and native labels belong to the element's own document/shadow tree.
 		const scopedElement = element as unknown as {
 			getRootNode(): QueryRoot & { getElementById(id: string): Element | null };
@@ -191,34 +237,35 @@ export function queryByRole(node: QueryNode, selector: string): Element[] {
 		if (labelledBy) {
 			const value = labelledBy
 				.split(/\s+/)
-				.map(id => tree.getElementById(id)?.textContent ?? "")
+				.map(id => {
+					const reference = tree.getElementById(id);
+					return reference ? content(reference, true) : "";
+				})
 				.join(" ")
 				.trim();
 			if (value) return value;
 		}
+		if (ariaLabel) return ariaLabel;
 		if (element.id) {
 			for (const label of tree.querySelectorAll("label")) {
-				if (label.getAttribute("for") === element.id) return (label.textContent ?? "").trim();
+				if (label.getAttribute("for") === element.id) return content(label, true);
 			}
 		}
 		const wrappingLabel = element.closest("label");
-		if (wrappingLabel) return (wrappingLabel.textContent ?? "").trim();
-		return (
+		if (wrappingLabel) return content(wrappingLabel, true);
+		const intrinsic =
 			element.getAttribute("alt") ??
-			element.getAttribute("title") ??
 			(element.tagName.toLocaleLowerCase() === "input" &&
 			["button", "submit", "reset"].includes((element as unknown as { type: string }).type.toLocaleLowerCase())
 				? (element as unknown as { value: string }).value
-				: element.textContent) ??
-			element.getAttribute("placeholder") ??
-			""
-		).trim();
+				: content(element));
+		return intrinsic || element.getAttribute("title") || element.getAttribute("placeholder") || "";
 	};
 	const matches = (element: Element): boolean => {
 		const role = (element.getAttribute("role")?.trim().split(/\s+/)[0] ?? implicitRole(element))?.toLocaleLowerCase();
 		if (role !== wantedRole) return false;
 		if (wantedName === undefined) return true;
-		const name = accessibleName(element).toLocaleLowerCase();
+		const name = normalize(accessibleName(element)).toLocaleLowerCase();
 		return exact ? name === wantedName : name.includes(wantedName);
 	};
 	const result: Element[] = [];

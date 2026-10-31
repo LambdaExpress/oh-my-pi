@@ -927,7 +927,7 @@ async fn create_session_for_run(
 	// `nohup` is registered above, with the rest of the process builtins.
 
 	#[cfg(windows)]
-	configure_windows_path(&mut shell)?;
+	configure_windows_path(&mut shell).await?;
 
 	if let Some(snapshot_path) = config.snapshot_path.as_ref() {
 		source_snapshot(&mut shell, snapshot_path, spawn_registry, cancel_token).await?;

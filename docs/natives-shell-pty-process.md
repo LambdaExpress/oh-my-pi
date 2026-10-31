@@ -61,7 +61,7 @@ Session env behavior:
 - `ShellRunOptions.env` / one-shot `env` is command-scoped (`EnvironmentScope::Command`) and popped after the command.
 - `PATH` is merged specially on Windows with case-insensitive dedupe.
 - Host and forwarded session environments omit Git repository-location overrides (`GIT_DIR`, `GIT_COMMON_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`), so Git rediscovers the repository from cwd. Explicit command-scoped `env` can supply them again.
-- Windows-only path enrichment (`crates/pi-shell/src/windows.rs`) appends discovered Git-for-Windows paths when present and not already included.
+- Windows-only path enrichment (`crates/pi-shell/src/windows.rs`) appends discovered Git-for-Windows paths when present and not already included. Discovery reuses the session's PATH/PATHEXT resolver rather than starting an untracked synchronous `where` process.
 - `snapshotPath`, when present, is sourced during session creation with stdout/stderr/stdin wired to null files.
 
 ### Host-injected filesystem

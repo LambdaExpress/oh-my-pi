@@ -517,6 +517,8 @@ interface BrowserManagedTab {
 	kind: "headless" | "spawned" | "connected" | "relay" | "cmux" | "tern";
 	/** Whether settle and idle-close management are disabled. */
 	persist: boolean;
+	/** The target exists, but its main frame must be repaired before code can run. */
+	mainFrameDetached?: boolean;
 }
 
 /** Options for keyboard input through a direct tab helper. */
@@ -629,7 +631,7 @@ interface BrowserObservationEntry {
 	id: number;
 	/** Accessibility role. */
 	role: string;
-	/** Accessible name. */
+	/** Accessible name, including generated glyphs and source whitespace; copy unchanged into `role/…[name="…" exact]`. */
 	name?: string;
 	/** Current accessible value. */
 	value?: string | number;

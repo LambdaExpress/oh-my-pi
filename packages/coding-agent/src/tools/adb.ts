@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
@@ -10,7 +11,7 @@ import type {
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
-import { prompt } from "@oh-my-pi/pi-utils";
+import { isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import {
 	type AdbBinaryResult,
 	type AdbCommandOptions,
@@ -39,6 +40,8 @@ import { CachedOutputBlock, markFramedBlockComponent } from "@oh-my-pi/pi-tui/re
 import { renderStatusLine } from "@oh-my-pi/pi-tui/render/status-line";
 import { DEFAULT_MAX_BYTES, OutputSink, streamTailUpdates, TailBuffer } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import type { ToolSession } from ".";
+import { replaceFileAtomically } from "../utils/atomic-file";
+import { quotePosixArgument } from "../utils/shell-quote";
 import { truncateForPrompt } from "./approval";
 import {
 	resolveOutputMaxColumns,
@@ -49,7 +52,7 @@ import {
 import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { formatStyledTruncationWarning, stripOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { capPreviewLines, replaceTabs } from "@oh-my-pi/pi-tui/render/render-utils";
-import { ToolAbortError } from "./tool-errors";
+import { ToolAbortError, throwIfAborted } from "./tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
@@ -258,6 +261,7 @@ export interface AdbToolDetails {
 	activity?: string;
 	observation?: AdbUiObservation;
 	click?: AdbUiClickResult;
+	inputDispatch?: AdbUiClickResult["inputDispatch"];
 	meta?: OutputMeta;
 }
 export type AdbDetails = AdbToolDetails;
@@ -468,13 +472,37 @@ function outputContext(output: string | undefined, artifactId?: string): string 
 	return `${text ? ` Output: ${text}` : ""}${artifact}`;
 }
 
-function pngDimensions(bytes: Uint8Array): { width?: number; height?: number } {
-	if (bytes.byteLength < 24) return {};
-	if (bytes[12] !== 0x49 || bytes[13] !== 0x48 || bytes[14] !== 0x44 || bytes[15] !== 0x52) return {};
+async function validateScreenshotPng(bytes: Uint8Array): Promise<{ width: number; height: number }> {
+	if (!hasPngSignature(bytes) || bytes.byteLength < 33) throw new Error("output was not a complete PNG");
 	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	if (view.getUint32(8) !== 13 || view.getUint32(12) !== 0x49484452) throw new Error("PNG is missing IHDR");
 	const width = view.getUint32(16, false);
 	const height = view.getUint32(20, false);
-	return width > 0 && height > 0 ? { width, height } : {};
+	if (width === 0 || height === 0) throw new Error("PNG dimensions are invalid");
+	let offset = PNG_SIGNATURE.byteLength;
+	let dataSeen = false;
+	let ended = false;
+	while (offset < bytes.byteLength) {
+		if (bytes.byteLength - offset < 12) throw new Error("PNG has a truncated chunk");
+		const length = view.getUint32(offset);
+		const end = offset + 12 + length;
+		if (end > bytes.byteLength) throw new Error("PNG has a truncated chunk");
+		if (Bun.hash.crc32(bytes.subarray(offset + 4, end - 4)) >>> 0 !== view.getUint32(end - 4)) {
+			throw new Error("PNG chunk checksum is invalid");
+		}
+		const kind = view.getUint32(offset + 4);
+		if (kind === 0x49444154) dataSeen = true;
+		if (kind === 0x49454e44) {
+			if (length !== 0 || end !== bytes.byteLength || !dataSeen) throw new Error("PNG has an invalid IEND");
+			ended = true;
+		}
+		offset = end;
+	}
+	if (!ended) throw new Error("PNG is missing IEND");
+	// metadata() only reads the header. A tiny output still forces the complete
+	// source image through the decoder without allocating another full-size PNG.
+	await new Bun.Image(bytes).resize(1, 1).png().bytes();
+	return { width, height };
 }
 
 function hasPngSignature(bytes: Uint8Array): boolean {
@@ -483,6 +511,34 @@ function hasPngSignature(bytes: Uint8Array): boolean {
 		if (bytes[index] !== PNG_SIGNATURE[index]) return false;
 	}
 	return true;
+}
+
+async function publishPulledPath(staged: string, destination: string, signal?: AbortSignal): Promise<void> {
+	throwIfAborted(signal);
+	const source = await fs.lstat(staged);
+	let destinationExists = true;
+	let destinationDirectory = false;
+	try {
+		destinationDirectory = (await fs.stat(destination)).isDirectory();
+	} catch (error) {
+		if (!isEnoent(error)) throw error;
+		destinationExists = false;
+	}
+	throwIfAborted(signal);
+	if (!source.isDirectory()) {
+		await replaceFileAtomically(staged, destination);
+		return;
+	}
+	if (!destinationExists) {
+		await fs.rename(staged, destination);
+		return;
+	}
+	if (!destinationDirectory) throw new Error("Cannot replace a local file with a pulled directory");
+	// adb pull merges into existing directories. Stage the entire transfer
+	// first, then replace individual files without removing unrelated entries.
+	for (const entry of await fs.readdir(staged)) {
+		await publishPulledPath(path.join(staged, entry), path.join(destination, entry), signal);
+	}
 }
 
 export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
@@ -576,9 +632,7 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 					.done();
 			}
 			case "status": {
-				const device = await this.#runManager(params.op, {}, signal, () =>
-					this.#dependencies.emulatorManager.status(params.device),
-				);
+				const { device } = await this.#deviceStatus(params.op, params.device, timeoutMs, signal);
 				return toolResult<AdbToolDetails>({
 					op: params.op,
 					serial: device.serial,
@@ -655,14 +709,7 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 					{ localPath: params.localPath, remotePath: params.remotePath },
 				);
 			case "pull":
-				return this.#deviceText(
-					params,
-					timeoutMs,
-					signal,
-					onUpdate,
-					device => ["-s", device.serial, "pull", params.remotePath, params.localPath],
-					{ localPath: params.localPath, remotePath: params.remotePath },
-				);
+				return this.#pull(params, timeoutMs, signal, onUpdate);
 			case "install":
 				return this.#deviceText(
 					params,
@@ -719,9 +766,14 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 								String(params.durationMs),
 							];
 						case "text":
-							return [...prefix, params.text];
+							// adb shell joins argv into a remote command. Encode spaces
+							// for Android input and quote for that second shell boundary.
+							return [...prefix, quotePosixArgument(params.text.replaceAll(" ", "%s"))];
 						case "keyevent":
-							return [...prefix, String(params.key)];
+							return [
+								...prefix,
+								typeof params.key === "string" ? quotePosixArgument(params.key) : String(params.key),
+							];
 					}
 				});
 		}
@@ -750,11 +802,10 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 					signal,
 				);
 				details.click = click;
-				return toolResult(details)
-					.text(
-						`${params.longClick ? "Long-clicked" : "Clicked"} ${click.element.ref} at (${click.x}, ${click.y}). Observe or wait for the expected UI state to verify the effect.`,
-					)
-					.done();
+				return this.#unconfirmedInputResult(
+					details,
+					`${params.longClick ? "Long-press" : "Tap"} command completed for ${click.element.ref} at (${click.x}, ${click.y}).`,
+				);
 			}
 			let observation: AdbUiObservation;
 			if (params.op === "wait") {
@@ -767,6 +818,20 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 			details.observation = observation;
 			return this.#observationResult(details, observation);
 		});
+	}
+
+	#unconfirmedInputResult(
+		details: AdbToolDetails,
+		output: string,
+		summary?: AdbCommandResult,
+	): AgentToolResult<AdbToolDetails> {
+		details.inputDispatch = "unconfirmed";
+		const notice = t(
+			"Input command completed, but Android did not confirm injection. The event may have been injected; do not repeat it automatically. Observe or wait for the required UI state.",
+		);
+		const result = toolResult(details).text(output ? `${notice}\n${output}` : notice);
+		if (summary) result.truncationFromSummary(summary, { direction: "tail" });
+		return result.done();
 	}
 
 	async #observationResult(
@@ -784,7 +849,7 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 		});
 		try {
 			sink.push(
-				`${JSON.stringify({ serial: observation.serial, snapshot: observation.snapshot, rotation: observation.rotation, elements: observation.elements.length, until: details.state })}\n`,
+				`${JSON.stringify({ serial: observation.serial, snapshot: observation.snapshot, rotation: observation.rotation, elements: observation.elements.length, until: details.state, visibility: "hierarchy-only; click checks the touch point separately" })}\n`,
 			);
 			for (const element of observation.elements) sink.push(`${JSON.stringify(element)}\n`);
 			const result = await sink.dump();
@@ -812,6 +877,24 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 			.done();
 	}
 
+	async #deviceStatus(
+		op: AdbOperation,
+		serial: string | undefined,
+		timeoutMs: number,
+		signal?: AbortSignal,
+	): Promise<{ device: AdbDevice; timeoutMs: number }> {
+		const deadline = performance.now() + timeoutMs;
+		const device = await this.#runManager(op, serial ? { serial } : {}, signal, () =>
+			this.#dependencies.emulatorManager.status(serial, timeoutMs, signal),
+		);
+		throwIfAborted(signal);
+		const remaining = deadline - performance.now();
+		if (remaining <= 0) {
+			throw new ToolError(`ADB ${op} timed out${operationContext({ op, serial: device.serial })}.`);
+		}
+		return { device, timeoutMs: remaining };
+	}
+
 	async #deviceText(
 		params: Exclude<
 			AdbToolParams,
@@ -824,11 +907,11 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 		extraDetails: Partial<AdbToolDetails> = {},
 	): Promise<AgentToolResult<AdbToolDetails>> {
 		const requestedDevice = "device" in params ? params.device : undefined;
-		const selected = await this.#runManager(
+		const { device: selected, timeoutMs: remainingTimeoutMs } = await this.#deviceStatus(
 			params.op,
-			requestedDevice ? { serial: requestedDevice } : {},
+			requestedDevice,
+			timeoutMs,
 			signal,
-			() => this.#dependencies.emulatorManager.status(requestedDevice),
 		);
 		const details: AdbToolDetails = {
 			op: params.op,
@@ -843,7 +926,7 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 		let result = await this.#runText(
 			args,
 			details,
-			timeoutMs,
+			remainingTimeoutMs,
 			signal,
 			onUpdate,
 			params.op === "logcat" && !params.follow ? (params.lines ?? DEFAULT_LOGCAT_LINES) : undefined,
@@ -853,11 +936,11 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 			UIAUTOMATOR_DUMP_COMMAND.test(params.command) &&
 			UIAUTOMATOR_IDLE_TIMEOUT.test(result.output)
 		) {
-			const remainingBeforeDelay = timeoutMs - (Date.now() - startedAt);
+			const remainingBeforeDelay = remainingTimeoutMs - (Date.now() - startedAt);
 			if (remainingBeforeDelay > UIAUTOMATOR_RETRY_DELAY_MS) {
 				await Bun.sleep(UIAUTOMATOR_RETRY_DELAY_MS);
 				signal?.throwIfAborted();
-				const remaining = Math.max(1, timeoutMs - (Date.now() - startedAt));
+				const remaining = Math.max(1, remainingTimeoutMs - (Date.now() - startedAt));
 				result = await this.#runText(args, details, remaining, signal, onUpdate);
 			}
 			if (UIAUTOMATOR_IDLE_TIMEOUT.test(result.output)) {
@@ -866,10 +949,59 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 				);
 			}
 		}
+		if (params.op === "input") return this.#unconfirmedInputResult(details, result.output, result);
 		return toolResult(details)
 			.text(result.output || "(no output)")
 			.truncationFromSummary(result, { direction: "tail" })
 			.done();
+	}
+
+	async #pull(
+		params: Extract<AdbToolParams, { op: "pull" }>,
+		timeoutMs: number,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<AdbToolDetails>,
+	): Promise<AgentToolResult<AdbToolDetails>> {
+		const deadline = performance.now() + timeoutMs;
+		const destination = path.resolve(this.session.cwd, params.localPath);
+		let staging: string | undefined;
+		try {
+			throwIfAborted(signal);
+			await fs.mkdir(path.dirname(destination), { recursive: true });
+			staging = await fs.mkdtemp(path.join(path.dirname(destination), ".omp-adb-pull-"));
+			let destinationDirectory = false;
+			try {
+				destinationDirectory = (await fs.stat(destination)).isDirectory();
+			} catch (error) {
+				if (!isEnoent(error)) throw error;
+			}
+			const payload = destinationDirectory ? staging : path.join(staging, "payload");
+			const remaining = deadline - performance.now();
+			if (remaining <= 0) throw new ToolError("ADB pull timed out before device preflight");
+			const result = await this.#deviceText(
+				params,
+				remaining,
+				signal,
+				onUpdate,
+				device => ["-s", device.serial, "pull", params.remotePath, payload],
+				{ localPath: params.localPath, remotePath: params.remotePath },
+			);
+			throwIfAborted(signal);
+			if (performance.now() >= deadline) throw new ToolError("ADB pull timed out before publishing the local file");
+			await publishPulledPath(payload, destination, signal);
+			return result;
+		} catch (error) {
+			if (error instanceof ToolError || error instanceof ToolAbortError) throw error;
+			throw new ToolError(
+				`ADB pull failed${operationContext({ op: "pull", serial: params.device, localPath: params.localPath, remotePath: params.remotePath })}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		} finally {
+			if (staging) {
+				await fs.rm(staging, { recursive: true, force: true }).catch(error => {
+					logger.warn("Failed to remove ADB pull staging directory", { path: staging, error: String(error) });
+				});
+			}
+		}
 	}
 
 	async #screenshot(
@@ -877,8 +1009,11 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 		timeoutMs: number,
 		signal?: AbortSignal,
 	): Promise<AgentToolResult<AdbToolDetails>> {
-		const selected = await this.#runManager(params.op, params.device ? { serial: params.device } : {}, signal, () =>
-			this.#dependencies.emulatorManager.status(params.device),
+		const { device: selected, timeoutMs: remainingTimeoutMs } = await this.#deviceStatus(
+			params.op,
+			params.device,
+			timeoutMs,
+			signal,
 		);
 		const details: AdbToolDetails = {
 			op: params.op,
@@ -889,14 +1024,18 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 		const result = await this.#runBinary(
 			["-s", selected.serial, "exec-out", "screencap", "-p"],
 			details,
-			timeoutMs,
+			remainingTimeoutMs,
 			signal,
 		);
-		if (!hasPngSignature(result.bytes)) {
+		let dimensions: { width: number; height: number };
+		try {
+			dimensions = await validateScreenshotPng(result.bytes);
+		} catch (error) {
 			throw new ToolError(
-				`ADB screenshot failed${operationContext(details)}: output was not a PNG.${outputContext(result.stderr)}`,
+				`ADB screenshot failed${operationContext(details)}: ${error instanceof Error ? error.message : String(error)}.${outputContext(result.stderr)}`,
 			);
 		}
+		throwIfAborted(signal);
 		const screenshotPath = path.join(
 			os.tmpdir(),
 			`omp-adb-screenshot-${process.pid}-${Date.now()}-${randomUUID()}.png`,
@@ -910,7 +1049,6 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 				}`,
 			);
 		}
-		const dimensions = pngDimensions(result.bytes);
 		details.path = screenshotPath;
 		details.bytes = result.bytes.byteLength;
 		details.mimeType = "image/png";
@@ -1213,15 +1351,26 @@ export const adbToolRenderer = {
 		const details = result.details;
 		const isPartial = options.isPartial === true;
 		const isError = result.isError === true;
+		const isUnconfirmed = details?.inputDispatch === "unconfirmed";
 		return markFramedBlockComponent({
 			render: (width: number): readonly string[] => {
 				const running = isPartial && options.spinnerFrame !== undefined;
+				const state = running
+					? "running"
+					: isPartial
+						? "pending"
+						: isError
+							? "error"
+							: isUnconfirmed
+								? "warning"
+								: "success";
 				const header = renderStatusLine(
 					{
-						icon: running ? "running" : isPartial ? "pending" : isError ? "error" : "success",
+						icon: state,
 						spinnerFrame: options.spinnerFrame,
 						title: t("ADB"),
 						description: renderDescription(decodedArgs, details) || undefined,
+						badge: state === "warning" ? { label: t("Input dispatch unconfirmed"), color: "warning" } : undefined,
 					},
 					uiTheme,
 				);
@@ -1271,7 +1420,7 @@ export const adbToolRenderer = {
 				return outputBlock.render(
 					{
 						header,
-						state: running ? "running" : isPartial ? "pending" : isError ? "error" : "success",
+						state,
 						sections: [
 							{
 								lines: capPreviewLines(

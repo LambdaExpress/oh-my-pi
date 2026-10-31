@@ -481,13 +481,13 @@ describe("EmulatorManager.start", () => {
 describe("EmulatorManager.status and wait", () => {
 	test("status rejects zero devices", async () => {
 		const harness = createHarness({ executeAdb: sequentialDevices([[]]) });
-		await expect(harness.manager.status()).rejects.toBeInstanceOf(ToolError);
+		await expect(harness.manager.status(undefined, 1_000)).rejects.toBeInstanceOf(ToolError);
 	});
 
 	test("status auto-selects the unique online device and enriches its AVD name", async () => {
 		const harness = createHarness({ executeAdb: sequentialDevices([[device()]]) });
 
-		await expect(harness.manager.status()).resolves.toMatchObject({
+		await expect(harness.manager.status(undefined, 1_000)).resolves.toMatchObject({
 			serial: DEFAULT_SERIAL,
 			state: "device",
 			avdName: DEFAULT_AVD,
@@ -503,8 +503,8 @@ describe("EmulatorManager.status and wait", () => {
 		]);
 		const harness = createHarness({ executeAdb });
 
-		await expect(harness.manager.status()).rejects.toThrow(/multiple|serial/i);
-		await expect(harness.manager.status(serialB)).resolves.toMatchObject({
+		await expect(harness.manager.status(undefined, 1_000)).rejects.toThrow(/multiple|serial/i);
+		await expect(harness.manager.status(serialB, 1_000)).resolves.toMatchObject({
 			serial: serialB,
 			state: "device",
 		});
@@ -520,8 +520,8 @@ describe("EmulatorManager.status and wait", () => {
 			]),
 		});
 
-		await expect(harness.manager.status(offline)).rejects.toThrow(/offline/i);
-		await expect(harness.manager.status(unauthorized)).rejects.toThrow(/unauthorized/i);
+		await expect(harness.manager.status(offline, 1_000)).rejects.toThrow(/offline/i);
+		await expect(harness.manager.status(unauthorized, 1_000)).rejects.toThrow(/unauthorized/i);
 	});
 
 	test("wait connected observes absent, offline, then online", async () => {

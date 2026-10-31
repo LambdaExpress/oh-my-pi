@@ -39,16 +39,17 @@ import stealthHardwareScript from "../puppeteer/11_stealth_hardware.txt" with { 
 import stealthCodecsScript from "../puppeteer/12_stealth_codecs.txt" with { type: "text" };
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { withDownload } from "../../downloads/activity";
+import { TOOL_TIMEOUTS } from "../tool-timeouts";
 
 export const DEFAULT_VIEWPORT = { width: 1365, height: 768, deviceScaleFactor: 1.25 };
 
 /**
  * Per-CDP-message timeout applied to every puppeteer launch/connect. Set above
- * `TOOL_TIMEOUTS.browser.max` (30s) so the agent-side wall-clock is the canonical
+ * `TOOL_TIMEOUTS.browser.max` so the agent-side wall-clock is the canonical
  * limit; this constant only catches genuinely stuck CDP sockets (renderer wedged,
  * connection dropped, etc.).
  */
-export const BROWSER_PROTOCOL_TIMEOUT_MS = 60_000;
+export const BROWSER_PROTOCOL_TIMEOUT_MS = (TOOL_TIMEOUTS.browser.max + 1) * 1000;
 const ENABLE_AUTOMATION_FLAG = "--enable-automation";
 // Automation-tell launch flags that puppeteer-core adds by default. We suppress
 // them via `ignoreDefaultArgs` (the supported escape hatch) to mirror xxxx's

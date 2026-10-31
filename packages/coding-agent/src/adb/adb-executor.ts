@@ -7,6 +7,8 @@ import { OutputSink, type OutputSummary, truncateTailBytes } from "@oh-my-pi/pi-
 const STREAM_DRAIN_MS = 250;
 const TERMINATE_WAIT_MS = 500;
 const STDERR_MAX_BYTES = 32 * 1024;
+const INPUT_INJECTION_FAILURE =
+	/\b(?:java\.lang\.)?SecurityException\b|(?:input event injection|inject(?:ing|ion)? input event)[^\r\n]*(?:failed|denied)|\binject(?:ing)?[^\r\n]*requires[^\r\n]*INJECT_EVENTS/i;
 export const DEFAULT_ADB_BINARY_MAX_BYTES = 32 * 1024 * 1024;
 
 export type AndroidExecutableName = "adb" | "emulator";
@@ -203,7 +205,11 @@ interface StreamPump {
 	cancel(): Promise<void>;
 }
 
-function pumpTextStream(stream: ReadableStream<Uint8Array> | null, sink: OutputSink): StreamPump {
+function pumpTextStream(
+	stream: ReadableStream<Uint8Array> | null,
+	sink: OutputSink,
+	onText?: (text: string) => void,
+): StreamPump {
 	if (!stream) {
 		const done = Promise.resolve();
 		return { done, cancel: () => done };
@@ -215,10 +221,17 @@ function pumpTextStream(stream: ReadableStream<Uint8Array> | null, sink: OutputS
 			for (;;) {
 				const next = await reader.read();
 				if (next.done) break;
-				if (next.value) sink.push(decoder.decode(next.value, { stream: true }));
+				if (next.value) {
+					const text = decoder.decode(next.value, { stream: true });
+					onText?.(text);
+					sink.push(text);
+				}
 			}
 			const final = decoder.decode();
-			if (final) sink.push(final);
+			if (final) {
+				onText?.(final);
+				sink.push(final);
+			}
 		} finally {
 			reader.releaseLock();
 		}
@@ -241,7 +254,7 @@ async function drainStreams(pumps: readonly StreamPump[], maxWaitMs: number): Pr
 		]);
 		if (completed) return;
 	}
-	await Promise.allSettled(pumps.map(pump => pump.cancel()));
+	await Promise.race([Promise.allSettled(pumps.map(pump => pump.cancel())), Bun.sleep(STREAM_DRAIN_MS)]);
 }
 
 async function terminateAndDrain(
@@ -250,7 +263,9 @@ async function terminateAndDrain(
 	pumps: readonly StreamPump[],
 ): Promise<void> {
 	try {
-		await terminate(process);
+		// An inherited pipe can outlive the client. Its exited PID may already
+		// have been reused; only terminate a client that is still running.
+		if (process.exitCode === null) await terminate(process);
 	} finally {
 		await drainStreams(pumps, STREAM_DRAIN_MS);
 	}
@@ -283,9 +298,12 @@ interface ProcessRace {
 	cleanup(): void;
 }
 
-function raceProcess(process: AdbSubprocess, options: AdbCommandOptions): ProcessRace {
+function raceProcess(process: AdbSubprocess, pumps: readonly StreamPump[], options: AdbCommandOptions): ProcessRace {
 	const racers: Array<Promise<ProcessRaceResult>> = [
-		process.exited.then(exitCode => ({ kind: "exit" as const, exitCode })),
+		Promise.all([process.exited, Promise.all(pumps.map(pump => pump.done))]).then(([exitCode]) => ({
+			kind: "exit" as const,
+			exitCode,
+		})),
 	];
 	let timeout: ReturnType<typeof setTimeout> | undefined;
 	let abortListener: (() => void) | undefined;
@@ -312,6 +330,20 @@ function raceProcess(process: AdbSubprocess, options: AdbCommandOptions): Proces
 	};
 }
 
+function inputFailureDetector(args: readonly string[]): ((text: string) => void) | undefined {
+	const shellIndex = args.indexOf("shell");
+	if (shellIndex < 0 || args[shellIndex + 1] !== "input") return undefined;
+	let tail = "";
+	return text => {
+		// Some Android input implementations print a Java exception but exit 0.
+		// Inspect before the output sink can truncate it, including split chunks.
+		const combined = tail + text;
+		if (INPUT_INJECTION_FAILURE.test(combined))
+			throw new Error(`Android rejected input injection: ${combined.slice(0, STDERR_MAX_BYTES).trim()}`);
+		tail = combined.slice(-STDERR_MAX_BYTES);
+	};
+}
+
 export async function executeAdb(args: readonly string[], options: AdbCommandOptions = {}): Promise<AdbCommandResult> {
 	const deps = resolveDependencies(options.dependencies);
 	const executable = deps.resolveExecutable("adb");
@@ -330,6 +362,7 @@ export async function executeAdb(args: readonly string[], options: AdbCommandOpt
 	let process: AdbSubprocess | undefined;
 	let completed = false;
 	let race: ProcessRace | undefined;
+	let pumps: StreamPump[] = [];
 
 	try {
 		if (options.signal?.aborted) {
@@ -340,11 +373,13 @@ export async function executeAdb(args: readonly string[], options: AdbCommandOpt
 			};
 		}
 		process = deps.spawn([executable, ...args], createSpawnOptions(options, deps));
-		const pumps = [pumpTextStream(process.stdout, sink), pumpTextStream(process.stderr, sink)];
-		race = raceProcess(process, options);
+		const inspectInput = inputFailureDetector(args);
+		pumps = [pumpTextStream(process.stdout, sink, inspectInput), pumpTextStream(process.stderr, sink, inspectInput)];
+		race = raceProcess(process, pumps, options);
 		const result = await race.promise;
 
 		if (result.kind !== "exit") {
+			const waitingFor = process.exitCode === null ? "ADB client process exit" : "ADB output stream EOF";
 			await terminateAndDrain(process, deps.terminateTree, pumps);
 			completed = true;
 			return {
@@ -353,13 +388,12 @@ export async function executeAdb(args: readonly string[], options: AdbCommandOpt
 				...(result.kind === "timeout" ? { timedOut: true } : {}),
 				...(await sink.dump(
 					result.kind === "timeout"
-						? `ADB command timed out after ${Math.round((options.timeoutMs ?? 0) / 1000)} seconds`
+						? `ADB command timed out after ${Math.round((options.timeoutMs ?? 0) / 1000)} seconds while waiting for ${waitingFor}`
 						: "ADB command cancelled",
 				)),
 			};
 		}
 
-		await drainStreams(pumps, STREAM_DRAIN_MS);
 		completed = true;
 		return {
 			exitCode: result.exitCode,
@@ -368,8 +402,8 @@ export async function executeAdb(args: readonly string[], options: AdbCommandOpt
 		};
 	} finally {
 		race?.cleanup();
-		if (process && !completed && process.exitCode === null) {
-			await deps.terminateTree(process).catch(() => undefined);
+		if (process && !completed) {
+			await terminateAndDrain(process, deps.terminateTree, pumps).catch(() => undefined);
 		}
 		await sink.dispose();
 	}
@@ -489,6 +523,7 @@ export async function executeAdbBinary(
 	let process: AdbSubprocess | undefined;
 	let completed = false;
 	let race: ProcessRace | undefined;
+	let pumps: StreamPump[] = [];
 
 	try {
 		process = deps.spawn([executable, ...args], createSpawnOptions(options, deps));
@@ -499,7 +534,8 @@ export async function executeAdbBinary(
 			overflow.resolve({ kind: "aborted" });
 		});
 		const stderr = captureStderr(process.stderr);
-		race = raceProcess(process, options);
+		pumps = [stdout, stderr];
+		race = raceProcess(process, pumps, options);
 		const result = await Promise.race([race.promise, overflow.promise]);
 
 		if (result.kind !== "exit" || outputExceeded) {
@@ -515,7 +551,6 @@ export async function executeAdbBinary(
 			};
 		}
 
-		await drainStreams([stdout, stderr], STREAM_DRAIN_MS);
 		completed = true;
 		if (outputExceeded) throw new AdbBinaryOutputLimitError(maxBytes, stderr.text());
 		return {
@@ -526,8 +561,8 @@ export async function executeAdbBinary(
 		};
 	} finally {
 		race?.cleanup();
-		if (process && !completed && process.exitCode === null) {
-			await deps.terminateTree(process).catch(() => undefined);
+		if (process && !completed) {
+			await terminateAndDrain(process, deps.terminateTree, pumps).catch(() => undefined);
 		}
 	}
 }

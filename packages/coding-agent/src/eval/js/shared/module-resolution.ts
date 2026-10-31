@@ -17,9 +17,11 @@ const EVAL_BASE_FILE = "[eval]";
 
 /** True for `./x`, `../x`, `/x`, `D:\x` — as opposed to bare package names and protocols. */
 function isFileRequest(request: string): boolean {
+	// A Windows drive prefix also matches `<scheme>:`. Classify host paths
+	// first so D:/pkg reaches the shared main/index resolver in compiled Bun.
+	if (path.isAbsolute(request)) return true;
 	if (PROTOCOL_SPECIFIER_RE.test(request)) return false;
 	return (
-		path.isAbsolute(request) ||
 		request.startsWith("./") ||
 		request.startsWith("../") ||
 		request === "." ||

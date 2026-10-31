@@ -1,14 +1,18 @@
 import { type FileDiagnosticsResult } from "@oh-my-pi/pi-tui/tools/lsp";
 import * as fs from "node:fs";
 import path from "node:path";
-import { logger, untilAborted } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, untilAborted } from "@oh-my-pi/pi-utils";
 import { formatPathRelativeToCwd } from "../tools/path-utils";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import {
 	getOrCreateClient,
 	prepareFileForRequest,
+	prepareTypeScriptProject,
+	recordTypeScriptProjectFailure,
 	sendRequest,
 	supportsDocumentDiagnostics,
+	supportsTsserverRequest,
+	TSSERVER_REQUEST_COMMAND,
 	waitForProjectLoaded,
 } from "./client";
 import { getLinterClient } from "./clients";
@@ -18,6 +22,7 @@ import { resolveFormatOptions } from "./format-options";
 import { isProjectAwareLspServer } from "./servers";
 import type {
 	Diagnostic,
+	DiagnosticSeverity,
 	Location,
 	LocationLink,
 	LspClient,
@@ -269,12 +274,123 @@ function throwIfDiagnosticWaitAborted(uri: string, signal?: AbortSignal): void {
 	throw new ToolAbortError(`LSP diagnostics cancelled for ${uriToFile(uri)}: ${message}`, { cause: reason });
 }
 
+const TSSERVER_DIAGNOSTIC_SEVERITIES: Record<string, DiagnosticSeverity> = {
+	error: 1,
+	warning: 2,
+	message: 3,
+	suggestion: 4,
+};
+
+function isTsserverPosition(value: unknown): value is { line: number; offset: number } {
+	return (
+		isRecord(value) &&
+		typeof value.line === "number" &&
+		Number.isInteger(value.line) &&
+		value.line >= 1 &&
+		typeof value.offset === "number" &&
+		Number.isInteger(value.offset) &&
+		value.offset >= 1
+	);
+}
+
+class TypeScriptDiagnosticsUnavailableError extends Error {}
+
+/**
+ * TLS publishes syntax, semantic and suggestion batches independently, including
+ * fresh empty placeholders. Neither projectInfo nor a quiet publish proves that
+ * semantic checking completed. Its advertised tsserver bridge lets us obtain
+ * explicit synchronous results from the semantic server instead.
+ */
+async function requestTypeScriptDiagnostics(
+	client: LspClient,
+	uri: string,
+	timeoutMs: number,
+	signal?: AbortSignal,
+): Promise<Diagnostic[]> {
+	const deadline = AbortSignal.timeout(Math.max(1, timeoutMs));
+	const boundSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+	const filePath = uriToFile(uri);
+	const diagnostics: Diagnostic[] = [];
+	let projectPrepared = false;
+	try {
+		await prepareTypeScriptProject(client, filePath, boundSignal);
+		projectPrepared = true;
+		for (const command of ["syntacticDiagnosticsSync", "semanticDiagnosticsSync"]) {
+			const response = await sendRequest(
+				client,
+				"workspace/executeCommand",
+				{
+					command: TSSERVER_REQUEST_COMMAND,
+					arguments: [
+						command,
+						{ file: uri },
+						{ executionTarget: 0, expectsResult: true, isAsync: false, lowPriority: false },
+					],
+				},
+				boundSignal,
+			);
+			if (!isRecord(response) || response.success === false || !Array.isArray(response.body)) {
+				throw new Error(`tsserver ${command} did not return a diagnostic array`);
+			}
+			for (const diagnostic of response.body) {
+				if (
+					!isRecord(diagnostic) ||
+					!isTsserverPosition(diagnostic.start) ||
+					!isTsserverPosition(diagnostic.end) ||
+					typeof diagnostic.text !== "string" ||
+					typeof diagnostic.category !== "string"
+				) {
+					throw new Error(`tsserver ${command} returned a diagnostic without valid text and line positions`);
+				}
+				diagnostics.push({
+					range: {
+						start: {
+							line: diagnostic.start.line - 1,
+							character: diagnostic.start.offset - 1,
+						},
+						end: {
+							line: diagnostic.end.line - 1,
+							character: diagnostic.end.offset - 1,
+						},
+					},
+					message: diagnostic.text,
+					severity: TSSERVER_DIAGNOSTIC_SEVERITIES[diagnostic.category] ?? 1,
+					code: typeof diagnostic.code === "number" ? diagnostic.code : undefined,
+					source: typeof diagnostic.source === "string" ? diagnostic.source : "typescript",
+				});
+			}
+		}
+	} catch (error) {
+		throwIfDiagnosticWaitAborted(uri, signal);
+		const diagnosis = deadline.aborted
+			? `TypeScript diagnostics timed out after ${timeoutMs}ms`
+			: error instanceof Error
+				? error.message
+				: String(error);
+		// projectInfo failures have already recorded their precise availability
+		// state. In particular, preserve languageServiceDisabled=true.
+		throw new TypeScriptDiagnosticsUnavailableError(
+			projectPrepared ? recordTypeScriptProjectFailure(client, filePath, diagnosis) : diagnosis,
+			{ cause: error },
+		);
+	}
+	client.diagnostics.set(uri, {
+		diagnostics,
+		version: client.openFiles.get(uri)?.version ?? null,
+	});
+	client.diagnosticsVersion++;
+	return diagnostics;
+}
+
 export async function waitForDiagnostics(
 	client: LspClient,
 	uri: string,
 	options: WaitForDiagnosticsOptions = {},
 ): Promise<Diagnostic[]> {
 	const { timeoutMs = 3000, signal, minVersion, expectedDocumentVersion, settleMs = DIAGNOSTICS_SETTLE_MS } = options;
+	if (supportsTsserverRequest(client.serverCapabilities)) {
+		return requestTypeScriptDiagnostics(client, uri, timeoutMs, signal);
+	}
 	const deadline = Date.now() + timeoutMs;
 	let pullAttempted = false;
 	let pullResultPromise: Promise<PullDiagnosticsOutcome> | undefined;
@@ -451,6 +567,7 @@ export async function getDiagnosticsForFile(
 	const relPath = formatPathRelativeToCwd(absolutePath, cwd);
 	const allDiagnostics: Diagnostic[] = [];
 	const serverNames: string[] = [];
+	const unavailableMessages: string[] = [];
 
 	// Wait for diagnostics from all servers in parallel. Each server's whole
 	// pipeline is wrapped in a hard wall-clock bound: the caller's signal is
@@ -503,7 +620,7 @@ export async function getDiagnosticsForFile(
 		}),
 	);
 
-	for (const result of results) {
+	for (const [index, result] of results.entries()) {
 		if (result.status === "fulfilled") {
 			serverNames.push(result.value.serverName);
 			allDiagnostics.push(
@@ -513,6 +630,12 @@ export async function getDiagnosticsForFile(
 					result.value.serverConfig,
 					result.value.diagnostics,
 				),
+			);
+		} else if (result.reason instanceof TypeScriptDiagnosticsUnavailableError) {
+			const serverName = servers[index][0];
+			serverNames.push(serverName);
+			unavailableMessages.push(
+				`[warning] [lsp] Diagnostics unavailable for ${relPath} (${serverName}): ${result.reason.message}`,
 			);
 		}
 	}
@@ -524,8 +647,8 @@ export async function getDiagnosticsForFile(
 	if (allDiagnostics.length === 0) {
 		return {
 			server: serverNames.join(", "),
-			messages: [],
-			summary: "OK",
+			messages: unavailableMessages,
+			summary: unavailableMessages.length > 0 ? "Diagnostics unavailable" : "OK",
 			errored: false,
 		};
 	}
@@ -543,6 +666,7 @@ export async function getDiagnosticsForFile(
 
 	sortDiagnostics(uniqueDiagnostics);
 	const formatted = uniqueDiagnostics.map(d => formatDiagnostic(d, relPath));
+	formatted.push(...unavailableMessages);
 	const limited = limitDiagnosticMessages(formatted);
 	const summary = formatDiagnosticsSummary(uniqueDiagnostics);
 	const hasErrors = uniqueDiagnostics.some(d => d.severity === 1);
@@ -550,7 +674,7 @@ export async function getDiagnosticsForFile(
 	return {
 		server: serverNames.join(", "),
 		messages: limited,
-		summary,
+		summary: unavailableMessages.length > 0 ? `${summary}; diagnostics unavailable` : summary,
 		errored: hasErrors,
 	};
 }

@@ -44,6 +44,11 @@ import type {
 /** Largest remote text file `ssh://` will materialize (mirrors the local:// cap). */
 const SSH_TEXT_MAX_BYTES = 1024 * 1024;
 
+/** URL validation is not a failed remote transfer, regardless of its diagnostic text. */
+function invalidSshUrl(message: string): Error & { code: "EINVAL" } {
+	return Object.assign(new Error(message), { code: "EINVAL" as const });
+}
+
 /** Decode the whole buffer as UTF-8 text, or null if it holds a NUL or invalid byte. */
 function decodeUtf8Text(bytes: Uint8Array): string | null {
 	if (bytes.indexOf(0) !== -1) return null;
@@ -66,12 +71,12 @@ function remotePathFromUrl(url: InternalUrl): string {
 	// silently operating on the truncated path; a literal `?`/`#` in a filename
 	// must be percent-encoded (`%3F`/`%23`).
 	if (url.search) {
-		throw new Error(
+		throw invalidSshUrl(
 			`ssh:// does not support URL query strings; percent-encode a literal '?' as %3F in the path: ${url.href}`,
 		);
 	}
 	if (url.hash) {
-		throw new Error(
+		throw invalidSshUrl(
 			`ssh:// does not support URL fragments; percent-encode a literal '#' as %23 in the path: ${url.href}`,
 		);
 	}
@@ -80,10 +85,10 @@ function remotePathFromUrl(url: InternalUrl): string {
 	try {
 		decoded = decodeURIComponent(raw);
 	} catch {
-		throw new Error(`Invalid URL encoding in ssh:// path: ${url.href}`);
+		throw invalidSshUrl(`Invalid URL encoding in ssh:// path: ${url.href}`);
 	}
 	if (!decoded) {
-		throw new Error(
+		throw invalidSshUrl(
 			"ssh:// requires an absolute path, e.g. ssh://host/etc/hosts or ssh://host/ for the root directory",
 		);
 	}
@@ -143,7 +148,7 @@ async function resolveTarget(
 	// which would otherwise be mis-read as an opaque host and silently connect to the
 	// default port. Reject it before resolving.
 	if (!URL.canParse(url.href)) {
-		throw new Error(`ssh://: invalid host or port in "${url.href}"; use ssh://host[:1-65535]/<absolute-path>`);
+		throw invalidSshUrl(`ssh://: invalid host or port in "${url.href}"; use ssh://host[:1-65535]/<absolute-path>`);
 	}
 	// WHATWG `hostname` is bracketed only for a *valid* IPv6 literal, so a bracketed
 	// host is unambiguously IPv6 — hand OpenSSH the bare address. Percent-encoded
@@ -152,7 +157,7 @@ async function resolveTarget(
 	const bareHost = url.hostname;
 	const rawAuthority = url.rawHost || bareHost;
 	if (!bareHost && !rawAuthority) {
-		throw new Error("ssh:// requires a host: ssh://<host>/<absolute-path>");
+		throw invalidSshUrl("ssh:// requires a host: ssh://<host>/<absolute-path>");
 	}
 	// `decodeOr` fails open, so a malformed percent-escape (`%ZZ`) in the authority
 	// would otherwise pass the canonical check below and reach OpenSSH literally.
@@ -162,7 +167,7 @@ async function resolveTarget(
 			try {
 				decodeURIComponent(part);
 			} catch {
-				throw new Error(`ssh://: invalid percent-escape in authority "${url.href}"`);
+				throw invalidSshUrl(`ssh://: invalid percent-escape in authority "${url.href}"`);
 			}
 		}
 	}
@@ -170,7 +175,7 @@ async function resolveTarget(
 		// Inline credentials would flow into canonicalSshResourceKey(), which is
 		// reused in hashline snapshot keys and visible error paths. Keep passwords
 		// on configured aliases so tool paths and session-visible resource keys stay clean.
-		throw new Error(
+		throw invalidSshUrl(
 			"ssh://: inline password authentication is not supported; configure the password on an SSH host alias (use `ssh_session` for the current session) and use ssh://<name>/<path>",
 		);
 	}
@@ -179,7 +184,7 @@ async function resolveTarget(
 	const username = url.username || undefined;
 	const port = url.port ? Number(url.port) : undefined;
 	if (port === 0) {
-		throw new Error("ssh://: port 0 is not a valid SSH port; use ssh://host:<1-65535>/<path> or omit the port");
+		throw invalidSshUrl("ssh://: port 0 is not a valid SSH port; use ssh://host:<1-65535>/<path> or omit the port");
 	}
 	// An empty port (`ssh://prod:/path`, `ssh://user@host:/path`, including
 	// percent-encoded authority parts) parses cleanly with `url.port === ""`, so it
@@ -197,14 +202,16 @@ async function resolveTarget(
 		}
 	};
 	if (port === undefined && url.rawHost === `${username ? `${decodeOr(username)}@` : ""}${decodeOr(bareHost)}:`) {
-		throw new Error(`ssh://: empty port in "${url.href}"; use ssh://host:<1-65535>/<path> or drop the colon`);
+		throw invalidSshUrl(`ssh://: empty port in "${url.href}"; use ssh://host:<1-65535>/<path> or drop the colon`);
 	}
 	// A literal but empty userinfo (`ssh://@host`) sets username to "" — WHATWG drops
 	// the `@` from hostname, but rawHost keeps the leading `@`. A percent-encoded
 	// alias like `%40prod` decodes to `@prod` in rawHost too, but its hostname keeps
 	// `%40`, so the reconstruction is `@@prod` and is left alone.
 	if (username === undefined && url.rawHost === `@${decodeOr(bareHost)}${port !== undefined ? `:${port}` : ""}`) {
-		throw new Error(`ssh://: empty username in "${url.href}"; drop the leading '@' or provide a username before it`);
+		throw invalidSshUrl(
+			`ssh://: empty username in "${url.href}"; drop the leading '@' or provide a username before it`,
+		);
 	}
 	// Backstop for any remaining stray/empty authority marker the explicit checks
 	// above do not name — notably an empty password (`ssh://user:@host`, `ssh://:@host`,
@@ -214,7 +221,7 @@ async function resolveTarget(
 	// to exactly `rawHost`, so only malformed userinfo trips this.
 	const canonicalAuthority = `${url.username ? `${decodeOr(url.username)}@` : ""}${decodeOr(bareHost)}${port !== undefined ? `:${port}` : ""}`;
 	if (url.rawHost !== canonicalAuthority) {
-		throw new Error(
+		throw invalidSshUrl(
 			`ssh://: unsupported or malformed authority in "${url.href}"; use ssh://[user@]host[:1-65535]/<absolute-path>`,
 		);
 	}
@@ -226,7 +233,7 @@ async function resolveTarget(
 	if (username || port !== undefined) {
 		const decodedBareHost = decodeOr(bareHost);
 		if (items.some(entry => entry.name === bareHost || entry.name === decodedBareHost)) {
-			throw new Error(
+			throw invalidSshUrl(
 				`ssh://: user/port overrides are not allowed for the configured host "${decodedBareHost}"; use ssh://${bareHost}/<path> or an unconfigured hostname`,
 			);
 		}
@@ -263,7 +270,10 @@ export class SshProtocolHandler implements ProtocolHandler {
 		selectors: "lines",
 		portAuthority: true,
 		immutable: false,
-		readTier: "exec",
+		// resolve/stat/readDir expose only fixed, quoted read operations from
+		// file-transfer, never a caller-supplied SSH command. Remote mutations
+		// and the ordinary SSH command tool retain their separate exec gate.
+		readTier: "read",
 		write: { via: "handler", payload: "text", scope: "workspace", tier: () => "exec" },
 	};
 
@@ -279,7 +289,7 @@ export class SshProtocolHandler implements ProtocolHandler {
 		if (!(url.rawHost || url.hostname)) {
 			const rawPath = url.rawPathname ?? url.pathname;
 			if (rawPath && rawPath !== "/") {
-				throw new Error(
+				throw invalidSshUrl(
 					`ssh:// requires a host before the path: ssh://<host>${rawPath} (host-less ssh://${rawPath} is not valid)`,
 				);
 			}
@@ -347,7 +357,9 @@ export class SshProtocolHandler implements ProtocolHandler {
 			return this.#resolveDirectory(target, remotePath, url, context?.signal, context?.skipDirectoryListing);
 		}
 		if (kind === "missing") {
-			throw new Error(`ssh://: path not found or not yet available: ${remotePath}`);
+			throw Object.assign(new Error(`ssh://: path not found or not yet available: ${remotePath}`), {
+				code: "ENOENT",
+			});
 		}
 		throw new Error(
 			`ssh://: ${remotePath} is not a regular file (FIFO, socket, or device); ssh:// reads UTF-8 text files only — use \`bash\` with a remote SSH command for special files`,

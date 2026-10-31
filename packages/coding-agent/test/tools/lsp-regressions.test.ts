@@ -2789,6 +2789,7 @@ describe("lsp regressions", () => {
 					start: { line: 0, character: 29 },
 					end: { line: 0, character: 45 },
 				},
+				source: "typescript",
 			};
 			let projectsReloaded = false;
 			let modulePinnedMissing = false;
@@ -2832,8 +2833,44 @@ describe("lsp regressions", () => {
 					publishSource();
 					publish(moduleUri, []);
 				} else if (message.method === "workspace/executeCommand") {
-					projectsReloaded = fs.existsSync(modulePath);
-					server.send({ jsonrpc: "2.0", id: message.id, result: { success: projectsReloaded } });
+					const params = message.params as { arguments: [string] };
+					const command = params.arguments[0];
+					if (command === "reloadProjects") {
+						projectsReloaded = fs.existsSync(modulePath);
+						server.send({ jsonrpc: "2.0", id: message.id, result: { success: projectsReloaded } });
+					} else if (command === "projectInfo") {
+						server.send({
+							jsonrpc: "2.0",
+							id: message.id,
+							result: {
+								body: {
+									configFileName: path.join(tempDir.path(), "tsconfig.json"),
+									languageServiceDisabled: false,
+								},
+							},
+						});
+					} else if (command === "syntacticDiagnosticsSync" || command === "semanticDiagnosticsSync") {
+						const missing =
+							command === "semanticDiagnosticsSync" &&
+							!(projectsReloaded && !modulePinnedMissing && fs.existsSync(modulePath));
+						server.send({
+							jsonrpc: "2.0",
+							id: message.id,
+							result: {
+								body: missing
+									? [
+											{
+												start: { line: 1, offset: 30 },
+												end: { line: 1, offset: 46 },
+												text: missingModuleDiagnostic.message,
+												code: 2307,
+												category: "error",
+											},
+										]
+									: [],
+							},
+						});
+					}
 				} else if (message.method === "shutdown") {
 					server.send({ jsonrpc: "2.0", id: message.id, result: null });
 				} else if (message.method === "exit") {

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ArchiveError } from "../../src/ar/error";
 import { DEFAULT_ARCHIVE_LIMITS } from "../../src/ar/limits";
+import { openArchive, readArchiveEntries } from "../../src/ar/open";
 import { ArchiveReader } from "../../src/ar/reader";
 import { type ByteSource, memoryByteSource } from "../../src/ar/source";
 import type { ArchiveIndexEntry } from "../../src/ar/types";
@@ -167,14 +168,57 @@ test("drops traversal names and rejects encryption, truncation, unsupported meth
 	await expect(readMember(findEntry(corruptEntries, "plain.txt"))).rejects.toThrow("CRC mismatch");
 });
 
-test("enforces entry, index, member, and path limits before metadata-driven work", async () => {
+test("enforces entry, index, and path limits while indexing", async () => {
 	const bytes = await fixture("zip-basic.zip");
 	for (const limits of [
 		{ ...DEFAULT_ARCHIVE_LIMITS, maxEntries: 1 },
 		{ ...DEFAULT_ARCHIVE_LIMITS, maxIndexSize: 8 },
-		{ ...DEFAULT_ARCHIVE_LIMITS, maxMemberSize: 8 },
 		{ ...DEFAULT_ARCHIVE_LIMITS, maxPathBytes: 4 },
 	]) {
 		await expect(readZip(memoryByteSource(bytes), { limits })).rejects.toBeInstanceOf(ArchiveError);
 	}
+});
+
+test("lists oversized members and reads a selected small member without extracting its neighbor", async () => {
+	const bytes = await encodeZip([
+		["large.log", ENCODER.encode("large log ".repeat(1000))],
+		["evidence/state.json", ENCODER.encode('{"locked":true}')],
+	]);
+	const source = countingSource(bytes);
+	const limits = { ...DEFAULT_ARCHIVE_LIMITS, maxMemberSize: 64 };
+	const entries = await readZip(source, { limits });
+	const reader = new ArchiveReader("zip", entries, limits);
+
+	expect(reader.listDirectory().map(entry => entry.name)).toEqual(["evidence", "large.log"]);
+	expect(reader.getNode("large.log")?.size).toBe(10_000);
+	source.reads.length = 0;
+	expect(DECODER.decode((await reader.readFile("evidence/state.json")).bytes)).toBe('{"locked":true}');
+	// A member read touches only its local header and payload, not the large log.
+	expect(source.reads).toHaveLength(2);
+	const readsBeforeRejection = source.reads.length;
+	await expect(reader.readFile("large.log")).rejects.toBeInstanceOf(ArchiveError);
+	await expect(readMember(findEntry(entries, "large.log"))).rejects.toBeInstanceOf(ArchiveError);
+	expect(source.reads).toHaveLength(readsBeforeRejection);
+});
+
+test("bounds actual inflation even when the central directory understates the decoded size", async () => {
+	const bytes = await encodeZip([["bomb.log", ENCODER.encode("bomb".repeat(1024))]]);
+	const central = findSignature(bytes, 0x02014b50);
+	new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(central + 24, 32, true);
+	const reader = await openArchive({ bytes, format: "zip" }, { limits: { maxMemberSize: 128 } });
+
+	expect(reader.listDirectory().map(entry => [entry.name, entry.size])).toEqual([["bomb.log", 32]]);
+	await expect(reader.readFile("bomb.log")).rejects.toBeInstanceOf(ArchiveError);
+});
+
+test("caps total expanded bytes when a ZIP is fully materialized", async () => {
+	const bytes = await encodeZip([
+		["a.txt", ENCODER.encode("a".repeat(48))],
+		["b.txt", ENCODER.encode("b".repeat(48))],
+	]);
+	const limits = { ...DEFAULT_ARCHIVE_LIMITS, maxMemberSize: 64, maxInMemorySize: 80 };
+	const reader = await openArchive({ bytes, format: "zip" }, { limits });
+	expect(DECODER.decode((await reader.readFile("b.txt")).bytes)).toBe("b".repeat(48));
+	await expect(readArchiveEntries({ bytes, format: "zip" }, { limits })).rejects.toBeInstanceOf(ArchiveError);
+	await expect(readZipEager(bytes, limits)).rejects.toBeInstanceOf(ArchiveError);
 });

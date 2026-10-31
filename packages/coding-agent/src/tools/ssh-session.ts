@@ -210,16 +210,11 @@ export class SshSessionTool implements AgentTool<typeof sshSessionSchema, SshSes
 			case "create": {
 				const name = requireName(params);
 				if (hosts.has(name)) throw new ToolError(`Session SSH host "${name}" already exists`);
-				for (const field of MUTABLE_FIELDS) {
-					if (hasField(params, field) && params[field] === null) {
-						throw new ToolError(`"${field}" cannot be null for "create"`);
-					}
-				}
 				validatePort(params.port);
 				const config = normalizeConfig(params);
 				await mutate({ operation: "upsert", name, config });
 				const view = hostView(name, config);
-				const changedFields = MUTABLE_FIELDS.filter(field => hasField(params, field));
+				const changedFields = MUTABLE_FIELDS.filter(field => hasField(params, field) && params[field] !== null);
 				return {
 					content: [{ type: "text", text: `Created session SSH host ${formatHost(view)}.` }],
 					details: { op: params.op, host: view, changedFields },

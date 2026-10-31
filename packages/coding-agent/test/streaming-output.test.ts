@@ -903,6 +903,76 @@ describe("OutputSink head-retain mode", () => {
 		expect(dumped.elidedBytes).toBeUndefined();
 	});
 
+	for (const character of ["é", "电", "😀"]) {
+		for (let gap = 1; gap < byteLength(character); gap++) {
+			for (const fittingPrefix of ["", "a"]) {
+				for (const spill of ["before-short-chunks", "after-short-chunks"] as const) {
+					test(`keeps ${byteLength(character)}-byte UTF-8 order with ${gap} head bytes left, prefix ${JSON.stringify(fittingPrefix)}, spill ${spill}`, async () => {
+						const artifactPath = path.join(await createTempDir(), "unicode-head.log");
+						const sink = new OutputSink({
+							artifactPath,
+							artifactId: "unicode-head",
+							spillThreshold: 64,
+							headBytes: 8,
+							tailBytes: 16,
+						});
+						const chunks: string[] = [];
+						const prefix = "p".repeat(8 - gap - fittingPrefix.length);
+						const crossing = `${fittingPrefix}${character}${spill === "before-short-chunks" ? "m".repeat(80) : "tail"}`;
+						for (const chunk of [prefix, crossing, "{", '"', "X"]) {
+							chunks.push(chunk);
+							sink.push(chunk);
+						}
+						if (spill === "after-short-chunks") {
+							// No spill/elision yet: both retained windows must still
+							// compose into the original stream before later ASCII.
+							expect(sink.preview()).toBe(chunks.join(""));
+							chunks.push("z".repeat(80));
+							sink.push(chunks.at(-1)!);
+						}
+						const original = chunks.join("");
+						const preview = sink.preview();
+						const dumped = await sink.dump();
+						expect(preview).toBe(dumped.output);
+						expect(dumped.output.split("\n")[0]).toBe(prefix + fittingPrefix);
+						expect(dumped.output.endsWith(original.slice(-16))).toBe(true);
+						expect(dumped.elidedBytes).toBeGreaterThan(0);
+						expect(await fs.readFile(artifactPath)).toEqual(Buffer.from(original, "utf8"));
+					});
+				}
+			}
+		}
+	}
+
+	test("preserves adjacent JSONL records at the original 20 KiB multilingual boundary", async () => {
+		const artifactPath = path.join(await createTempDir(), "jsonl-head.log");
+		const headBytes = 20 * 1024;
+		const rowPrefix = '{"text":"';
+		const padding = "p".repeat(headBytes - 2 - byteLength(rowPrefix));
+		const first = JSON.stringify({ text: `${padding}电脑` });
+		const second = JSON.stringify({ ref: "next", text: "adjacent" });
+		const third = JSON.stringify({ text: "tail".repeat(8_000) });
+		const sink = new OutputSink({
+			artifactPath,
+			artifactId: "jsonl-head",
+			spillThreshold: headBytes * 2,
+			headBytes,
+			tailBytes: headBytes,
+		});
+		for (const row of [first, second, third]) sink.push(`${row}\n`);
+		const dumped = await sink.dump();
+		const raw = await fs.readFile(artifactPath, "utf8");
+		expect(raw).toBe(`${first}\n${second}\n${third}\n`);
+		expect(
+			raw
+				.trimEnd()
+				.split("\n")
+				.map(line => JSON.parse(line)),
+		).toEqual([{ text: `${padding}电脑` }, { ref: "next", text: "adjacent" }, { text: "tail".repeat(8_000) }]);
+		expect(dumped.output.split("\n")[0]).toBe(rowPrefix + padding);
+		expect(dumped.output.endsWith('tail"}\n')).toBe(true);
+	});
+
 	test("replace + push appends to tail and emits no elision marker", async () => {
 		// Simulates the bash-minimizer flow: large raw stream is replaced with a
 		// short minimized text, then an artifact-link line is pushed. The push

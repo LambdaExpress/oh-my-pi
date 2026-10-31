@@ -8,7 +8,7 @@ Drive real Chromium tabs from JavaScript or Python Eval with the global `browser
 - `open` options: `name`, `url`, `app`, `viewport`, `wait_until`, `dialogs`, `allowed_domains`, `init_scripts`, `downloads`, `user_agent`, `ignore_https_errors`, `allow_file_access`, `headed`, `timeout`, `persist`.
 - `viewport`: `{width, height, scale?, deviceScaleFactor?, isMobile?, hasTouch?, isLandscape?}`; native scale overrides `scale`. Mobile/touch/orientation flags require Chromium.
 - `close` options: `name`, `all`, `kill`, `timeout`.
-- `open`, `close`, and `run` take `timeout` in seconds (default 30, capped by `tools.maxTimeout` when set, clamped to 1–300); `waitFor*` helpers take `timeout` in milliseconds.
+- `open`, `close`, and `run` take `timeout` in seconds (default 30, capped by `tools.maxTimeout` when set, clamped to 1–300); `waitFor*` helpers take `timeout` in milliseconds. A positive explicit direct-wait timeout expands its default host-call budget, subject to outer/global caps; waits inside `run` stay within that run's deadline.
 - Direct tab helpers:
   - Navigation: `url`, `title`, `goto`, `back`, `forward`, `reload`, `pushState`.
   - Inspection: `observe`, `ariaSnapshot`, `a11y`, `screenshot`, `diffScreenshot`, `pdf`, `extract`, `text`, `html`, `value`, `attr`, `count`, `box`, `styles`, `isVisible`, `isEnabled`, `isChecked`. `text()` and `html()` without a selector read the page `<body>`.
@@ -40,6 +40,7 @@ Drive real Chromium tabs from JavaScript or Python Eval with the global `browser
 - `tab.run` executes in an isolated JavaScript tab runtime with raw Puppeteer `page`/`browser`, ordinary Eval helpers, and full Bun/Node + tool-bridge access. It is not sandboxed.
 - Direct helpers and `tab.run` return real structured values. Nonempty inner `display` text prints in the outer Eval cell; screenshots surface as Eval images.
 - Selectors accept CSS plus Puppeteer `aria/…`, `text/…`, `xpath/…`, `pierce/…`, `label/…`, `placeholder/…`, `testid/…`, `alt/…`, `title/…`, and `role/<role>[name="…"]` query handlers; append ` exact` inside the role name filter for exact matching.
+- `text/Label exact` uses normalized exact text. An observed role name preserves accessible CSS-generated icons and whitespace and can be reused in a role selector. Unconfirmed input is never automatically replayed.
 - Navigation and re-renders invalidate observed ids and refs. Re-observe, then act in the same cell. Use `pushState(url)` for SPA navigation without a document load.
 - Use `tab.select` for `<select>` elements; `tab.fill` does not support them.
 - Raw `page.setRequestInterception` and `page.on("request")` inside `tab.run` coexist with persistent `tab.route` handlers and are cleaned up after that run; `tab.route` persists until `tab.unroute` or tab close.

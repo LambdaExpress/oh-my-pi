@@ -19,6 +19,8 @@ interface GitHubUrl {
 		| "other";
 	owner: string;
 	repo: string;
+	/** Unresolved ref/path tail of a tree or blob URL; repository refs determine its boundary. */
+	refPath?: string;
 	ref?: string;
 	path?: string;
 	number?: number;
@@ -54,8 +56,7 @@ export function parseGitHubUrl(url: string): GitHubUrl | null {
 		switch (section) {
 			case "blob":
 			case "tree": {
-				const [ref, ...pathParts] = subParts;
-				return { type: section, owner, repo, ref, path: pathParts.join("/") };
+				return { type: section, owner, repo, refPath: subParts.map(decodeURIComponent).join("/") };
 			}
 			case "commit":
 				if (subParts.length > 0 && subParts[0]) {
@@ -105,7 +106,8 @@ export function parseGitHubUrl(url: string): GitHubUrl | null {
  * Convert GitHub blob URL to raw URL
  */
 function toRawGitHubUrl(gh: GitHubUrl): string {
-	return `https://raw.githubusercontent.com/${gh.owner}/${gh.repo}/${gh.ref}/${gh.path}`;
+	const filePath = (gh.path ?? "").split("/").map(encodeURIComponent).join("/");
+	return `https://raw.githubusercontent.com/${gh.owner}/${gh.repo}/${encodeURIComponent(gh.ref ?? "")}/${filePath}`;
 }
 
 /**
@@ -143,6 +145,43 @@ export async function fetchGitHubApi(
 	} catch {
 		return { data: null, ok: false };
 	}
+}
+
+/**
+ * GitHub tree/blob URLs have no lexical delimiter between a slash-containing
+ * ref and the file path. Match repository heads/tags before interpreting it.
+ */
+async function resolveGitHubRef(
+	gh: GitHubUrl,
+	timeout: number,
+	signal?: AbortSignal,
+): Promise<{ ref: string; path: string } | { ambiguous: string[] } | null> {
+	const tail = gh.refPath;
+	if (!tail) return null;
+	const prefix = tail.split("/")[0];
+	const endpoint = `/repos/${gh.owner}/${gh.repo}`;
+	const [heads, tags] = await Promise.all(
+		["heads", "tags"].map(kind =>
+			fetchGitHubApi(`${endpoint}/git/matching-refs/${kind}/${encodeURIComponent(prefix)}`, timeout, signal),
+		),
+	);
+	if (!heads.ok || !tags.ok || !Array.isArray(heads.data) || !Array.isArray(tags.data)) return null;
+
+	const matches = new Map<string, string>();
+	for (const item of [...heads.data, ...tags.data] as Array<{ ref: string }>) {
+		const ref = item.ref.replace(/^refs\/(?:heads|tags)\//, "");
+		if (tail === ref || tail.startsWith(`${ref}/`)) matches.set(item.ref, ref);
+	}
+	if (matches.size > 1) return { ambiguous: [...matches.keys()] };
+	const ref = matches.values().next().value;
+	if (ref) return { ref, path: tail === ref ? "" : tail.slice(ref.length + 1) };
+
+	// A commit SHA (including an abbreviation) or HEAD is not a named ref.
+	// Resolve it through the commits API rather than guessing it exists.
+	const commit = await fetchGitHubApi(`${endpoint}/commits/${encodeURIComponent(prefix)}`, timeout, signal);
+	if (!commit.ok || !commit.data) return null;
+	const { sha } = commit.data as { sha: string };
+	return { ref: sha, path: tail === prefix ? "" : tail.slice(prefix.length + 1) };
 }
 
 /**
@@ -378,45 +417,45 @@ async function renderGitHubTree(
 	md += `**Branch:** ${ref}\n\n`;
 
 	// Fetch directory contents
+	const encodedPath = dirPath.split("/").map(encodeURIComponent).join("/");
 	const contentsResult = await fetchGitHubApi(
-		`/repos/${gh.owner}/${gh.repo}/contents/${dirPath}?ref=${ref}`,
+		`/repos/${gh.owner}/${gh.repo}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`,
 		timeout,
 		signal,
 	);
+	if (!contentsResult.ok || !Array.isArray(contentsResult.data)) return { content: "", ok: false };
 
-	if (contentsResult.ok && Array.isArray(contentsResult.data)) {
-		const items = contentsResult.data as Array<{
-			name: string;
-			type: "file" | "dir" | "symlink" | "submodule";
-			size?: number;
-			path: string;
-		}>;
+	const items = contentsResult.data as Array<{
+		name: string;
+		type: "file" | "dir" | "symlink" | "submodule";
+		size?: number;
+		path: string;
+	}>;
 
-		// Sort: directories first, then files, alphabetically
-		items.sort((a, b) => {
-			if (a.type === "dir" && b.type !== "dir") return -1;
-			if (a.type !== "dir" && b.type === "dir") return 1;
-			return a.name.localeCompare(b.name);
-		});
+	// Sort: directories first, then files, alphabetically
+	items.sort((a, b) => {
+		if (a.type === "dir" && b.type !== "dir") return -1;
+		if (a.type !== "dir" && b.type === "dir") return 1;
+		return a.name.localeCompare(b.name);
+	});
 
-		md += `## Contents\n\n`;
-		md += "```\n";
-		for (const item of items) {
-			const prefix = item.type === "dir" ? "[dir] " : "      ";
-			const size = item.size ? ` (${item.size} bytes)` : "";
-			md += `${prefix}${item.name}${item.type === "file" ? size : ""}\n`;
-		}
-		md += "```\n\n";
+	md += `## Contents\n\n`;
+	md += "```\n";
+	for (const item of items) {
+		const prefix = item.type === "dir" ? "[dir] " : "      ";
+		const size = item.size ? ` (${item.size} bytes)` : "";
+		md += `${prefix}${item.name}${item.type === "file" ? size : ""}\n`;
+	}
+	md += "```\n\n";
 
-		// Look for README in this directory
-		const readmeFile = items.find(item => item.type === "file" && /^readme\.md$/i.test(item.name));
-		if (readmeFile) {
-			const readmePath = dirPath ? `${dirPath}/${readmeFile.name}` : readmeFile.name;
-			const rawUrl = `https://raw.githubusercontent.com/${gh.owner}/${gh.repo}/${ref}/${readmePath}`;
-			const readmeResult = await loadPage(rawUrl, { timeout, signal });
-			if (readmeResult.ok) {
-				md += `---\n\n## README\n\n${readmeResult.content}`;
-			}
+	// Look for README in this directory
+	const readmeFile = items.find(item => item.type === "file" && /^readme\.md$/i.test(item.name));
+	if (readmeFile) {
+		const readmePath = dirPath ? `${dirPath}/${readmeFile.name}` : readmeFile.name;
+		const rawUrl = toRawGitHubUrl({ ...gh, ref, path: readmePath });
+		const readmeResult = await loadPage(rawUrl, { timeout, signal });
+		if (readmeResult.ok) {
+			md += `---\n\n## README\n\n${readmeResult.content}`;
 		}
 	}
 
@@ -702,11 +741,22 @@ export const handleGitHub: SpecialHandler = async (
 	timeout: number,
 	signal?: AbortSignal,
 ): Promise<RenderResult | null> => {
-	const gh = parseGitHubUrl(url);
+	let gh = parseGitHubUrl(url);
 	if (!gh) return null;
 
 	const fetchedAt = new Date().toISOString();
 	const notes: string[] = [];
+	if (gh.type === "tree" || gh.type === "blob") {
+		const resolution = await resolveGitHubRef(gh, timeout, signal);
+		if (!resolution) return null;
+		if ("ambiguous" in resolution) {
+			return buildResult(
+				`GitHub URL matches multiple repository refs: ${resolution.ambiguous.map(ref => `\`${ref}\``).join(", ")}.\nUse the GitHub contents API with an explicit ref to disambiguate this ref/path boundary.`,
+				{ url, method: "github-ref-ambiguous", fetchedAt },
+			);
+		}
+		gh = { ...gh, ...resolution };
+	}
 
 	switch (gh.type) {
 		case "blob": {

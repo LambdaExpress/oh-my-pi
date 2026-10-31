@@ -3027,6 +3027,9 @@ export const zhCN: Record<string, string> = {
 		"要测试的内联片段文本 (ttsr test) 或要扫描的目录 (ttsr scan)",
 	Input: "输入",
 	"Input Tokens: {count}": "输入 token 数：{count}",
+	"Input command completed, but Android did not confirm injection. The event may have been injected; do not repeat it automatically. Observe or wait for the required UI state.":
+		"输入命令已结束，但 Android 未确认事件注入。事件可能已经注入，请勿自动重复操作；请观察或等待所需的界面状态。",
+	"Input dispatch unconfirmed": "输入注入未确认",
 	"Input tokens: {count}": "输入 token：{count}",
 	"Input, approvals, notifications, speech and what happens at startup.": "输入、审批、通知、语音和启动行为。",
 	"Input:": "输入：",

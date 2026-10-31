@@ -13,6 +13,8 @@ describe("ZipPackage", () => {
 
 		expect(await zip.readText("a.xml")).toBe("a".repeat(600));
 		await expect(zip.readBytes("b.xml")).rejects.toThrow(ArchiveError);
+		await expect(zip.readBytes("b.xml")).rejects.toThrow(ArchiveError);
+		expect(await zip.readText("a.xml")).toBe("a".repeat(600));
 	});
 
 	it("counts a member re-read many times (a slide image reused across slides) only once", async () => {

@@ -255,6 +255,7 @@ const RENDERER_RELOADED_NOTE = `This tab's renderer had crashed, so the tab was 
 class NavigationTimeoutError extends ToolError {}
 /** The page's renderer crashed; the run that reports it recycles the worker. */
 class RendererCrashedError extends ToolError {}
+class MainFrameUnavailableError extends ToolError {}
 const REPORTED_INIT_FAILURE = Symbol("reported-init-failure");
 
 type ReportedInitFailure = Error & { [REPORTED_INIT_FAILURE]?: true };
@@ -301,6 +302,8 @@ export interface ManagedTabInfo {
 	kind: BrowserKindTag;
 	/** Whether settle and idle-close management are disabled. */
 	persist: boolean;
+	/** The target exists, but its cached main frame must be repaired before it can run code. */
+	mainFrameDetached?: boolean;
 }
 
 /** List the currently alive tabs in the managed-tab registry. */
@@ -314,6 +317,7 @@ export function listTabs(): ManagedTabInfo[] {
 			targetId: tab.targetId,
 			kind: tab.kindTag,
 			persist: tab.persist ?? false,
+			...(tab.info.mainFrameDetached ? { mainFrameDetached: true } : {}),
 		}));
 }
 
@@ -958,6 +962,19 @@ async function runInTabWithSnapshot(
 			);
 			return result;
 		} catch (error) {
+			if (error instanceof MainFrameUnavailableError) {
+				const reattached = await recoverWorkerTab(
+					tab,
+					name,
+					opts.timeoutMs,
+					"Browser main frame is unavailable; managed handle released",
+				);
+				throw new MainFrameUnavailableError(
+					reattached
+						? `${error.message}. The same target was reattached to a new worker; the original call was not replayed. ${RECYCLE_RESETS}`
+						: `${error.message}. The unusable managed handle was released; borrowed browser tabs were not closed.`,
+				);
+			}
 			if (error instanceof RendererCrashedError) {
 				const reattached = await recoverWorkerTab(
 					tab,
@@ -1670,6 +1687,21 @@ function handleTabMessage(tab: WorkerTabSession, msg: WorkerOutbound): void {
 		tab.info = msg.info;
 		return;
 	}
+	if (msg.type === "main-frame-state") {
+		tab.info.mainFrameDetached = msg.detached;
+		return;
+	}
+	if (msg.type === "target-closed") {
+		if (tabs.get(tab.name) === tab && tab.state === "alive") {
+			void forceKillTab(tab.name, "Browser target was closed").catch(error =>
+				logger.debug("Failed to release a closed browser target", {
+					name: tab.name,
+					error: error instanceof Error ? error.message : String(error),
+				}),
+			);
+		}
+		return;
+	}
 	if (msg.type === "tool-call") {
 		void dispatchToolCall(tab, msg);
 		return;
@@ -1837,7 +1869,7 @@ async function forceKillSurfaceTab(tab: CmuxTabSession | TernTabSession, name: s
  * ownership record and re-checks the shared browser, so a wedged Chromium cannot
  * hold the page past every later reap. The close is bounded exactly as
  * `releaseTabInner` bounds it — a release joining this teardown must not inherit
- * an unbounded CDP wait (Puppeteer's protocol timeout is 60 s). Teardown must
+ * a wait for Puppeteer's much longer emergency protocol timeout. Teardown must
  * still finish: the tab is already dead to its callers.
  */
 async function forceKillTabTeardown(tab: WorkerTabSession): Promise<void> {
@@ -1967,15 +1999,17 @@ async function targetIdForTarget(target: Target): Promise<string> {
 }
 
 function errorFromPayload(payload: RunErrorPayload): Error {
-	const error = payload.rendererCrashed
-		? new RendererCrashedError(payload.message)
-		: payload.isAbort
-			? new ToolAbortError()
-			: payload.navigationTimeout
-				? new NavigationTimeoutError(payload.message)
-				: payload.isToolError
-					? new ToolError(payload.message)
-					: new Error(payload.message);
+	const error = payload.mainFrameUnavailable
+		? new MainFrameUnavailableError(payload.message)
+		: payload.rendererCrashed
+			? new RendererCrashedError(payload.message)
+			: payload.isAbort
+				? new ToolAbortError()
+				: payload.navigationTimeout
+					? new NavigationTimeoutError(payload.message)
+					: payload.isToolError
+						? new ToolError(payload.message)
+						: new Error(payload.message);
 	error.name = payload.name;
 	if (payload.stack) error.stack = payload.stack;
 	return error;

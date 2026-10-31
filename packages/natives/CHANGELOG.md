@@ -14,6 +14,10 @@
 
 ### Fixed
 
+- Fixed complete patch lines beginning with literal numbers being mistaken for copied line numbers, and rejected fuzzy deletions of different source content before writes.
+- Fixed unrelated TypeScript parser recovery nodes blocking healthy AST edits; preview and apply still reject newly introduced syntax damage.
+- Fixed Git diff summaries omitting SQL comment deletions or mistaking header-shaped hunk content for new files.
+- Fixed Windows shell startup launching an uncancellable synchronous Git discovery process; discovery now respects each session's executable path.
 - Fixed fuzzy patch matching discarding unmatched structural punctuation even when similar punctuation appeared elsewhere in the replacement.
 - Fixed handler-owned remote notebook JSON being converted to local cell projections instead of preserving its original UTF-8 bytes.
 - Fixed C# summaries exposing executable bodies or hiding member declarations; signature projections retain exact source recovery ranges.

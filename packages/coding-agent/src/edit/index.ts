@@ -46,6 +46,7 @@ import {
 	invalidateFsScanAfterWrite,
 } from "../tools/fs-cache-invalidation";
 import { outputMeta } from "../tools/output-meta";
+import { unwrapHashlineHeaderPath } from "../tools/plan-mode-guard";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { type EditMode } from "@oh-my-pi/pi-tui/tools/edit";
 import { resolveEditMode } from "../utils/edit-mode";
@@ -346,25 +347,6 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 	return Buffer.from(left.buffer, left.byteOffset, left.byteLength).equals(right);
 }
 
-/**
- * Approval tier of the raw, untrusted payload, scanned before — and
- * independently of — the native parser's attribution.
- *
- * `#inspect` reports only the sections the native parser can attribute, so a
- * payload carrying a target in a form it cannot parse (or one whose section
- * header is a selector-suffixed URL) would otherwise reach the write tier.
- * {@link InternalUrlRouter.readTier} is the router's fail-closed substring
- * scan over every registered `scheme://` (mirroring the read/grep tools): a
- * literal `ssh://` anywhere is exec, and over-matching only over-prompts.
- */
-function approvalPayloadTier(args: unknown): ToolApprovalDecision {
-	const router = InternalUrlRouter.instance();
-	if (typeof args === "string") return router.readTier(args);
-	const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
-	const fields = [record.input, record.path].filter((value): value is string => typeof value === "string");
-	return strictestApproval(fields.map(field => router.readTier(field)));
-}
-
 export class EditTool implements AgentTool<TInput> {
 	readonly name = "edit";
 	readonly label = "Edit";
@@ -427,27 +409,21 @@ export class EditTool implements AgentTool<TInput> {
 	 * Strictest write decision ({@link strictestApproval}) over every path the payload writes:
 	 * section targets plus move/rename destinations. "write" while no target is known.
 	 *
-	 * Remote SSH edits open an outbound connection and run a remote shell to move the
-	 * file (same tier as the exec-gated `ssh` tool and `write`), so they must not be
-	 * classified by the internal-resource read/write split below. The payload is scanned
-	 * before the parsed targets: `#inspect` only reports sections it can attribute, and a
-	 * payload it cannot parse (or whose section names a `ssh://` selector) must still fail
-	 * closed at exec. A `ssh://` entry riding along with a workspace path stays exec —
-	 * every section of a multi-section payload is written.
+	 * Use write policy, never read policy: fixed SSH reads are read-safe, while
+	 * every remote mutation is exec. The active mode's native inspection supplies
+	 * the same target sections and move destinations that execution consumes;
+	 * text in a hunk is content, not an additional write target.
 	 */
 	readonly approval = (args: unknown): ToolApprovalDecision => {
 		const { paths, fileOps } = this.#inspect(args);
 		const targets = [...paths];
 		for (const op of fileOps) if (op.kind === "move" && op.to !== undefined) targets.push(op.to);
 		const router = InternalUrlRouter.instance();
-		// The payload scan runs even when the projection attributed no target: an
-		// unattributable payload is exactly the case that must fail closed.
-		const decisions: ToolApprovalDecision[] = [
-			approvalPayloadTier(args),
-			...targets.map(target => router.writeTier(target, undefined, this.session)),
-		];
-		if (targets.length === 0) decisions.push("write");
-		return strictestApproval(decisions);
+		return targets.length === 0
+			? "write"
+			: strictestApproval(
+					targets.map(target => router.writeTier(unwrapHashlineHeaderPath(target), undefined, this.session)),
+				);
 	};
 
 	readonly formatApprovalDetails = (args: unknown): string[] => {

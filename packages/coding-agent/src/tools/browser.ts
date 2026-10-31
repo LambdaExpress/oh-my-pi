@@ -16,6 +16,7 @@ import {
 } from "./browser/registry";
 import { ensureChromiumExecutable } from "./browser/launch";
 import { resolveInitScriptSources } from "./browser/open-options";
+import { resolveBrowserCallTimeout } from "./browser/op-timeouts";
 import { resolveRelayKind } from "./browser/relay/kind";
 import { describeTernTargets, listTernBlocks, type TernTarget, ternTargets } from "./browser/tern/blocks";
 import { resolveTernKind } from "./browser/tern/kind";
@@ -323,7 +324,11 @@ async function invokeBrowser(
 
 	try {
 		throwIfAborted(context.signal);
-		const timeoutSeconds = clampTimeout("browser", parsed.timeout, cfgToolsMaxTimeout.get(session.settings));
+		const timeoutSeconds = clampTimeout(
+			"browser",
+			parsed.timeout ?? (parsed.action === "call" ? resolveBrowserCallTimeout(parsed.chain ?? []) : undefined),
+			cfgToolsMaxTimeout.get(session.settings),
+		);
 		const timeoutMs = timeoutSeconds * 1000;
 		const name = parsed.name ?? DEFAULT_TAB_NAME;
 		const details: BrowserPreludeDetails = { action: parsed.action, name };

@@ -10,6 +10,8 @@ import {
 	untilAborted,
 } from "@oh-my-pi/pi-utils";
 import { encodeMessageFrame, MessageFramer } from "../jsonrpc/message-framing";
+import { hostHasInheritableConsole } from "../eval/py/spawn-options";
+import { resolveStdioSpawnCommand, type StdioSpawnCommand } from "../mcp/transports/stdio";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { getConfig } from "./config";
 import { applyWorkspaceEdit, type ExecutedWorkspaceChange } from "./edits";
@@ -149,6 +151,7 @@ function typeScriptProjectUnavailableMessage(client: LspClient, project: TypeScr
 	];
 	if (state?.version) lines.push(`TypeScript: ${state.version}${state.source ? ` (${state.source})` : ""}`);
 	if (state?.tsserverPath) lines.push(`tsserver path: ${state.tsserverPath}`);
+	if (project.error) lines.push(`Server diagnosis: ${project.error}`);
 	if (project.languageServiceDisabled === true) {
 		lines.push("tsserver reports languageServiceDisabled=true for this project.");
 	} else {
@@ -191,7 +194,7 @@ export async function prepareTypeScriptProject(
 	if (!supportsTsserverRequest(client.serverCapabilities)) return undefined;
 	throwIfAborted(signal);
 	await ensureFileOpen(client, filePath, signal);
-	let response: { body?: unknown } | null;
+	let response: { body?: unknown; success?: boolean } | null;
 	try {
 		response = (await sendRequest(
 			client,
@@ -205,7 +208,7 @@ export async function prepareTypeScriptProject(
 				],
 			},
 			signal,
-		)) as { body?: unknown } | null;
+		)) as { body?: unknown; success?: boolean } | null;
 	} catch (err) {
 		if (err instanceof Error && /\bno\s+project\b/i.test(err.message)) {
 			recordTypeScriptProjectFailure(client, filePath, err.message);
@@ -214,6 +217,7 @@ export async function prepareTypeScriptProject(
 	}
 	const body = response?.body;
 	if (
+		response?.success === false ||
 		!body ||
 		typeof body !== "object" ||
 		!("configFileName" in body) ||
@@ -221,9 +225,9 @@ export async function prepareTypeScriptProject(
 		!("languageServiceDisabled" in body) ||
 		typeof body.languageServiceDisabled !== "boolean"
 	) {
-		throw new Error(
-			`TypeScript projectInfo did not report a project and semantic availability for ${filePath} (workspace ${client.cwd}).`,
-		);
+		const message = `TypeScript projectInfo did not report a project and semantic availability for ${filePath} (workspace ${client.cwd}).`;
+		recordTypeScriptProjectFailure(client, filePath, message);
+		throw new Error(message);
 	}
 	const project: TypeScriptProjectStatus = {
 		file: filePath,
@@ -1431,12 +1435,30 @@ export async function getOrCreateClient(
 				});
 			}
 			throwIfAborted(initializationSignal);
-			proc ??= ptree.spawn([command, ...args], {
-				cwd,
-				stdin: "pipe",
-				env: env ? { ...Bun.env, ...env } : undefined,
-				detached: process.platform !== "win32",
-			});
+			if (!proc) {
+				const spawnEnv = env ? { ...Bun.env, ...env } : Bun.env;
+				const spawnCommand: StdioSpawnCommand =
+					process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command)
+						? await resolveStdioSpawnCommand(
+								{ command, args },
+								{
+									cwd,
+									env: spawnEnv,
+									platform: process.platform,
+									hostHasInheritableConsole: hostHasInheritableConsole(),
+								},
+							)
+						: { cmd: [command, ...args], detached: process.platform !== "win32" };
+				throwIfAborted(initializationSignal);
+				proc = ptree.spawn(spawnCommand.cmd, {
+					cwd,
+					stdin: "pipe",
+					env: spawnEnv,
+					detached: spawnCommand.detached,
+					windowsHide: spawnCommand.windowsHide,
+					windowsVerbatimArguments: spawnCommand.windowsVerbatimArguments,
+				});
+			}
 			if (proc instanceof ptree.ChildProcess) {
 				const localProcess = proc;
 				// A launcher can exit while descendants still own its pipes and memory.

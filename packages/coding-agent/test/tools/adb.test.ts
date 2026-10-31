@@ -5,12 +5,16 @@ import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentToolContext, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { toolWireSchema, validateJsonSchemaValue } from "@oh-my-pi/pi-ai/utils/schema";
-import type {
-	AdbBinaryResult,
-	AdbCommandOptions,
-	AdbCommandResult,
-	AdbDevice,
-	AndroidExecutableName,
+import {
+	type AdbBinaryResult,
+	type AdbCommandOptions,
+	type AdbCommandResult,
+	type AdbDevice,
+	type AdbExecutorDependencies,
+	type AdbSubprocess,
+	type AndroidExecutableName,
+	executeAdb,
+	executeAdbBinary,
 } from "@oh-my-pi/pi-coding-agent/adb/adb-executor";
 import type {
 	EmulatorManager,
@@ -33,22 +37,24 @@ import {
 	adbToolRenderer,
 } from "@oh-my-pi/pi-coding-agent/tools/adb";
 import { resolveApproval } from "@oh-my-pi/pi-coding-agent/tools/approval";
+import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
+import { encodeRawPng } from "@oh-my-pi/pi-coding-agent/utils/png-encode";
 import { formatStatusIcon } from "@oh-my-pi/pi-tui/render/render-utils";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 const SERIAL = "emulator serial 5554";
 const OTHER_SERIAL = "physical serial 2";
 const LISTED_SERIAL = "emulator-5554";
-const PNG = Uint8Array.from(
-	Buffer.from(
-		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",
-		"base64",
-	),
-);
+const PNG = encodeRawPng(Uint8Array.of(255, 0, 0, 255), 1, 1, 4);
 const UI_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <hierarchy rotation="0"><node text="登录" resource-id="app:id/login" content-desc="Sign in" class="android.widget.Button" package="app" enabled="true" clickable="true" bounds="[10,20][110,80]" /></hierarchy>`;
+const INPUT_WINDOWS = `Input Dispatcher State:
+  Display: 0
+    Windows:
+      0: name=app/.MainActivity, displayId=0, inputConfig={DEFAULT}, touchableRegion=[0,0][1080,2400], ownerPid=123`;
 const temporaryDirectories: string[] = [];
 const temporaryFiles: string[] = [];
+const testProcesses: AdbSubprocess[] = [];
 
 async function temporaryDirectory(): Promise<string> {
 	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "adb-tool-test-"));
@@ -58,6 +64,12 @@ async function temporaryDirectory(): Promise<string> {
 
 afterEach(async () => {
 	vi.restoreAllMocks();
+	await Promise.all(
+		testProcesses.splice(0).map(async child => {
+			if (child.exitCode === null) child.kill("SIGKILL");
+			await child.exited;
+		}),
+	);
 	await Promise.all([
 		...temporaryFiles.splice(0).map(file => fs.rm(file, { force: true })),
 		...temporaryDirectories.splice(0).map(directory => fs.rm(directory, { recursive: true, force: true })),
@@ -76,6 +88,29 @@ function session(cwd: string = os.tmpdir(), maxTimeout = 30): ToolSession {
 
 function commandResult(output = "ok\n", exitCode = 0): AdbCommandResult {
 	return { output, exitCode, cancelled: false } as AdbCommandResult;
+}
+
+async function subprocessTool(
+	script: string,
+	onSpawn?: (args: readonly string[], child: AdbSubprocess) => void,
+): Promise<AdbTool> {
+	const fixture = path.join(await temporaryDirectory(), "adb-fixture.ts");
+	await Bun.write(fixture, script);
+	const dependencies: Partial<AdbExecutorDependencies> = {
+		resolveExecutable: () => process.execPath,
+		spawn: (argv, options) => {
+			const args = argv.slice(1);
+			const child = Bun.spawn([process.execPath, fixture, ...args], options);
+			testProcesses.push(child);
+			onSpawn?.(args, child);
+			return child;
+		},
+	};
+	return new AdbTool(session(), {
+		resolveExecutable: () => process.execPath,
+		executeAdb: (args, options) => executeAdb(args, { ...options, dependencies }),
+		executeAdbBinary: (args, options) => executeAdbBinary(args, { ...options, dependencies }),
+	});
 }
 
 interface ManagerCalls {
@@ -104,6 +139,7 @@ function harness(
 		commandResult?: AdbCommandResult;
 		commandResults?: AdbCommandResult[];
 		binaryResult?: AdbBinaryResult;
+		toolSession?: Partial<ToolSession>;
 	} = {},
 ): Harness {
 	const devices = options.devices ?? [{ serial: SERIAL, state: "device", model: "Pixel Test" }];
@@ -176,17 +212,27 @@ function harness(
 		},
 		async executeAdb(args: readonly string[], commandOptions?: AdbCommandOptions) {
 			adbCalls.push({ args: [...args], options: commandOptions });
-			return options.commandResults?.shift() ?? nextCommandResult;
+			const result = options.commandResults?.shift() ?? nextCommandResult;
+			if (args[2] === "pull" && result.exitCode === 0 && !result.cancelled) {
+				await Bun.write(args.at(-1)!, "fake pulled file\n");
+			}
+			return result;
 		},
 		async executeAdbBinary(args: readonly string[], commandOptions?: AdbCommandOptions) {
 			binaryCalls.push({ args: [...args], options: commandOptions });
+			if (args[3] === "dumpsys") {
+				return { bytes: new TextEncoder().encode(INPUT_WINDOWS), exitCode: 0, cancelled: false };
+			}
 			return nextBinaryResult;
 		},
 		emulatorManager: manager,
 	};
 
 	return {
-		tool: new AdbTool(session(options.cwd, options.maxTimeout), dependencies),
+		tool: new AdbTool(
+			{ ...session(options.cwd, options.maxTimeout), ...options.toolSession } as ToolSession,
+			dependencies,
+		),
 		manager,
 		managerCalls,
 		adbCalls,
@@ -352,20 +398,72 @@ describe("AdbTool schema and device selection", () => {
 });
 
 describe("AdbTool UI interaction", () => {
+	it("returns independently parseable JSONL for adjacent multilingual and quoted UI labels", async () => {
+		const xml = UI_XML.replace('text="登录"', 'text="发送到&quot;电脑\\共享&#10;路径"').replace(
+			"</hierarchy>",
+			'<node text="更多" resource-id="app:id/more" package="app" bounds="[120,20][220,80]" /></hierarchy>',
+		);
+		const fake = harness({
+			binaryResult: { bytes: new TextEncoder().encode(xml), exitCode: 0, cancelled: false },
+		});
+		const observed = await fake.tool.execute("quoted-observation", { op: "observe", device: SERIAL });
+		const rows = text(observed)
+			.trimEnd()
+			.split("\n")
+			.map(line => JSON.parse(line));
+		expect(rows.slice(1).map(row => [row.text, row.resourceId])).toEqual([
+			['发送到"电脑\\共享\n路径', "app:id/login"],
+			["更多", "app:id/more"],
+		]);
+		expect(rows[1].ref).not.toBe(rows[2].ref);
+	});
+
+	it("preserves complete UTF-8 JSONL records in the artifact when the inline preview is bounded", async () => {
+		const artifactPath = path.join(await temporaryDirectory(), "observation.jsonl");
+		const label = `发送到"电脑\\${"字".repeat(600)}`;
+		const xml = UI_XML.replace('text="登录"', `text="${label.replaceAll('"', "&quot;")}"`);
+		const fake = harness({
+			binaryResult: { bytes: new TextEncoder().encode(xml), exitCode: 0, cancelled: false },
+			toolSession: {
+				settings: Settings.isolated({ "tools.artifactSpillThreshold": 1 }),
+				allocateOutputArtifact: async () => ({ path: artifactPath, id: "adb-observation" }),
+			},
+		});
+		const observed = await fake.tool.execute("spilled-observation", { op: "observe", device: SERIAL });
+		const complete = (await fs.readFile(artifactPath, "utf8"))
+			.trimEnd()
+			.split("\n")
+			.map(line => JSON.parse(line));
+		expect(complete[1].text).toBe(label);
+		expect(complete[1].ref).toBe(observed.details?.observation?.elements[0]?.ref);
+	});
+
 	it("lets a consumer click a ref from structured output and rejects it after raw device input", async () => {
 		const fake = harness({
+			commandResult: commandResult(""),
 			binaryResult: { bytes: new TextEncoder().encode(UI_XML), exitCode: 0, cancelled: false },
 		});
 		const observed = await fake.tool.execute("observe", { op: "observe", device: SERIAL });
 		const rows = Bun.JSONL.parse(text(observed)) as Array<{ ref?: string; text?: string }>;
 		const ref = rows.find(row => row.text === "登录")?.ref;
 		expect(ref).toBeDefined();
-		await fake.tool.execute("click", { op: "click", device: SERIAL, selector: { ref: ref! } });
+		const clicked = await fake.tool.execute("click", { op: "click", device: SERIAL, selector: { ref: ref! } });
+		expect(clicked.details?.inputDispatch).toBe("unconfirmed");
 		expect(fake.adbCalls.at(-1)?.args).toEqual(["-s", SERIAL, "shell", "input", "tap", "60", "50"]);
+		const uiTheme = await theme();
+		const rendered = render(adbToolRenderer.renderResult(clicked, { expanded: false, isPartial: false }, uiTheme));
+		expect(rendered).toContain(Bun.stripANSI(formatStatusIcon("warning", uiTheme)));
+		expect(rendered).not.toContain(Bun.stripANSI(formatStatusIcon("success", uiTheme)));
 
 		const next = await fake.tool.execute("observe-again", { op: "observe", device: SERIAL });
 		const nextRef = next.details?.observation?.elements[0]?.ref;
-		await fake.tool.execute("navigate", { op: "input", device: SERIAL, action: "keyevent", key: "HOME" });
+		const navigated = await fake.tool.execute("navigate", {
+			op: "input",
+			device: SERIAL,
+			action: "keyevent",
+			key: "HOME",
+		});
+		expect(navigated.details?.inputDispatch).toBe("unconfirmed");
 		const mutations = fake.adbCalls.length;
 		await expect(
 			fake.tool.execute("stale-click", { op: "click", device: SERIAL, selector: { ref: nextRef! } }),
@@ -378,10 +476,8 @@ describe("AdbTool argv and command behavior", () => {
 	it("passes serials, AVDs, commands, APKs and paths with spaces as individual argv elements", async () => {
 		const cwd = await temporaryDirectory();
 		const localPush = path.join(cwd, "folder with spaces", "push file.txt");
-		const localPull = path.join(cwd, "folder with spaces", "pull file.txt");
 		const apk = path.join(cwd, "build outputs", "app debug.apk");
 		const remotePush = "/sdcard/folder with spaces/push file.txt";
-		const remotePull = "/sdcard/folder with spaces/pull file.txt";
 		const shellCommand = "printf '%s' 'hello world'";
 		const tool = harness({ cwd });
 
@@ -395,17 +491,13 @@ describe("AdbTool argv and command behavior", () => {
 				args: { op: "push", device: SERIAL, localPath: localPush, remotePath: remotePush },
 				values: [localPush, remotePush],
 			},
-			{
-				args: { op: "pull", device: SERIAL, remotePath: remotePull, localPath: localPull },
-				values: [remotePull, localPull],
-			},
 			{ args: { op: "install", device: SERIAL, apkPath: apk }, values: [apk] },
 			{ args: { op: "uninstall", device: SERIAL, package: "com.example.app" }, values: ["com.example.app"] },
 			{
 				args: { op: "launch", device: SERIAL, package: "com.example.app", activity: ".MainActivity" },
 				values: ["com.example.app/.MainActivity"],
 			},
-			{ args: { op: "input", device: SERIAL, action: "text", text: "hello world" }, values: ["hello world"] },
+			{ args: { op: "input", device: SERIAL, action: "text", text: "hello world" }, values: ["'hello%sworld'"] },
 		] as const;
 
 		for (const operation of operations) {
@@ -426,8 +518,8 @@ describe("AdbTool argv and command behavior", () => {
 				{ op: "input", action: "swipe", x1: 1, y1: 2, x2: 30, y2: 40, durationMs: 550 },
 				["shell", "input", "swipe", "1", "2", "30", "40", "550"],
 			],
-			[{ op: "input", action: "text", text: "hello world" }, ["shell", "input", "text", "hello world"]],
-			[{ op: "input", action: "keyevent", key: "KEYCODE HOME" }, ["shell", "input", "keyevent", "KEYCODE HOME"]],
+			[{ op: "input", action: "text", text: "hello world" }, ["shell", "input", "text", "'hello%sworld'"]],
+			[{ op: "input", action: "keyevent", key: "KEYCODE HOME" }, ["shell", "input", "keyevent", "'KEYCODE HOME'"]],
 		] as const;
 		for (const [args, tail] of cases) {
 			await tool.tool.execute(`input-${args.action}`, args as never);
@@ -516,7 +608,123 @@ describe("AdbTool argv and command behavior", () => {
 	});
 });
 
+describe("AdbTool operation deadlines", () => {
+	for (const { phase, params } of [
+		{ phase: "devices", params: { op: "shell", command: "echo ready", timeout: 1 } },
+		{ phase: "identity", params: { op: "screenshot", timeout: 1 } },
+	] as const) {
+		it(`terminates a blocked ${phase} preflight within the operation budget`, async () => {
+			const tool = await subprocessTool(`
+				const args = process.argv.slice(2);
+				if (${JSON.stringify(phase)} === "devices" || args.includes("emu")) {
+					await Bun.sleep(60_000);
+				}
+				if (args[0] === "devices") {
+					process.stdout.write("List of devices attached\\n${LISTED_SERIAL}\\tdevice\\n");
+				}
+			`);
+			let watchdogFired = false;
+			const watchdog = setTimeout(() => {
+				watchdogFired = true;
+				for (const child of testProcesses) {
+					if (child.exitCode === null) child.kill("SIGKILL");
+				}
+			}, 2_500);
+			try {
+				await expect(tool.execute(`blocked-${phase}`, { ...params, device: LISTED_SERIAL })).rejects.toBeInstanceOf(
+					ToolError,
+				);
+				expect(watchdogFired).toBe(false);
+				expect(testProcesses.every(child => child.exitCode !== null)).toBe(true);
+			} finally {
+				clearTimeout(watchdog);
+			}
+		});
+	}
+
+	it("cancels and terminates an in-flight emulator identity lookup", async () => {
+		const identityStarted = Promise.withResolvers<void>();
+		const tool = await subprocessTool(
+			`
+				const args = process.argv.slice(2);
+				if (args[0] === "devices") {
+					process.stdout.write("List of devices attached\\n${LISTED_SERIAL}\\tdevice\\n");
+				} else {
+					await Bun.sleep(60_000);
+				}
+			`,
+			args => {
+				if (args.includes("emu")) identityStarted.resolve();
+			},
+		);
+		const controller = new AbortController();
+		let watchdogFired = false;
+		const watchdog = setTimeout(() => {
+			watchdogFired = true;
+			for (const child of testProcesses) {
+				if (child.exitCode === null) child.kill("SIGKILL");
+			}
+		}, 2_500);
+		try {
+			const pending = tool
+				.execute(
+					"cancel-identity",
+					{ op: "shell", device: LISTED_SERIAL, command: "echo ready", timeout: 5 },
+					controller.signal,
+				)
+				.catch(error => error);
+			await identityStarted.promise;
+			controller.abort();
+			expect(await pending).toBeInstanceOf(ToolAbortError);
+			expect(watchdogFired).toBe(false);
+			expect(testProcesses.every(child => child.exitCode !== null)).toBe(true);
+		} finally {
+			clearTimeout(watchdog);
+		}
+	});
+
+	it("shares one budget between preflight and the device command", async () => {
+		const tool = await subprocessTool(`
+			const args = process.argv.slice(2);
+			if (args[0] === "devices") {
+				await Bun.sleep(650);
+				process.stdout.write("List of devices attached\\n${LISTED_SERIAL}\\tdevice\\n");
+			} else if (args.includes("emu")) {
+				process.stdout.write("Test_AVD\\n");
+			} else {
+				await Bun.sleep(650);
+				process.stdout.write("command completed\\n");
+			}
+		`);
+		await expect(
+			tool.execute("shared-budget", { op: "shell", device: LISTED_SERIAL, command: "echo ready", timeout: 1 }),
+		).rejects.toBeInstanceOf(ToolError);
+	});
+});
+
 describe("AdbTool screenshots", () => {
+	it.each([
+		["header only", PNG.subarray(0, 33)],
+		["truncated IDAT", PNG.subarray(0, PNG.length - 16)],
+		["missing IEND", PNG.subarray(0, PNG.length - 12)],
+	])("rejects %s despite a PNG signature and readable dimensions", async (_name, bytes) => {
+		const fake = harness({ binaryResult: { bytes, exitCode: 0, cancelled: false } });
+		await expect(fake.tool.execute("truncated-screenshot", { op: "screenshot", device: SERIAL })).rejects.toThrow(
+			/PNG.*(?:truncated|IEND)/i,
+		);
+	});
+
+	it("requires actual image decoding even when chunk framing and checksums are valid", async () => {
+		const bytes = Buffer.from(PNG);
+		const idatLength = bytes.readUInt32BE(33);
+		bytes[41] = 0;
+		bytes.writeUInt32BE(Bun.hash.crc32(bytes.subarray(37, 41 + idatLength)) >>> 0, 41 + idatLength);
+		const fake = harness({ binaryResult: { bytes, exitCode: 0, cancelled: false } });
+		await expect(fake.tool.execute("invalid-deflate", { op: "screenshot", device: SERIAL })).rejects.toBeInstanceOf(
+			ToolError,
+		);
+	});
+
 	it("preserves arbitrary PNG bytes on disk and returns a PNG image block with dimensions", async () => {
 		const cwd = await temporaryDirectory();
 		const tool = harness({ cwd, binaryResult: { bytes: PNG, exitCode: 0, cancelled: false } });

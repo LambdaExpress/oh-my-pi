@@ -1,5 +1,6 @@
 import type { ReadToolDetails } from "@oh-my-pi/pi-tui/tools/read";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { type EditStore, notebookToEditableText } from "@oh-my-pi/pi-natives";
 import { type } from "@oh-my-pi/omptype";
@@ -151,7 +152,7 @@ import {
 import { splitAddressableFileLines } from "@oh-my-pi/pi-tui/tools/hashline-format";
 import { readBinary, resolveBinaryViewPath } from "./read-binary";
 import { readSqlite, resolveSqliteReadPath } from "./read-sqlite";
-import { readJson, resolveJsonReadPath, splitJsonQueryTarget } from "./read-json";
+import { parseJsonSelector, readJson, resolveJsonReadPath, splitJsonQueryTarget } from "./read-json";
 import {
 	getReadTextFileBridge,
 	isProseSummaryPath,
@@ -1698,6 +1699,30 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			}
 			const sshHosts =
 				extractUriScheme(peeled.path) === "ssh" ? await this.session.getSessionSshHosts?.() : undefined;
+			// jq belongs to read, not the SSH URI's filename. Consume it before
+			// the protocol rejects URL queries, retaining literal %3F path bytes.
+			const sshJsonTarget = extractUriScheme(peeled.path) === "ssh" ? splitJsonQueryTarget(peeled.path) : null;
+			const sshJsonSelector = sshJsonTarget ? parseJsonSelector(sshJsonTarget.queryString) : null;
+			if (sshJsonTarget && sshJsonSelector) {
+				const resource = await internalRouter.resolve(
+					sshJsonTarget.jsonPath,
+					sessionResolveContext(this.session, { signal, sshHosts }),
+				);
+				if (resource.isDirectory) throw new ToolError("JSON queries require a file, not a remote directory.");
+				const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-read-json-"));
+				try {
+					const absolutePath = path.join(tempDir, "source.json");
+					await Bun.write(absolutePath, resource.content);
+					return await readJson(
+						this.session,
+						{ absolutePath, selector: sshJsonSelector, sourceInternal: peeled.path },
+						peeled.sel,
+						signal,
+					);
+				} finally {
+					await fs.rm(tempDir, { recursive: true, force: true });
+				}
+			}
 			const target = await internalRouter.target(
 				normalizedPath,
 				sessionResolveContext(this.session, { signal, sshHosts }),

@@ -123,6 +123,8 @@ export interface ReadyInfo {
 	title?: string;
 	viewport: { width: number; height: number; deviceScaleFactor?: number };
 	targetId: string;
+	/** A live target whose cached main frame is unusable; the next run repairs it before user code. */
+	mainFrameDetached?: boolean;
 }
 
 export interface RunResultOk {
@@ -141,6 +143,8 @@ export interface RunErrorPayload {
 	navigationTimeout?: boolean;
 	/** The page's renderer crashed; the worker runs nothing more and must be recycled. */
 	rendererCrashed?: boolean;
+	/** Main-frame repair failed before any user code ran; reattach without replaying the call. */
+	mainFrameUnavailable?: boolean;
 }
 
 export type WorkerOutbound =
@@ -161,6 +165,8 @@ export type WorkerOutbound =
 			targetId: string;
 	  }
 	| { type: "ready"; info: ReadyInfo }
+	| { type: "main-frame-state"; detached: boolean }
+	| { type: "target-closed" }
 	| { type: "init-failed"; error: RunErrorPayload }
 	| { type: "result"; id: string; ok: true; payload: RunResultOk }
 	| { type: "result"; id: string; ok: false; error: RunErrorPayload }

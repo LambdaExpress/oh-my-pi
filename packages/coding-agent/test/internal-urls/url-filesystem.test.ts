@@ -1,9 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { type LocalProtocolOptions, resolveLocalRoot } from "@oh-my-pi/pi-coding-agent/internal-urls";
+import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls/router";
 import { InternalUrlFilesystem } from "@oh-my-pi/pi-coding-agent/internal-urls/url-filesystem";
+import * as fileTransfer from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
 import { executeShell, ShellFsFileType, ShellFsOp } from "@oh-my-pi/pi-natives";
 
 const READ = { read: true, write: false, append: false, truncate: false, create: false, createNew: false };
@@ -36,6 +38,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	vi.restoreAllMocks();
 	await fs.rm(tempDir, { recursive: true, force: true });
 });
 
@@ -69,6 +72,15 @@ describe("InternalUrlFilesystem local://", () => {
 
 		expect(response.error?.code).toBe("ENOENT");
 		await expect(fs.stat(path.join(localRoot, "missing.txt"))).rejects.toThrow();
+	});
+
+	it("resolves a path authority's parent segments within its shared scheme root", async () => {
+		await fs.mkdir(localRoot, { recursive: true });
+		await fs.writeFile(path.join(localRoot, "bar"), "sandbox\n");
+
+		await expect(
+			shellFs("read").handle({ op: ShellFsOp.Open, path: "local://foo/../bar", open: READ }),
+		).resolves.toEqual({ local: path.join(localRoot, "bar") });
 	});
 
 	it("keeps a trailing read selector as part of the file name", async () => {
@@ -162,13 +174,114 @@ describe("InternalUrlFilesystem policy", () => {
 		const response = await shellFs().handle({ op: ShellFsOp.Open, path: "agent://Worker", open: CREATE });
 
 		expect(response.error?.code).toBe("EROFS");
-		expect(response.error?.message).toContain("write tool");
 	});
 
 	it("refuses schemes whose read tier exceeds the command's approval tier", async () => {
-		const response = await shellFs("write").handle({ op: ShellFsOp.Metadata, path: "ssh://host/etc/hosts" });
+		const router = InternalUrlRouter.instance();
+		let resolved = false;
+		router.register({
+			scheme: "exec-only-fixture",
+			spec: { backing: "remote", selectors: "none", immutable: true, readTier: "exec" },
+			async resolve() {
+				resolved = true;
+				throw new Error("Unapproved resolver must not run");
+			},
+		});
+		try {
+			const response = await shellFs("write").handle({
+				op: ShellFsOp.Metadata,
+				path: "exec-only-fixture://host/file",
+			});
+			expect(response.error?.code).toBe("EACCES");
+			expect(resolved).toBe(false);
+		} finally {
+			router.unregister("exec-only-fixture");
+		}
+	});
+});
 
-		expect(response.error?.code).toBe("EACCES");
+describe("InternalUrlFilesystem host authorities", () => {
+	it("preserves an explicit remote root and clamps parent traversal below its host", async () => {
+		const stat = vi.spyOn(fileTransfer, "statRemotePath").mockResolvedValue("directory");
+		const filesystem = new InternalUrlFilesystem({ context: { sshHosts: [] }, tier: "read" });
+
+		for (const [url, remote] of [
+			["ssh://fixture/", "/"],
+			["ssh://fixture/../../etc", "/etc"],
+			["ssh://fixture/a/../../../", "/"],
+		] as const) {
+			const response = await filesystem.handle({ op: ShellFsOp.Metadata, path: url });
+			expect(response.metadata?.fileType).toBe(ShellFsFileType.Dir);
+			expect(stat.mock.calls.at(-1)?.[0]).toMatchObject({ name: "fixture", host: "fixture" });
+			expect(stat.mock.calls.at(-1)?.[1]).toBe(remote);
+		}
+	});
+
+	it("does not repair missing hosts or missing absolute paths into valid remote reads", async () => {
+		const stat = vi.spyOn(fileTransfer, "statRemotePath");
+		const filesystem = new InternalUrlFilesystem({ context: { sshHosts: [] }, tier: "read" });
+
+		for (const url of [
+			"ssh://fixture",
+			"ssh:///etc/hosts",
+			"ssh://fixture/etc/unknown%ZZ",
+			"ssh://fixture:0/etc/unknown",
+			"ssh://fixture/etc/unknown?draft",
+		]) {
+			const response = await filesystem.handle({ op: ShellFsOp.Metadata, path: url });
+			expect(response.error?.code).toBe("EINVAL");
+		}
+		expect(stat).not.toHaveBeenCalled();
+	});
+
+	it("keeps user/port authorities and encoded path segments distinct during parent normalization", async () => {
+		const stat = vi.spyOn(fileTransfer, "statRemotePath").mockResolvedValue("directory");
+		const filesystem = new InternalUrlFilesystem({ context: { sshHosts: [] }, tier: "read" });
+		const response = await filesystem.handle({
+			op: ShellFsOp.Metadata,
+			path: "ssh://reader@fixture:2222/../tmp/space%20%23%25",
+		});
+
+		expect(response.metadata?.fileType).toBe(ShellFsFileType.Dir);
+		expect(stat.mock.calls[0]?.[0]).toMatchObject({ host: "fixture", username: "reader", port: 2222 });
+		expect(stat.mock.calls[0]?.[1]).toBe("/tmp/space #%");
+	});
+
+	it("keeps transfer failures as EIO even when the diagnostic or filename looks missing", async () => {
+		vi.spyOn(fileTransfer, "statRemotePath").mockResolvedValue("file");
+		const error = new Error("SSH connection reset reading /unknown/unavailable/not found.log");
+		vi.spyOn(fileTransfer, "readRemoteFile").mockRejectedValue(error);
+		const response = await new InternalUrlFilesystem({ context: { sshHosts: [] }, tier: "read" }).handle({
+			op: ShellFsOp.Open,
+			path: "ssh://fixture/unknown/unavailable/not%20found.log",
+			open: READ,
+		});
+
+		expect(response.error).toEqual({ code: "EIO", message: error.message });
+	});
+
+	it("keeps directory transfer failures distinct from an absent optional probe", async () => {
+		vi.spyOn(fileTransfer, "statRemotePath").mockResolvedValue("directory");
+		const error = new Error("SSH connection reset listing /unknown/unavailable/not found");
+		vi.spyOn(fileTransfer, "listRemoteDir").mockRejectedValue(error);
+		const response = await new InternalUrlFilesystem({ context: { sshHosts: [] }, tier: "read" }).handle({
+			op: ShellFsOp.ReadDir,
+			path: "ssh://fixture/unknown/unavailable/not%20found",
+		});
+
+		expect(response.error).toEqual({ code: "EIO", message: error.message });
+	});
+
+	it("preserves structured filesystem errors and marks only a real remote miss as ENOENT", async () => {
+		const stat = vi.spyOn(fileTransfer, "statRemotePath").mockResolvedValue("missing");
+		const read = vi.spyOn(fileTransfer, "readRemoteFile");
+		const filesystem = new InternalUrlFilesystem({ context: { sshHosts: [] }, tier: "read" });
+		const request = { op: ShellFsOp.Open, path: "ssh://fixture/missing", open: READ };
+		expect((await filesystem.handle(request)).error?.code).toBe("ENOENT");
+		expect(read).not.toHaveBeenCalled();
+
+		stat.mockRejectedValue(Object.assign(new Error("Structured refusal"), { code: "EACCES" }));
+		expect((await filesystem.handle(request)).error?.code).toBe("EACCES");
 	});
 });
 

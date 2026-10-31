@@ -11,7 +11,7 @@ import type {
 	AgentToolUpdateCallback,
 	ToolTier,
 } from "@oh-my-pi/pi-agent-core";
-import { type EditStore, type GrepMatch, GrepOutputMode, type GrepResult, grep } from "@oh-my-pi/pi-natives";
+import { type EditStore, type GrepMatch, GrepOutputMode, type GrepResult, grep, ShellFsOp } from "@oh-my-pi/pi-natives";
 import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import {
@@ -886,13 +886,11 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 			}
 			const scopedPaths = toPathList(rawPath);
 			const effectivePaths = scopedPaths.length > 0 ? scopedPaths : ["."];
-			const rawEntries = await expandDelimitedPathEntries(effectivePaths, this.session.cwd);
-			const pathSpecs = await parsePathSpecs(rawEntries, this.session.cwd);
 			const resolveContext = sessionResolveContext(this.session, { signal });
 			// Session SSH aliases live in session state, not in the user's ssh config, so a
 			// search over `ssh://` entries has to carry them into the resolver. Skip the
 			// (async) host load for ordinary paths.
-			const sshHosts = pathSpecs.some(spec => SSH_PATH_RE.test(spec.clean))
+			const sshHosts = effectivePaths.some(entry => SSH_PATH_RE.test(entry))
 				? await this.session.getSessionSshHosts?.()
 				: undefined;
 			// Internal URLs resolve inside the native search, bounded by the tier this call was approved at.
@@ -901,6 +899,10 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 				tier: resolveToolTier(this, params),
 			});
 			const filesystem = urlFilesystem.shellFilesystem();
+			const rawEntries = await expandDelimitedPathEntries(effectivePaths, this.session.cwd, {
+				filesystem: urlFilesystem,
+			});
+			const pathSpecs = await parsePathSpecs(rawEntries, this.session.cwd);
 			const materializedExternalPaths = new Map<string, string>();
 			const materializeExternalUrlForSearch = async (rawPath: string) => {
 				const target = parseReadUrlTarget(rawPath);
@@ -958,6 +960,50 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 				// archive entries are keyed by scratch path, external URL entries by read-cache
 				// content path, internal URLs by their URL, and ordinary files by their resolved path.
 				const router = InternalUrlRouter.instance();
+				const searchRoots = new Map<string, string>();
+				const addSearchRoot = (root: string) => {
+					const key = normalizeAbsolutePathKey(root);
+					const separator = router.canHandle(root) ? "/" : path.sep;
+					searchRoots.set(key, key.endsWith(separator) ? key : `${key}${separator}`);
+				};
+				const isSearchDescendant = (key: string) => {
+					for (const prefix of searchRoots.values()) {
+						if (key.startsWith(prefix)) return true;
+					}
+					return false;
+				};
+				for (const root of exactFilePaths ?? multiTargets?.map(target => target.basePath) ?? [searchPath]) {
+					addSearchRoot(root);
+				}
+				// Native grep skips unreadable entries, and its walker probes optional
+				// repository/ignore ancestors all the way to scheme://. Those probes
+				// can cross an authority mount (ssh://host/) into invalid URLs such
+				// as ssh://.git; they are not searched resources. Preserve failures
+				// only for the actual scan roots and their descendants, without
+				// weakening transport/truncation errors inside that scope.
+				let filesystemFailure: string | undefined;
+				const handleFilesystem = filesystem.handler;
+				filesystem.handler = async (error, request) => {
+					const response = await handleFilesystem(error, request);
+					const key = request.path === undefined ? undefined : normalizeAbsolutePathKey(request.path);
+					const isScopeRoot = key !== undefined && searchRoots.has(key);
+					const inScope = key === undefined || isScopeRoot || isSearchDescendant(key);
+					if (isScopeRoot && request.op === ShellFsOp.Canonicalize && response.path !== undefined) {
+						// Native walks use the canonical root. Keep its spelling in scope
+						// too (e.g. a root authored with `.` or a differently cased scheme).
+						addSearchRoot(response.path);
+					}
+					if (
+						inScope &&
+						response.error &&
+						response.error.code !== "ENOENT" &&
+						response.error.code !== "ENOTDIR" &&
+						filesystemFailure === undefined
+					) {
+						filesystemFailure = `Cannot search ${request.path ?? "internal URL"}: ${response.error.message}`;
+					}
+					return response;
+				};
 				for (let idx = 0; idx < pathSpecs.length; idx++) {
 					const spec = pathSpecs[idx];
 					if (!spec.ranges) continue;
@@ -973,10 +1019,11 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 						const absKey = router.canHandle(resolved)
 							? resolved
 							: path.resolve(resolveReadPath(resolved, this.session.cwd));
-						const stats = await urlFilesystem.stat(absKey).catch(() => null);
-						if (!stats) {
-							throw new ToolError(`Path not found for line-range selector: ${spec.original}`);
-						}
+						const stats = await urlFilesystem.stat(absKey).catch((error: unknown) => {
+							throw new ToolError(
+								`Cannot search line-range target ${spec.original}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						});
 						if (stats.type !== "file") {
 							throw new ToolError(`Line-range selector requires a single file: ${spec.original} is a directory`);
 						}
@@ -1176,6 +1223,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					}
 					throw err;
 				}
+				if (filesystemFailure !== undefined) throw new ToolError(filesystemFailure);
 				if (rangesByAbsPath.size > 0) {
 					const filteredMatches: GrepMatch[] = [];
 					for (const match of result.matches) {

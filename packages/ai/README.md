@@ -973,12 +973,16 @@ For Anthropic Foundry routing, set `CLAUDE_CODE_USE_FOUNDRY=true` plus:
 `FOUNDRY_BASE_URL`, `ANTHROPIC_FOUNDRY_API_KEY`, optional `ANTHROPIC_CUSTOM_HEADERS`,
 and optional mTLS material (`CLAUDE_CODE_CLIENT_CERT`, `CLAUDE_CODE_CLIENT_KEY`).
 
-`NODE_EXTRA_CA_CERTS` (PEM file path or inline PEM, mirroring Node's contract)
-is honoured on every provider fetch — OpenAI-compatible, Codex, Ollama, Azure
-Responses, Google, and Anthropic alike — for corporate relays or private CA
-bundles. Bun's `fetch` does not consume the env var natively, so omp injects
-the bundle into `RequestInit.tls.ca` and seeds the system root store
-alongside it.
+`NODE_EXTRA_CA_CERTS` accepts a PEM file path or inline PEM and applies to
+provider fetch requests and Codex WebSocket connections. The extra bundle
+is added to the runtime's default certificate store; an explicit `tls.ca`
+list remains curated and receives only the extra bundle.
+
+Windows system certificates participate when enabled through
+`NODE_USE_SYSTEM_CA=1` or `--use-system-ca`. OMP does not enable that policy
+or disable certificate verification automatically. These client settings
+do not configure an external MCP server's own HTTPS downloads; diagnose
+certificate failures against the failing process and destination host.
 
 Provider endpoint defaults for the current OpenAI-compatible integrations:
 

@@ -156,10 +156,14 @@ execute(toolCallId, params, onUpdate, ctx, signal);
 - `params` is statically typed from its omptype or TypeBox schema via `Static<TParams>`.
 - Runtime argument validation happens before execution in the agent loop.
 - `onUpdate` emits partial results for UI streaming.
-- `ctx` includes `sessionManager`, `modelRegistry`, current `model`, `isIdle()`, `hasQueuedMessages()`, `abort()`, and `localProtocolOptions`. The public context type also permits `settings`, `fetch`, and `autoApprove`, but the normal SDK conversion does not populate those three fields.
+- `ctx` includes `sessionManager`, `modelRegistry`, current `model`, `isIdle()`, `hasQueuedMessages()`, `abort()`, `localProtocolOptions`, and a per-execution `fetch` capability. SDK-provided fetch honors configured extra CA certificates while preserving the runtime's enabled default trust store. The public type also permits `settings` and `autoApprove`, which the normal SDK conversion does not populate.
 - `signal` carries cancellation and may be `undefined`.
 
 The session bootstrap bridge converts custom tools to extension `ToolDefinition`s and forwards calls in the correct argument order. `CustomToolAdapter` remains available to library consumers that directly adapt a custom tool to the agent tool interface.
+
+Use the calling context's `fetch` throughout a tool's request chain, including authentication refreshes and redirected content requests. Direct adapter hosts may omit it or supply their own policy; an explicitly supplied fetch is forwarded unchanged. Do not retain a mutable fetch implementation at module scope, where concurrent sessions could overwrite each other's HTTP policy.
+
+Extra CA support does not make an unknown certificate valid. Request diagnostics should preserve the actual error code, request stage, and known host without exposing credentials or signed query strings. A generic socket-open error may conceal a TLS or network cause; a redirect's failing host remains unknown unless the transport supplies evidence. This capability applies to in-process custom tools, not a separate MCP server's certificate stack.
 
 Tool definitions may also declare `strict`, `hidden`, `loadMode`, `deferrable`, `readsSkillUris`, `mcpServerName`, `mcpToolName`, `legacyName`, and `approval`. When `loadMode` is omitted, custom tool names default to `"discoverable"` except for the canonical essential built-in names (`read`, `write`, `bash`, `edit`, `glob`, `find`, `eval`, `task`, `wait`, `learn`, `manage_skill`, `context_notes`, and `new_context`), which default to `"essential"` so wrappers or re-registrations do not demote them. An explicit `loadMode` always wins; use `"essential"` to keep any other tool top-level.
 

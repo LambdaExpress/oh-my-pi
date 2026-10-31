@@ -100,7 +100,7 @@ export interface CustomToolContext {
 	abort(): void;
 	/** Settings instance for the current session. Prefer over the global singleton. */
 	settings?: Settings;
-	/** Fetch implementation for outbound HTTP; defaults to global fetch when omitted. */
+	/** Per-execution HTTP capability; SDK contexts include extra-CA support, while direct adapters may omit it. */
 	fetch?: FetchImpl;
 	/** Calling session's `local://` root mapping for tools that bridge out of the OMP process. */
 	localProtocolOptions?: LocalProtocolOptions;

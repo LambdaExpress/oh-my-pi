@@ -1197,7 +1197,9 @@ fn ast_edit_blocking(
 		};
 
 		let ast = language.ast_grep(&source);
-		if has_parse_error(&ast) {
+		if (fail_on_parse_error || !matches!(language, SupportLang::TypeScript | SupportLang::Tsx))
+			&& has_parse_error(&ast)
+		{
 			let parse_issue =
 				format!("{}: parse error (syntax tree contains error nodes)", candidate.display_path);
 			if fail_on_parse_error {
@@ -1263,15 +1265,26 @@ fn ast_edit_blocking(
 			limit_reached = true;
 			break;
 		}
+		// Preview and apply share the same syntax boundary. TypeScript grammar
+		// recovery elsewhere in the file must not reject a healthy local edit,
+		// and an accepted rewrite must not introduce new recovery nodes.
+		let output = apply_edits(&source, file_changes.iter().map(|entry| &entry.edit))?;
+		if let Err(error) =
+			shared_ops::validate_rewrite(&ast, &output, file_changes.iter().map(|entry| &entry.edit))
+		{
+			let parse_issue = format!("{}: {error}", candidate.display_path);
+			if fail_on_parse_error {
+				return Err(Error::from_reason(parse_issue));
+			}
+			parse_errors.push(parse_issue);
+			continue;
+		}
 		files_touched = files_touched.saturating_add(1);
 		file_counts.insert(candidate.display_path.clone(), to_u32(file_changes.len()));
 
-		if !dry_run {
-			let output = apply_edits(&source, file_changes.iter().map(|entry| &entry.edit))?;
-			if output != source {
-				pending_writes
-					.push(PendingWrite { absolute_path: candidate.absolute_path.clone(), output });
-			}
+		if !dry_run && output != source {
+			pending_writes
+				.push(PendingWrite { absolute_path: candidate.absolute_path.clone(), output });
 		}
 
 		changes.extend(file_changes.into_iter().map(|entry| entry.change));
@@ -1348,6 +1361,73 @@ mod tests {
 	const BROKEN_PYTHON: &str = "def broken(:\n    print(\"BADPY_MARKER\")\n";
 	const VALID_PYTHON: &str = "def working():\n    print(\"BADPY_MARKER\")\n";
 	const REWRITTEN_PYTHON: &str = "def working():\n    repr(\"BADPY_MARKER\")\n";
+	const TYPED_JEST: &str = r#"const ActualHomeService = jest.requireActual<typeof import("../../services/home-service")>(
+  "../../services/home-service",
+).default;
+expect(root.settingsStore.setRetryFunc).not.toHaveBeenCalled();
+mockRespondArrival.mockResolvedValueOnce(undefined);
+"#;
+
+	fn edit_typescript_file(
+		path: &Path,
+		replacement: &str,
+		dry_run: bool,
+	) -> Result<AstReplaceResult> {
+		ast_edit_blocking(
+			task::CancelToken::default(),
+			&BlockingFs::native(),
+			Some(HashMap::from([(
+				"root.settingsStore.setRetryFunc".to_owned(),
+				replacement.to_owned(),
+			)])),
+			None,
+			Some(path.to_string_lossy().into_owned()),
+			None,
+			None,
+			None,
+			Some(dry_run),
+			None,
+			None,
+			Some(false),
+		)
+	}
+
+	#[test]
+	fn ast_edit_typescript_local_recovery_previews_and_applies() {
+		let tree = make_temp_tree();
+		let path = tree.root.join("home-store-activities.test.ts");
+		fs::write(&path, TYPED_JEST).expect("reported Jest fixture should be written");
+		for dry_run in [true, false] {
+			let result = edit_typescript_file(&path, "root.settingsStore.requestReadRetry", dry_run)
+				.expect("unrelated TypeScript recovery must not block the edit");
+			assert_eq!(result.total_replacements, 1);
+			assert_eq!(result.files_touched, 1);
+			assert!(result.parse_errors.is_none());
+			let expected = if dry_run {
+				TYPED_JEST.to_owned()
+			} else {
+				TYPED_JEST
+					.replace("root.settingsStore.setRetryFunc", "root.settingsStore.requestReadRetry")
+			};
+			assert_eq!(fs::read_to_string(&path).unwrap(), expected);
+		}
+	}
+
+	#[test]
+	fn ast_edit_typescript_local_recovery_rejects_new_errors_without_writing() {
+		let tree = make_temp_tree();
+		let path = tree.root.join("home-store-activities.test.ts");
+		fs::write(&path, TYPED_JEST).expect("reported Jest fixture should be written");
+		for dry_run in [true, false] {
+			let result = edit_typescript_file(&path, "root.settingsStore.requestReadRetry(", dry_run)
+				.expect("tolerant mode should report and skip the invalid rewrite");
+			assert_eq!(result.total_replacements, 0);
+			assert_eq!(result.files_touched, 0);
+			assert!(result.changes.is_empty());
+			assert_eq!(result.parse_errors.as_ref().map(Vec::len), Some(1));
+			assert_eq!(fs::read_to_string(&path).unwrap(), TYPED_JEST);
+		}
+	}
 
 	#[test]
 	fn detects_missing_python_token_and_preserves_recovered_matches() {

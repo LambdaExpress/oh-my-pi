@@ -337,10 +337,19 @@ export class EmulatorManager {
 		return startPromise;
 	}
 
-	async status(serial?: string): Promise<AdbDevice> {
-		const devices = await this.#devices("device status");
+	async status(serial: string | undefined, timeoutMs: number, signal?: AbortSignal): Promise<AdbDevice> {
+		if (timeoutMs <= 0 || !Number.isFinite(timeoutMs)) {
+			throw new ToolError("Device status timeout must be a positive finite number of milliseconds.");
+		}
+		const deadline = this.#dependencies.now() + timeoutMs;
+		const devices = await this.#devices("device status", signal, timeoutMs);
+		throwIfAborted(signal);
+		const remaining = this.#remaining(deadline);
+		if (remaining <= 0) throw new ToolError("ADB command timed out during device status.");
 		const selected = this.#selectOnlineDevice(devices, serial);
-		const avdName = await this.#tryAvdName(selected.serial, undefined, undefined);
+		const avdName = await this.#probeAvdName(selected.serial, remaining, signal);
+		throwIfAborted(signal);
+		if (this.#remaining(deadline) <= 0) throw new ToolError("ADB command timed out during emulator identity.");
 		return avdName ? { ...selected, avdName } : selected;
 	}
 
@@ -673,11 +682,11 @@ export class EmulatorManager {
 		return result ? parseAvdName(result.output) : undefined;
 	}
 
-	async #probeAvdName(serial: string, timeoutMs: number): Promise<string | undefined> {
+	async #probeAvdName(serial: string, timeoutMs: number, signal?: AbortSignal): Promise<string | undefined> {
 		const result = await this.#adb(
 			["-s", serial, "emu", "avd", "name"],
 			"emulator identity",
-			undefined,
+			signal,
 			timeoutMs,
 			true,
 		);

@@ -1251,7 +1251,10 @@ async function renderUrl(
 				}
 
 				const dimensionNote = formatDimensionNote(resized);
-				let imageSummary = `Fetched image content (${resized.mimeType}).`;
+				let imageSummary = `Fetched image content (${imageMimeType}).`;
+				if (resized.mimeType !== imageMimeType) {
+					imageSummary += `\nPreview: ${resized.mimeType} (transcoded for display; source unchanged)`;
+				}
 				if (dimensionNote) {
 					imageSummary += `\n${dimensionNote}`;
 				}
@@ -1259,7 +1262,7 @@ async function renderUrl(
 				return {
 					url,
 					finalUrl,
-					contentType: resized.mimeType,
+					contentType: imageMimeType,
 					method: "image",
 					content: output.content,
 					fetchedAt,
@@ -1359,28 +1362,29 @@ async function renderUrl(
 	// HTML extraction) and returns the response body verbatim. Binary-oriented branches
 	// above already ran because raw isn't useful for binary payloads.
 	if (raw) {
-		const output = finalizeOutput(rawContent);
 		return {
 			url,
 			finalUrl,
 			contentType: mime,
 			method: "raw",
-			content: output.content,
+			content: rawContent,
 			fetchedAt,
-			truncated: output.truncated,
+			truncated: response.truncated === true,
 			notes,
 		};
 	}
 	if (isJson) {
-		const output = finalizeOutput(formatJson(rawContent));
+		// readBodyCapped already bounds the fetched payload. Keep every fetched
+		// JSON value here: the read preview has its own limit and persists this
+		// complete content as an artifact before applying it.
 		return {
 			url,
 			finalUrl,
 			contentType: mime,
 			method: "json",
-			content: output.content,
+			content: formatJson(rawContent),
 			fetchedAt,
-			truncated: output.truncated,
+			truncated: response.truncated === true,
 			notes,
 		};
 	}
@@ -1795,6 +1799,9 @@ function buildUrlReadOutput(result: FetchRenderResult, content: string): string 
 	output += `URL: ${result.finalUrl}\n`;
 	output += `Content-Type: ${result.contentType}\n`;
 	output += `Method: ${result.method}\n`;
+	if (result.truncated) {
+		output += "Content completeness: incomplete; content was truncated before artifact capture.\n";
+	}
 	if (result.notes.length > 0) {
 		output += `Notes: ${result.notes.join("; ")}\n`;
 	}

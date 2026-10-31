@@ -15,6 +15,11 @@ OMP starts from the built-in server definitions, applies config overrides, then 
 1. The current working directory contains at least one of the server's `rootMarkers`.
 2. The server binary is available — checked in supported project-local bin directories first (for example `node_modules/.bin/`, Python virtual environments, Ruby binstubs, and project `bin/` for Go), then `$PATH`.
 
+Windows `.cmd` and `.bat` launchers use the existing safely quoted PATH/PATHEXT-aware
+batch launcher in both private and broker-shared modes. A configured/not-started
+entry confirms only the top-level command resolves. It does not verify a wrapper's
+internal `nvm`/`npx` environment or its solution/cwd selection.
+
 Root-marker detection at startup is cwd-only; it does not search parent directories. Wildcard markers such as `*.cabal` match entries directly inside the cwd and do not recurse. No configuration is required for common setups; see [`defaults.json`](../packages/coding-agent/src/lsp/defaults.json) for the full built-in set.
 
 ## Config file locations

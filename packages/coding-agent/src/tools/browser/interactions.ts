@@ -415,7 +415,7 @@ async function actionableClickPoint(
 /**
  * Click an element only after verifying the dispatched point is not occluded, then confirm the browser
  * delivered its trusted click (a label's forwarded click counts for its control). A page may instead
- * consume pointerdown with preventDefault(), intentionally suppressing subsequent mouse events. Merely
+ * consume pointerdown/mousedown with preventDefault(), intentionally handling the gesture itself. Merely
  * receiving mousedown is not completion: a background renderer can acknowledge input without clicking.
  * Dispatch once only; missing or unobservable delivery must never trigger a replay.
  */
@@ -447,7 +447,7 @@ export async function clickElement(
 					document: { visibilityState: string };
 					devicePixelRatio: number;
 				};
-				const pointerDowns = new Set<InputEvent>();
+				const downs = new Set<InputEvent>();
 				const clicks = new Set<InputEvent>();
 				type Receipt = true | { visibility: string; dpr: number };
 				let resolve!: (receipt: Receipt) => void;
@@ -459,7 +459,7 @@ export async function clickElement(
 					finish: () => {
 						state.stop();
 						let consumed = false;
-						for (const event of pointerDowns) {
+						for (const event of downs) {
 							if (event.defaultPrevented) {
 								consumed = true;
 								break;
@@ -472,8 +472,8 @@ export async function clickElement(
 				};
 				const record = (event: InputEvent) => {
 					if (!event.isTrusted || event.button !== expected.button) return;
-					if (event.type === "pointerdown") {
-						pointerDowns.add(event);
+					if (event.type === "pointerdown" || event.type === "mousedown") {
+						downs.add(event);
 					} else {
 						clicks.add(event);
 						// Resolve while handling the click, before its default action can destroy this context.
@@ -485,7 +485,7 @@ export async function clickElement(
 				const onPage = (event: InputEvent) => {
 					if (event.composedPath().includes(el)) record(event);
 				};
-				const types = ["pointerdown", expected.eventType];
+				const types = ["pointerdown", "mousedown", expected.eventType];
 				for (const type of types) {
 					target.addEventListener(type, record, true);
 					page.addEventListener(type, onPage, true);
@@ -829,6 +829,7 @@ export async function clickQueryHandlerText(
 	label: string,
 	timeoutMs: number,
 	signal?: AbortSignal,
+	onMatch?: () => void,
 ): Promise<void> {
 	const timeoutSignal = AbortSignal.timeout(timeoutMs);
 	const clickSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
@@ -842,6 +843,7 @@ export async function clickQueryHandlerText(
 				await untilAborted(clickSignal, () => Bun.sleep(50));
 				continue;
 			}
+			onMatch?.();
 			await clickElement(target, label, clickSignal);
 			return;
 		} finally {

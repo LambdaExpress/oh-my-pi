@@ -1,9 +1,10 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "../../src/config/settings";
 import { resolveLocalUrlToPath } from "../../src/internal-urls";
+import * as fileTransfer from "../../src/ssh/file-transfer";
 import { ReadTool } from "../../src/tools/read";
 
 type ToolTextResult = {
@@ -85,6 +86,10 @@ describe("JSON query in read tool", () => {
 
 	afterAll(async () => {
 		await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
 	});
 
 	it("queries a simple property from a JSON file", async () => {
@@ -288,5 +293,98 @@ describe("JSON query in read tool", () => {
 		expect(text).toContain("item-one");
 		expect(text).toContain("item-two");
 		expect(text).not.toContain("item-three");
+	});
+
+	it("queries remote JSON with the local jq engine while preserving the SSH source identity", async () => {
+		vi.spyOn(fileTransfer, "statRemotePath").mockResolvedValue("file");
+		vi.spyOn(fileTransfer, "readRemoteFile").mockResolvedValue({
+			bytes: new TextEncoder().encode(
+				JSON.stringify({
+					"1": { class_type: "VAELoader", inputs: { vae_name: "first.safetensors" } },
+					"2": { class_type: "Other", inputs: { vae_name: "not-a-vae.safetensors" } },
+					"3": { class_type: "VAELoader", inputs: { vae_name: "second.safetensors" } },
+				}),
+			),
+			truncated: false,
+		});
+		const tool = new ReadTool(createSession(tempDir, { getSessionSshHosts: async () => [] }));
+		const target = "ssh://h3-config/root/minimax-h3/logs/latest-error-workflow.json";
+		const filter = '.. | objects | select(.class_type? == "VAELoader") | .inputs.vae_name';
+		const source = `${target}?q=${filter}&raw=true&limit=1`;
+		const result = await tool.execute("remote-query", { path: source });
+		expect(getText(result)).toBe(
+			`first.safetensors\n[more results; append ?q=${filter}&raw=true&limit=1&offset=1 to continue]`,
+		);
+		expect(result.details?.meta?.source).toEqual({ type: "internal", value: source });
+		expect(result.details?.resolvedPath).toBeUndefined();
+
+		const next = await tool.execute("remote-query-next", {
+			path: `${target}?q=${filter}&raw=true&limit=1&offset=1:raw:1-1`,
+		});
+		expect(getText(next)).toBe("second.safetensors");
+	});
+
+	it("does not interpret a remote filename's encoded question mark as the query delimiter", async () => {
+		vi.spyOn(fileTransfer, "statRemotePath").mockResolvedValue("file");
+		const remoteRead = vi.spyOn(fileTransfer, "readRemoteFile").mockResolvedValue({
+			bytes: new TextEncoder().encode('{"value":"from-the-literal-question-mark-file"}'),
+			truncated: false,
+		});
+		const tool = new ReadTool(createSession(tempDir, { getSessionSshHosts: async () => [] }));
+		const result = await tool.execute("remote-encoded-name", {
+			path: "ssh://host/tmp/question%3Fmark.json?q=.value&raw=true",
+		});
+		expect(getText(result)).toBe("from-the-literal-question-mark-file");
+		expect(remoteRead.mock.calls[0]?.[1]).toBe("/tmp/question?mark.json");
+	});
+
+	it("keeps the remote UTF-8 text size limit before evaluating jq", async () => {
+		vi.spyOn(fileTransfer, "statRemotePath").mockResolvedValue("file");
+		vi.spyOn(fileTransfer, "readRemoteFile").mockResolvedValue({
+			bytes: new TextEncoder().encode('{"value":"partial'),
+			truncated: true,
+		});
+		const tool = new ReadTool(createSession(tempDir, { getSessionSshHosts: async () => [] }));
+		await expect(
+			tool.execute("remote-truncated-query", { path: "ssh://host/tmp/oversized.json?q=.value" }),
+		).rejects.toThrow("1 MiB");
+	});
+
+	it("extracts exact real jq summaries across independent concurrent shells with :raw", async () => {
+		const inputFile = path.join(tempDir, "task time 输入.json");
+		const input = {
+			Jobs: [
+				{ JobId: 101, ServiceDate: "2026-10-30", Status: 2 },
+				{ JobId: 102, ServiceDate: "2026-10-30", Status: 3 },
+			],
+			Tasks: Array.from({ length: 8 }, (_, index) => ({ TaskId: index + 1, JobId: index < 4 ? 101 : 102 })),
+			Tracking: Array.from({ length: 34 }, (_, index) => ({ Id: index + 1 })),
+			Gps: Array.from({ length: 608 }, (_, index) => ({ Latitude: index / 100, Longitude: index / 200 })),
+			Fences: Array.from({ length: 4 }, (_, index) => ({ Id: index + 1 })),
+			Expected: { arrival: "2026-10-30T08:00:00Z", departure: "2026-10-30T08:30:00Z" },
+		};
+		await Bun.write(inputFile, JSON.stringify(input));
+		const query =
+			"{jobs:(.Jobs|map({JobId,ServiceDate,Status})),taskCount:(.Tasks|length),pointCount:(.Gps|length),expected:.Expected}";
+		// :raw is the verbatim extraction contract; raw=true only controls jq strings.
+		const target = `${inputFile}?q=${query}:raw`;
+		const results = await Promise.all(
+			[0, 1, 2].map(index => readTool.execute(`small-summary-${index}`, { path: target })),
+		);
+		for (const [index, result] of results.entries()) {
+			const diagnostic = `small-summary-${index}: ${target}\nReadTool payload:\n${JSON.stringify(result, null, 2)}`;
+			let actual: unknown;
+			try {
+				actual = JSON.parse(getText(result));
+			} catch (cause) {
+				throw new Error(`Expected JSON from ${diagnostic}`, { cause });
+			}
+			expect(actual, diagnostic).toEqual({
+				jobs: input.Jobs,
+				taskCount: 8,
+				pointCount: 608,
+				expected: input.Expected,
+			});
+		}
 	});
 });
